@@ -1,0 +1,11 @@
+node_modules/
+.venv/
+dist/
+output/
+*.tsbuildinfo
+backend/data/*.sqlite3
+backend/data/*.sqlite3-*
+__pycache__/
+.pytest_cache/
+.playwright-cli/
+.DS_Store
