@@ -66,6 +66,7 @@ npm run build
 - 多 Agent：FetcherAgent、ReaderAgent、SummaryAgent、ValidatorAgent、QAAgent
 - 进阶预留：研究脉络、订阅推荐、概念知识图谱
 
-## 开发者
-
+## 开发者包括：
+柴英伦
+王徽音
 刘小菲
