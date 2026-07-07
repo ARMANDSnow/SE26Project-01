@@ -65,3 +65,6 @@ npm run build
 - 学习管理：收藏、笔记、评论、阅读历史、关注主题和对比阅读
 - 多 Agent：FetcherAgent、ReaderAgent、SummaryAgent、ValidatorAgent、QAAgent
 - 进阶预留：研究脉络、订阅推荐、概念知识图谱
+
+## 开发者包括：
+柴英伦
