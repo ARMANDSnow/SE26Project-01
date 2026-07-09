@@ -5,6 +5,7 @@ import {
   askQuestion,
   fetchGraph,
   fetchHistory,
+  fetchPaperChunks,
   fetchPaperDetail,
   fetchPapers,
   fetchStats,
@@ -36,6 +37,7 @@ export const queryKeys = {
   stats: ["stats"] as const,
   papers: (filters: PaperFilters = {}) => ["papers", filters] as const,
   paper: (id: number) => ["paper", id] as const,
+  paperChunks: (id: number) => ["paper", id, "chunks"] as const,
   wikiSearch: (q: string) => ["wiki-search", q] as const,
   qa: ["qa"] as const,
   graph: (filters: GraphFilters = {}) => ["graph", filters] as const,
@@ -58,6 +60,14 @@ export function usePaperQuery(id: number) {
   return useQuery({
     queryKey: queryKeys.paper(id),
     queryFn: () => fetchPaperDetail(id),
+    enabled: Number.isFinite(id) && id > 0,
+  })
+}
+
+export function usePaperChunksQuery(id: number) {
+  return useQuery({
+    queryKey: queryKeys.paperChunks(id),
+    queryFn: () => fetchPaperChunks(id, 6, 0),
     enabled: Number.isFinite(id) && id > 0,
   })
 }
@@ -119,6 +129,7 @@ export function useProcessPaperMutation() {
     mutationFn: processPaper,
     onSuccess: (paper) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.paper(paper.id) })
+      queryClient.invalidateQueries({ queryKey: queryKeys.paperChunks(paper.id) })
       queryClient.invalidateQueries({ queryKey: ["papers"] })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats })
       queryClient.invalidateQueries({ queryKey: ["graph"] })

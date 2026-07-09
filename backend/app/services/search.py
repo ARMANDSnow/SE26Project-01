@@ -24,6 +24,91 @@ def search_wiki(
     limit: int = 8,
     paper_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
+    chunk_results = _search_chunks(conn, query, limit=limit, paper_ids=paper_ids)
+    wiki_results = _search_wiki_sections(conn, query, limit=limit, paper_ids=paper_ids)
+    combined: list[dict[str, Any]] = []
+    seen: set[tuple[int, str, int]] = set()
+    for item in [*chunk_results, *wiki_results]:
+        key = (int(item["paper_id"]), str(item.get("source", "wiki")), int(item["id"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append(item)
+    combined.sort(
+        key=lambda item: item["score"] + (0.04 if item.get("source") == "chunk" else 0.0),
+        reverse=True,
+    )
+    return combined[:limit]
+
+
+def _search_chunks(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 8,
+    paper_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    allowed = set(paper_ids or [])
+    params: list[Any] = []
+    where = ""
+    if allowed:
+        where = "WHERE pc.paper_id IN ({})".format(",".join("?" for _ in allowed))
+        params.extend(sorted(allowed))
+    rows = conn.execute(
+        f"""
+        SELECT pc.id, pc.paper_id, pc.source_type, pc.source_url, pc.chunk_index, pc.heading,
+               pc.content, pc.char_start, pc.char_end, pc.token_count, pc.embedding_json,
+               p.title AS paper_title, p.arxiv_id, p.arxiv_url, p.pdf_url, p.primary_category
+        FROM paper_chunks pc
+        JOIN papers p ON p.id = pc.paper_id
+        {where}
+        ORDER BY pc.created_at DESC, pc.chunk_index
+        """,
+        tuple(params),
+    ).fetchall()
+    query_embedding = deterministic_embedding(query)
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        embedding = json.loads(row["embedding_json"])
+        score = 0.7 * keyword_score(query, row["content"] + " " + row["paper_title"]) + 0.3 * cosine_similarity(
+            query_embedding, embedding
+        )
+        if query.strip() and score <= 0:
+            continue
+        section_title = row["heading"] or f"{row['source_type']} chunk {row['chunk_index'] + 1}"
+        results.append(
+            {
+                "id": row["id"],
+                "chunk_id": row["id"],
+                "paper_id": row["paper_id"],
+                "paper_title": row["paper_title"],
+                "arxiv_id": row["arxiv_id"],
+                "arxiv_url": row["arxiv_url"],
+                "pdf_url": row["pdf_url"],
+                "primary_category": row["primary_category"],
+                "section": "chunk",
+                "section_title": section_title,
+                "content": row["content"],
+                "score": round(float(score), 4),
+                "source": "chunk",
+                "source_type": row["source_type"],
+                "source_url": row["source_url"],
+                "chunk_index": row["chunk_index"],
+                "heading": row["heading"],
+                "char_start": row["char_start"],
+                "char_end": row["char_end"],
+                "token_count": row["token_count"],
+            }
+        )
+    results.sort(key=lambda item: item["score"], reverse=True)
+    return results[:limit]
+
+
+def _search_wiki_sections(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 8,
+    paper_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT ws.id, ws.paper_id, ws.section, ws.title AS section_title, ws.content, ws.embedding_json,
@@ -58,6 +143,7 @@ def search_wiki(
                 "section_title": row["section_title"],
                 "content": row["content"],
                 "score": round(float(score), 4),
+                "source": "wiki",
             }
         )
     results.sort(key=lambda item: item["score"], reverse=True)

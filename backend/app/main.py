@@ -17,7 +17,9 @@ from .database import (
     get_paper_detail,
     get_subscriptions,
     init_db,
+    list_paper_chunks,
     list_papers,
+    paper_exists,
     set_favorite,
     upsert_paper,
     upsert_subscription,
@@ -153,6 +155,19 @@ def paper_detail(paper_id: int) -> dict[str, Any]:
     if detail is None:
         raise HTTPException(status_code=404, detail="论文不存在")
     return detail
+
+
+@app.get("/api/papers/{paper_id}/chunks")
+def paper_chunks(
+    paper_id: int,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    with connect() as conn:
+        if not paper_exists(conn, paper_id):
+            raise HTTPException(status_code=404, detail="论文不存在")
+        items, count = list_paper_chunks(conn, paper_id, limit=limit, offset=offset)
+    return {"items": items, "count": count}
 
 
 @app.post("/api/papers/{paper_id}/process")

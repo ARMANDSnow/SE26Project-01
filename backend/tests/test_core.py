@@ -4,10 +4,22 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.config import get_settings
-from backend.app.database import add_note, get_paper_detail, init_schema, list_papers, set_favorite, upsert_paper
+from backend.app.database import (
+    add_note,
+    connect,
+    get_paper_detail,
+    init_schema,
+    list_paper_chunks,
+    list_papers,
+    replace_paper_chunks,
+    set_favorite,
+    upsert_paper,
+)
 from backend.app.main import app
 from backend.app.seed_data import seed_database
+from backend.app.services import fulltext
 from backend.app.services.agents import process_paper
+from backend.app.services.fulltext import FullTextDocument, chunk_document
 from backend.app.services.search import answer_question, build_graph, search_wiki
 
 
@@ -36,6 +48,50 @@ def test_seed_has_at_least_100_papers():
     assert count >= 100
 
 
+def test_seed_backfills_processed_paper_chunks():
+    conn = memory_db()
+    processed = conn.execute("SELECT COUNT(*) AS count FROM papers WHERE processing_status = 'processed'").fetchone()["count"]
+    chunks = conn.execute("SELECT COUNT(DISTINCT paper_id) AS count FROM paper_chunks").fetchone()["count"]
+    assert chunks == processed
+
+
+def test_schema_creates_paper_chunks_table():
+    conn = memory_db()
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'paper_chunks'").fetchone()
+    assert row is not None
+
+
+def test_chunk_document_preserves_order_offsets_and_overlap():
+    text = " ".join(f"token-{index}" for index in range(90))
+    document = FullTextDocument(source_type="metadata", source_url="https://arxiv.org/abs/1", text=text)
+    chunks = chunk_document(document, max_chars=120, overlap=24)
+
+    assert len(chunks) > 1
+    assert [chunk["chunk_index"] for chunk in chunks] == list(range(len(chunks)))
+    assert all(chunk["char_start"] < chunk["char_end"] for chunk in chunks)
+    assert chunks[1]["char_start"] < chunks[0]["char_end"]
+    assert chunks[0]["content"] == text[chunks[0]["char_start"] : chunks[0]["char_end"]]
+
+
+def test_fulltext_fetch_failure_falls_back_to_metadata(monkeypatch):
+    monkeypatch.setenv("ENABLE_FULLTEXT_FETCH", "true")
+    get_settings.cache_clear()
+
+    def failed_urlopen(*args, **kwargs):
+        raise OSError("network unavailable")
+
+    monkeypatch.setattr(fulltext, "urlopen", failed_urlopen)
+    conn = memory_db()
+    paper_id = conn.execute("SELECT id FROM papers LIMIT 1").fetchone()["id"]
+    paper = get_paper_detail(conn, paper_id)
+    chunks = fulltext.chunks_for_paper(paper)
+
+    assert chunks
+    assert chunks[0]["source_type"] == "metadata"
+    assert paper["title"] in chunks[0]["content"]
+    get_settings.cache_clear()
+
+
 def test_list_papers_filters_by_category_and_keyword():
     conn = memory_db()
     papers = list_papers(conn, q="RAG", category="cs.CL", limit=20)
@@ -50,15 +106,60 @@ def test_process_paper_generates_required_wiki_sections():
     assert result["status"] == "processed"
     detail = get_paper_detail(conn, pending)
     assert {section["section"] for section in detail["wiki"]} >= {"summary", "concepts", "methods", "experiments"}
+    assert detail["chunk_count"] >= 1
+    chunks, count = list_paper_chunks(conn, pending)
+    assert count >= 1
+    assert chunks[0]["source_type"] == "metadata"
+    assert detail["title"] in chunks[0]["content"]
+
+
+def test_replace_paper_chunks_removes_stale_rows():
+    conn = memory_db()
+    paper_id = conn.execute("SELECT id FROM papers LIMIT 1").fetchone()["id"]
+    replace_paper_chunks(
+        conn,
+        paper_id,
+        [
+            {"chunk_index": 0, "source_type": "metadata", "content": "first chunk", "token_count": 2},
+            {"chunk_index": 1, "source_type": "metadata", "content": "stale chunk", "token_count": 2},
+        ],
+    )
+    replace_paper_chunks(
+        conn,
+        paper_id,
+        [{"chunk_index": 0, "source_type": "metadata", "content": "replacement chunk", "token_count": 2}],
+    )
+    chunks, count = list_paper_chunks(conn, paper_id)
+    assert count == 1
+    assert chunks[0]["content"] == "replacement chunk"
 
 
 def test_search_and_qa_return_citations():
     conn = memory_db()
+    conn.execute("DELETE FROM paper_chunks")
+    conn.commit()
     results = search_wiki(conn, "RAG Evidence Grounding", limit=5)
     assert results
+    assert all(result["source"] == "wiki" for result in results)
     answer = answer_question(conn, "RAG 如何保证答案有出处？")
     assert answer["citations"]
     assert "出处" in answer["answer"] or "论文 Wiki" in answer["answer"]
+
+
+def test_search_and_qa_prefer_chunk_citations_after_processing():
+    conn = memory_db()
+    paper_id = conn.execute("SELECT id FROM papers WHERE processing_status = 'pending' LIMIT 1").fetchone()["id"]
+    detail = get_paper_detail(conn, paper_id)
+    process_paper(conn, paper_id)
+
+    results = search_wiki(conn, detail["title"], limit=5)
+    assert results[0]["source"] == "chunk"
+    assert results[0]["chunk_id"]
+    assert results[0]["section_title"].startswith("Metadata")
+
+    answer = answer_question(conn, detail["title"], paper_ids=[paper_id])
+    assert answer["citations"]
+    assert answer["citations"][0]["source"] == "chunk"
 
 
 def test_favorite_note_history_flow():
@@ -163,6 +264,37 @@ def test_api_ingest_reports_duplicate_count(api_client, monkeypatch):
     assert data["duplicate_count"] == 1
     assert data["count"] == 1
     assert len(data["paper_ids"]) == 1
+
+
+def test_api_paper_chunks_pagination_and_missing_paper(api_client):
+    paper_id = api_client.get("/api/papers?limit=1").json()["items"][0]["id"]
+    with connect() as conn:
+        replace_paper_chunks(
+            conn,
+            paper_id,
+            [
+                {"chunk_index": 0, "source_type": "metadata", "content": "first api chunk", "token_count": 3},
+                {"chunk_index": 1, "source_type": "metadata", "content": "second api chunk", "token_count": 3},
+            ],
+        )
+
+    response = api_client.get(f"/api/papers/{paper_id}/chunks?limit=1&offset=0")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["count"] >= 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["chunk_index"] == 0
+    assert data["items"][0]["source_type"] == "metadata"
+
+    second_page = api_client.get(f"/api/papers/{paper_id}/chunks?limit=1&offset=1")
+    assert second_page.status_code == 200
+    second_data = second_page.json()
+    assert second_data["count"] == 2
+    assert second_data["items"][0]["chunk_index"] == 1
+    assert second_data["items"][0]["content"] == "second api chunk"
+
+    missing = api_client.get("/api/papers/999999/chunks")
+    assert missing.status_code == 404
 
 
 def test_api_unknown_graph_topic_returns_empty(api_client):

@@ -44,10 +44,12 @@ LLM_CHAT_MODEL=gpt-4o-mini
 LLM_EMBED_MODEL=text-embedding-3-small
 ARXIV_DEFAULT_CATEGORIES=cs.AI,cs.CL,cs.LG
 ENABLE_MOCK_LLM=true
+ENABLE_FULLTEXT_FETCH=auto
 VITE_USE_MOCK=false
 ```
 
 `ENABLE_MOCK_LLM=true` 时系统使用本地规则生成摘要、概念、方法和问答结果。没有 API Key 时也会自动走 mock 路径。
+`ENABLE_FULLTEXT_FETCH=auto` 时，mock/offline 路径默认使用元数据片段，真实 LLM 路径会尝试抓取 arXiv HTML/PDF 正文；可显式设置为 `true` 或 `false`。
 `VITE_USE_MOCK=true` 时前端直接使用内置样例数据；默认关闭，以便后端错误能进入页面错误态。
 
 ## 测试
@@ -58,12 +60,18 @@ VITE_USE_MOCK=false
 npm run build
 ```
 
+## Agent 工作流
+
+- Agent 入口规则：[AGENTS.md](AGENTS.md)
+- 当前状态交接：[docs/AGENT_HANDOFF.md](docs/AGENT_HANDOFF.md)
+- 迭代记录：[docs/iterations/README.md](docs/iterations/README.md)
+
 ## MVP 覆盖
 
 - 论文自动抓取与管理：arXiv API、去重、分类、作者、时间、链接展示
-- 论文结构化解析：生成 summary、concepts、methods、experiments Wiki 内容
-- 论文 Wiki 与检索：标题、作者、关键词、类别、概念标签和 Wiki 检索
-- 智能问答：基于 Wiki 片段检索，答案带论文出处
+- 论文结构化解析：生成 summary、concepts、methods、experiments Wiki 内容，并建立可追溯 chunks
+- 论文 Wiki 与检索：标题、作者、关键词、类别、概念标签、Wiki 和 chunk 检索
+- 智能问答：基于 Wiki/chunk 片段检索，答案带论文出处
 - 学习管理：收藏、笔记、评论、阅读历史、关注主题和对比阅读
 - 多 Agent：FetcherAgent、ReaderAgent、SummaryAgent、ValidatorAgent、QAAgent
 - 进阶预留：研究脉络、订阅推荐、概念知识图谱

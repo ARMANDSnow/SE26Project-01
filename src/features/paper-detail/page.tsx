@@ -4,6 +4,7 @@ import {
   Bookmark,
   Clock3,
   ExternalLink,
+  FileSearch,
   FileText,
   Loader2,
   Plus,
@@ -26,19 +27,27 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import { sectionNames } from "@/lib/format"
+import { plainSnippet, sectionNames } from "@/lib/format"
 import {
   useAddNoteMutation,
   useFavoriteMutation,
+  usePaperChunksQuery,
   usePaperQuery,
   useProcessPaperMutation,
 } from "@/lib/query-hooks"
 import { cn } from "@/lib/utils"
 
+const sourceLabels: Record<string, string> = {
+  html: "HTML",
+  pdf: "PDF",
+  metadata: "元数据",
+}
+
 export function PaperDetailPage() {
   const { paperId = "" } = useParams()
   const id = Number(paperId)
   const paperQuery = usePaperQuery(id)
+  const chunksQuery = usePaperChunksQuery(id)
   const favoriteMutation = useFavoriteMutation()
   const processMutation = useProcessPaperMutation()
   const addNoteMutation = useAddNoteMutation()
@@ -72,6 +81,8 @@ export function PaperDetailPage() {
   }
 
   const activeWiki = paper.wiki?.find((section) => section.section === activeSection) ?? paper.wiki?.[0]
+  const chunks = chunksQuery.data?.items ?? []
+  const chunkCount = chunksQuery.isError ? 0 : chunksQuery.data?.count ?? paper.chunk_count ?? 0
   const busy = favoriteMutation.isPending || processMutation.isPending || addNoteMutation.isPending
 
   const onFavorite = async () => {
@@ -230,6 +241,58 @@ export function PaperDetailPage() {
                 </div>
               ))}
               {!paper.concepts?.length ? <AppEmptyState title="暂无概念标签" /> : null}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-3">
+              <CardTitle className="inline-flex items-center gap-2 text-lg">
+                <FileSearch className="size-4" />
+                原文片段
+              </CardTitle>
+              <Badge variant="secondary" className="rounded-full">
+                {chunkCount} 条
+              </Badge>
+            </CardHeader>
+            <CardContent className="grid gap-2">
+              {chunksQuery.isLoading ? <LoadingState label="正在加载片段" /> : null}
+              {chunksQuery.isError ? (
+                <Alert variant="destructive">
+                  <AlertTitle>原文片段加载失败</AlertTitle>
+                  <AlertDescription>请稍后重试，或重新执行结构化解析。</AlertDescription>
+                </Alert>
+              ) : null}
+              {chunks.map((chunk) => (
+                <article key={chunk.id} className="grid min-w-0 gap-2 rounded-lg border bg-background p-3">
+                  <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                    <strong className="min-w-0 text-sm [overflow-wrap:anywhere]">{chunk.heading || `Chunk #${chunk.chunk_index + 1}`}</strong>
+                    <Badge variant="outline" className="max-w-full rounded-full [overflow-wrap:anywhere]">
+                      {sourceLabels[chunk.source_type] ?? chunk.source_type}
+                    </Badge>
+                  </div>
+                  <p className="line-clamp-4 text-sm leading-6 text-muted-foreground [overflow-wrap:anywhere]">{plainSnippet(chunk.content, 260)}</p>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span>#{chunk.chunk_index + 1}</span>
+                    <span>{chunk.token_count} tokens</span>
+                    <span>
+                      {chunk.char_start}-{chunk.char_end}
+                    </span>
+                    {chunk.source_url ? (
+                      <a
+                        className="inline-flex items-center gap-1 text-primary hover:underline"
+                        href={chunk.source_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label={`打开${sourceLabels[chunk.source_type] ?? chunk.source_type}片段 #${chunk.chunk_index + 1} 来源`}
+                      >
+                        <ExternalLink className="size-3" />
+                        来源
+                      </a>
+                    ) : null}
+                  </div>
+                </article>
+              ))}
+              {!chunks.length && !chunksQuery.isLoading && !chunksQuery.isError ? <AppEmptyState title="暂无原文片段" /> : null}
             </CardContent>
           </Card>
 

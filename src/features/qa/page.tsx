@@ -14,6 +14,13 @@ import { Progress } from "@/components/ui/progress"
 import { plainSnippet } from "@/lib/format"
 import { useAskQuestionMutation, useWikiSearchQuery } from "@/lib/query-hooks"
 
+const sourceLabels: Record<string, string> = {
+  html: "HTML",
+  pdf: "PDF",
+  metadata: "元数据",
+  wiki: "Wiki",
+}
+
 export function QAPage() {
   const [question, setQuestion] = useState("RAG 如何保证论文问答的出处可靠？")
   const [submittedQuestion, setSubmittedQuestion] = useState(question)
@@ -113,15 +120,20 @@ export function QAPage() {
             {searchQuery.isLoading && !evidence.length ? <LoadingState label="正在检索证据" /> : null}
             {evidence.map((item) => (
               <Link
-                key={`${item.paper_id}-${item.section}-${item.score}`}
+                key={`${item.paper_id}-${item.source ?? "wiki"}-${item.chunk_id ?? item.id}-${item.score}`}
                 to={`/papers/${item.paper_id}`}
-                className="grid min-h-24 gap-1 rounded-lg border bg-background p-3 text-left transition-colors hover:border-primary/50 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="grid min-h-24 min-w-0 gap-1 rounded-lg border bg-background p-3 text-left transition-colors hover:border-primary/50 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <strong className="line-clamp-2 text-sm">{item.paper_title}</strong>
-                <span className="text-xs text-muted-foreground">
-                  {item.section_title} · 匹配度 {(item.score * 100).toFixed(0)}%
+                <strong className="line-clamp-2 text-sm [overflow-wrap:anywhere]">{item.paper_title}</strong>
+                <span className="text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                  {item.section_title}
+                  {item.source === "chunk" && item.chunk_index !== undefined ? ` · #${item.chunk_index + 1}` : ""}
+                  {" · "}
+                  {sourceLabels[item.source_type ?? item.source ?? "wiki"] ?? item.source_type ?? item.source ?? "Wiki"}
+                  {" · "}
+                  匹配度 {(item.score * 100).toFixed(0)}%
                 </span>
-                <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">{plainSnippet(item.content)}</p>
+                <p className="line-clamp-2 text-sm leading-6 text-muted-foreground [overflow-wrap:anywhere]">{plainSnippet(item.content)}</p>
               </Link>
             ))}
             {!evidence.length && !searchQuery.isLoading ? <AppEmptyState title="暂无证据片段" /> : null}

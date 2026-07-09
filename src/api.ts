@@ -1,4 +1,4 @@
-import type { GraphData, HistoryItem, IngestResult, Note, Paper, QaResponse, Stats, Subscription, WikiSearchResult } from "./types";
+import type { GraphData, HistoryItem, IngestResult, Note, Paper, PaperChunk, QaResponse, Stats, Subscription, WikiSearchResult } from "./types";
 import { mockGraph, mockHistory, mockPapers, mockQa, mockSearchResults, mockStats, mockSubscriptions } from "./mock";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -45,6 +45,31 @@ export async function fetchPaperDetail(id: number): Promise<Paper> {
     return mockPapers.find((paper) => paper.id === id) ?? mockPapers[0];
   }
   return request<Paper>(`/api/papers/${id}`);
+}
+
+export async function fetchPaperChunks(id: number, limit = 6, offset = 0): Promise<{ items: PaperChunk[]; count: number }> {
+  if (USE_MOCK) {
+    const paper = mockPapers.find((item) => item.id === id) ?? mockPapers[0];
+    return {
+      count: 1,
+      items: [
+        {
+          id,
+          paper_id: paper.id,
+          source_type: "metadata",
+          source_url: paper.arxiv_url,
+          chunk_index: 0,
+          heading: "Metadata #1",
+          content: `${paper.title}\n${paper.abstract}`,
+          char_start: 0,
+          char_end: paper.abstract.length,
+          token_count: 32,
+          created_at: new Date().toISOString()
+        }
+      ]
+    };
+  }
+  return request<{ items: PaperChunk[]; count: number }>(`/api/papers/${id}/chunks?limit=${limit}&offset=${offset}`);
 }
 
 export async function processPaper(id: number): Promise<Paper> {

@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 import sqlite3
 
-from .database import attach_concepts, replace_wiki_sections, upsert_paper
+from .database import attach_concepts, replace_paper_chunks, replace_wiki_sections, row_to_paper, upsert_paper
+from .services.fulltext import chunk_document, metadata_document
 
 
 THEMES = [
@@ -23,6 +24,7 @@ THEMES = [
 def seed_database(conn: sqlite3.Connection) -> None:
     count = conn.execute("SELECT COUNT(*) AS count FROM papers").fetchone()["count"]
     if count >= 100:
+        seed_missing_metadata_chunks(conn)
         return
 
     base_day = date(2025, 1, 3)
@@ -104,4 +106,23 @@ def seed_database(conn: sqlite3.Connection) -> None:
 
     for topic in ["大语言模型", "RAG", "多智能体", "知识图谱"]:
         conn.execute("INSERT OR IGNORE INTO subscriptions (topic) VALUES (?)", (topic,))
+    seed_missing_metadata_chunks(conn)
     conn.commit()
+
+
+def seed_missing_metadata_chunks(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT p.*
+        FROM papers p
+        LEFT JOIN paper_chunks pc ON pc.paper_id = p.id
+        WHERE p.processing_status = 'processed'
+        GROUP BY p.id
+        HAVING COUNT(pc.id) = 0
+        """
+    ).fetchall()
+    for row in rows:
+        paper = row_to_paper(row)
+        replace_paper_chunks(conn, paper["id"], chunk_document(metadata_document(paper)), commit=False)
+    if rows:
+        conn.commit()

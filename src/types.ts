@@ -24,6 +24,20 @@ export type Note = {
   updated_at?: string;
 };
 
+export type PaperChunk = {
+  id: number;
+  paper_id: number;
+  source_type: "html" | "pdf" | "metadata" | string;
+  source_url?: string;
+  chunk_index: number;
+  heading: string;
+  content: string;
+  char_start: number;
+  char_end: number;
+  token_count: number;
+  created_at: string;
+};
+
 export type Paper = {
   id: number;
   arxiv_id: string;
@@ -44,6 +58,7 @@ export type Paper = {
   wiki?: WikiSection[];
   concepts?: Concept[];
   notes?: Note[];
+  chunk_count?: number;
 };
 
 export type Stats = {
@@ -70,6 +85,7 @@ export type Subscription = {
 
 export type WikiSearchResult = {
   id: number;
+  chunk_id?: number;
   paper_id: number;
   paper_title: string;
   arxiv_id: string;
@@ -80,6 +96,14 @@ export type WikiSearchResult = {
   section_title: string;
   content: string;
   score: number;
+  source?: "chunk" | "wiki" | string;
+  source_type?: "html" | "pdf" | "metadata" | string;
+  source_url?: string;
+  chunk_index?: number;
+  heading?: string;
+  char_start?: number;
+  char_end?: number;
+  token_count?: number;
 };
 
 export type QaResponse = {

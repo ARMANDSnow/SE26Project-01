@@ -55,6 +55,22 @@ def init_schema(conn: sqlite3.Connection) -> None:
             UNIQUE(paper_id, section)
         );
 
+        CREATE TABLE IF NOT EXISTS paper_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+            source_type TEXT NOT NULL,
+            source_url TEXT,
+            chunk_index INTEGER NOT NULL,
+            heading TEXT NOT NULL,
+            content TEXT NOT NULL,
+            char_start INTEGER NOT NULL,
+            char_end INTEGER NOT NULL,
+            token_count INTEGER NOT NULL,
+            embedding_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(paper_id, chunk_index)
+        );
+
         CREATE TABLE IF NOT EXISTS concepts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
@@ -104,6 +120,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_papers_category ON papers(primary_category);
         CREATE INDEX IF NOT EXISTS idx_papers_published ON papers(published_at);
         CREATE INDEX IF NOT EXISTS idx_wiki_sections_section ON wiki_sections(section);
+        CREATE INDEX IF NOT EXISTS idx_paper_chunks_paper ON paper_chunks(paper_id, chunk_index);
+        CREATE INDEX IF NOT EXISTS idx_paper_chunks_source ON paper_chunks(source_type);
         CREATE INDEX IF NOT EXISTS idx_notes_paper ON notes(paper_id);
         """
     )
@@ -137,6 +155,11 @@ def row_to_paper(row: sqlite3.Row) -> dict[str, Any]:
         "is_favorite": bool(row["is_favorite"]),
         "created_at": row["created_at"],
     }
+
+
+def paper_exists(conn: sqlite3.Connection, paper_id: int) -> bool:
+    row = conn.execute("SELECT 1 FROM papers WHERE id = ?", (paper_id,)).fetchone()
+    return row is not None
 
 
 def find_existing_paper_id(conn: sqlite3.Connection, paper: dict[str, Any]) -> int | None:
@@ -279,6 +302,67 @@ def replace_wiki_sections(
         conn.commit()
 
 
+def replace_paper_chunks(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    chunks: list[dict[str, Any]],
+    commit: bool = True,
+) -> None:
+    conn.execute("DELETE FROM paper_chunks WHERE paper_id = ?", (paper_id,))
+    for index, chunk in enumerate(chunks):
+        content = str(chunk.get("content", "")).strip()
+        if not content:
+            continue
+        chunk_index = int(chunk.get("chunk_index", index))
+        conn.execute(
+            """
+            INSERT INTO paper_chunks (
+                paper_id, source_type, source_url, chunk_index, heading, content,
+                char_start, char_end, token_count, embedding_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                paper_id,
+                str(chunk.get("source_type", "metadata")),
+                chunk.get("source_url") or "",
+                chunk_index,
+                str(chunk.get("heading", f"Chunk {chunk_index + 1}")),
+                content,
+                int(chunk.get("char_start", 0)),
+                int(chunk.get("char_end", len(content))),
+                int(chunk.get("token_count", 0)),
+                json.dumps(deterministic_embedding(content)),
+            ),
+        )
+    if commit:
+        conn.commit()
+
+
+def list_paper_chunks(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    total = conn.execute(
+        "SELECT COUNT(*) AS count FROM paper_chunks WHERE paper_id = ?",
+        (paper_id,),
+    ).fetchone()["count"]
+    rows = conn.execute(
+        """
+        SELECT id, paper_id, source_type, source_url, chunk_index, heading, content,
+               char_start, char_end, token_count, created_at
+        FROM paper_chunks
+        WHERE paper_id = ?
+        ORDER BY chunk_index
+        LIMIT ? OFFSET ?
+        """,
+        (paper_id, limit, offset),
+    ).fetchall()
+    return [dict(row) for row in rows], int(total)
+
+
 def attach_concepts(
     conn: sqlite3.Connection,
     paper_id: int,
@@ -393,9 +477,14 @@ def get_paper_detail(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any] 
         "SELECT id, note, comment, created_at, updated_at FROM notes WHERE paper_id = ? ORDER BY created_at DESC",
         (paper_id,),
     ).fetchall()
+    chunk_count = conn.execute(
+        "SELECT COUNT(*) AS count FROM paper_chunks WHERE paper_id = ?",
+        (paper_id,),
+    ).fetchone()["count"]
     paper["wiki"] = [dict(item) for item in sections]
     paper["concepts"] = [dict(item) for item in concepts]
     paper["notes"] = [dict(item) for item in notes]
+    paper["chunk_count"] = int(chunk_count)
     return paper
 
 

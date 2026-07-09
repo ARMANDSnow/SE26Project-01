@@ -15,12 +15,20 @@ class Settings:
         self.llm_chat_model = os.getenv("LLM_CHAT_MODEL", "gpt-4o-mini")
         self.llm_embed_model = os.getenv("LLM_EMBED_MODEL", "text-embedding-3-small")
         self.enable_mock_llm = os.getenv("ENABLE_MOCK_LLM", "true").lower() != "false"
+        fulltext_fetch = os.getenv("ENABLE_FULLTEXT_FETCH", "auto").lower()
+        self.enable_fulltext_fetch = None if fulltext_fetch == "auto" else fulltext_fetch in {"1", "true", "yes"}
         categories = os.getenv("ARXIV_DEFAULT_CATEGORIES", "cs.AI,cs.CL,cs.LG")
         self.default_categories = [item.strip() for item in categories.split(",") if item.strip()]
 
     @property
     def should_use_mock_llm(self) -> bool:
         return self.enable_mock_llm or not self.llm_api_key
+
+    @property
+    def should_fetch_fulltext(self) -> bool:
+        if self.enable_fulltext_fetch is not None:
+            return self.enable_fulltext_fetch
+        return not self.should_use_mock_llm
 
 
 @lru_cache

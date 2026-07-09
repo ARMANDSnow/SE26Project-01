@@ -5,19 +5,21 @@ import re
 import sqlite3
 from typing import Any
 
-from ..database import attach_concepts, get_paper_detail, replace_wiki_sections
+from ..database import attach_concepts, get_paper_detail, replace_paper_chunks, replace_wiki_sections
+from .fulltext import chunk_excerpt, chunks_for_paper
 from .llm import LLMClient
 
 
 class ReaderAgent:
     name = "ReaderAgent"
 
-    def read(self, paper: dict[str, Any]) -> dict[str, str]:
+    def read(self, paper: dict[str, Any], chunks: list[dict[str, Any]] | None = None) -> dict[str, str]:
         return {
             "title": paper["title"],
             "abstract": paper["abstract"],
             "authors": "、".join(paper["authors"]),
             "categories": "、".join(paper["categories"]),
+            "fulltext_excerpt": chunk_excerpt(chunks or []),
         }
 
 
@@ -33,6 +35,7 @@ class SummaryAgent:
     def _summarize_with_rules(self, reading: dict[str, str]) -> tuple[dict[str, str], list[dict[str, Any]]]:
         title = reading["title"]
         abstract = reading["abstract"]
+        fulltext_excerpt = reading.get("fulltext_excerpt", "")
         words = [item for item in title.replace("：", " ").replace(":", " ").split(" ") if item]
         concept_a = words[0] if words else "Paper Understanding"
         concept_b = reading["categories"].split("、")[0] if reading["categories"] else "cs.AI"
@@ -46,7 +49,9 @@ class SummaryAgent:
         sections = {
             "summary": (
                 f"# 摘要\n\n{title} 关注的研究问题是如何从论文内容中抽象稳定知识。"
-                f"论文摘要指出：{abstract[:260]}。MVP 将其沉淀为可检索 Wiki，并保留 arXiv 来源。"
+                f"论文摘要指出：{abstract[:260]}。"
+                f"{'正文片段补充：' + fulltext_excerpt[:220] + '。' if fulltext_excerpt else ''}"
+                "MVP 将其沉淀为可检索 Wiki，并保留 arXiv 来源。"
             ),
             "concepts": (
                 "# 核心概念\n\n"
@@ -61,7 +66,7 @@ class SummaryAgent:
             ),
             "experiments": (
                 "# 实验结论\n\n"
-                "MVP 阶段使用摘要和结构化片段替代完整 PDF 实验表格抽取。"
+                "MVP 阶段使用可追溯正文片段支撑结构化摘要，暂不做复杂实验表格还原。"
                 "校验重点是答案可追溯、概念抽取稳定和检索响应时间。"
             ),
         }
@@ -84,7 +89,8 @@ class SummaryAgent:
             '{"sections":{"summary":"# 摘要\\n\\n...","concepts":"# 核心概念\\n\\n...",'
             '"methods":"# 方法\\n\\n...","experiments":"# 实验结论\\n\\n..."},'
             '"concepts":[{"name":"概念名","description":"解释","relation":"关系","weight":0.8}]}。'
-            f"\n\n标题：{reading['title']}\n作者：{reading['authors']}\n分类：{reading['categories']}\n摘要：{reading['abstract']}"
+            f"\n\n标题：{reading['title']}\n作者：{reading['authors']}\n分类：{reading['categories']}"
+            f"\n摘要：{reading['abstract']}\n正文摘录：{reading.get('fulltext_excerpt', '')}"
         )
         try:
             raw = client.complete(
@@ -158,13 +164,19 @@ def process_paper(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any]:
     paper = get_paper_detail(conn, paper_id)
     if paper is None:
         raise ValueError("paper not found")
-    reading = ReaderAgent().read(paper)
+    chunks = chunks_for_paper(paper)
+    reading = ReaderAgent().read(paper, chunks)
     sections, concepts = SummaryAgent().summarize(reading)
     errors = ValidatorAgent().validate(sections, concepts)
     if errors:
         conn.execute("UPDATE papers SET processing_status = 'failed' WHERE id = ?", (paper_id,))
         conn.commit()
-        return {"status": "failed", "errors": errors, "agents": ["ReaderAgent", "SummaryAgent", "ValidatorAgent"]}
+        return {
+            "status": "failed",
+            "errors": errors,
+            "agents": ["FullTextExtractor", "ChunkIndexer", "ReaderAgent", "SummaryAgent", "ValidatorAgent"],
+        }
+    replace_paper_chunks(conn, paper_id, chunks, commit=False)
     replace_wiki_sections(conn, paper_id, sections, commit=False)
     attach_concepts(conn, paper_id, concepts, commit=False)
     conn.execute("UPDATE papers SET processing_status = 'processed' WHERE id = ?", (paper_id,))
@@ -172,6 +184,6 @@ def process_paper(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any]:
     conn.commit()
     return {
         "status": "processed",
-        "agents": ["ReaderAgent", "SummaryAgent", "ValidatorAgent"],
+        "agents": ["FullTextExtractor", "ChunkIndexer", "ReaderAgent", "SummaryAgent", "ValidatorAgent"],
         "paper": get_paper_detail(conn, paper_id),
     }
