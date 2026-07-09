@@ -44,9 +44,11 @@ LLM_CHAT_MODEL=gpt-4o-mini
 LLM_EMBED_MODEL=text-embedding-3-small
 ARXIV_DEFAULT_CATEGORIES=cs.AI,cs.CL,cs.LG
 ENABLE_MOCK_LLM=true
+VITE_USE_MOCK=false
 ```
 
 `ENABLE_MOCK_LLM=true` 时系统使用本地规则生成摘要、概念、方法和问答结果。没有 API Key 时也会自动走 mock 路径。
+`VITE_USE_MOCK=true` 时前端直接使用内置样例数据；默认关闭，以便后端错误能进入页面错误态。
 
 ## 测试
 

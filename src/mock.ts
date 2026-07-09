@@ -1,4 +1,4 @@
-import type { GraphData, Paper, QaResponse, Stats, WikiSearchResult, HistoryItem } from "./types";
+import type { GraphData, Paper, QaResponse, Stats, WikiSearchResult, HistoryItem, Subscription } from "./types";
 
 const wiki = [
   {
@@ -111,4 +111,10 @@ export const mockHistory: HistoryItem[] = mockPapers.slice(0, 6).map((paper, ind
   paper_id: paper.id,
   title: paper.title,
   primary_category: paper.primary_category
+}));
+
+export const mockSubscriptions: Subscription[] = ["大语言模型", "RAG", "多智能体", "知识图谱"].map((topic, index) => ({
+  id: index + 1,
+  topic,
+  created_at: `2025-06-${(8 + index).toString().padStart(2, "0")}`
 }));

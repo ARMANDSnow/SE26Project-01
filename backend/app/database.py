@@ -12,9 +12,12 @@ from .services.text_utils import deterministic_embedding, title_hash
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
     db_path = Path(path) if path is not None else get_settings().database_path
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    if str(db_path) != ":memory:":
+        conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 
@@ -136,11 +139,67 @@ def row_to_paper(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any]) -> int:
+def find_existing_paper_id(conn: sqlite3.Connection, paper: dict[str, Any]) -> int | None:
+    hash_value = paper.get("title_hash") or title_hash(paper["title"])
+    row = conn.execute(
+        """
+        SELECT id FROM papers
+        WHERE arxiv_id = ? OR title_hash = ?
+        ORDER BY CASE WHEN arxiv_id = ? THEN 0 ELSE 1 END
+        LIMIT 1
+        """,
+        (paper["arxiv_id"], hash_value, paper["arxiv_id"]),
+    ).fetchone()
+    return int(row["id"]) if row is not None else None
+
+
+def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool = True) -> int:
     authors = paper.get("authors", [])
     categories = paper.get("categories", [])
     primary_category = paper.get("primary_category") or (categories[0] if categories else "cs.AI")
     hash_value = paper.get("title_hash") or title_hash(paper["title"])
+    existing_id = find_existing_paper_id(conn, paper)
+    if existing_id is not None:
+        identity_row = conn.execute(
+            "SELECT arxiv_id FROM papers WHERE id = ?",
+            (existing_id,),
+        ).fetchone()
+        same_arxiv_id = identity_row is not None and identity_row["arxiv_id"] == paper["arxiv_id"]
+        conn.execute(
+            """
+            UPDATE papers SET
+                title = ?,
+                authors_json = ?,
+                abstract = ?,
+                categories_json = ?,
+                primary_category = ?,
+                published_at = ?,
+                updated_at = ?,
+                pdf_url = CASE WHEN ? THEN ? ELSE pdf_url END,
+                arxiv_url = CASE WHEN ? THEN ? ELSE arxiv_url END,
+                doi = COALESCE(?, doi)
+            WHERE id = ?
+            """,
+            (
+                paper["title"],
+                json.dumps(authors, ensure_ascii=False),
+                paper["abstract"],
+                json.dumps(categories, ensure_ascii=False),
+                primary_category,
+                paper["published_at"],
+                paper.get("updated_at"),
+                1 if same_arxiv_id else 0,
+                paper.get("pdf_url"),
+                1 if same_arxiv_id else 0,
+                paper.get("arxiv_url"),
+                paper.get("doi"),
+                existing_id,
+            ),
+        )
+        if commit:
+            conn.commit()
+        return existing_id
+
     conn.execute(
         """
         INSERT INTO papers (
@@ -180,11 +239,17 @@ def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any]) -> int:
         ),
     )
     row = conn.execute("SELECT id FROM papers WHERE arxiv_id = ?", (paper["arxiv_id"],)).fetchone()
-    conn.commit()
+    if commit:
+        conn.commit()
     return int(row["id"])
 
 
-def replace_wiki_sections(conn: sqlite3.Connection, paper_id: int, sections: dict[str, str]) -> None:
+def replace_wiki_sections(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    sections: dict[str, str],
+    commit: bool = True,
+) -> None:
     labels = {
         "summary": "summary.md",
         "concepts": "concepts.md",
@@ -210,11 +275,18 @@ def replace_wiki_sections(conn: sqlite3.Connection, paper_id: int, sections: dic
                 json.dumps(deterministic_embedding(content)),
             ),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def attach_concepts(conn: sqlite3.Connection, paper_id: int, concepts: list[dict[str, Any]]) -> None:
-    for concept in concepts:
+def attach_concepts(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    concepts: list[dict[str, Any]],
+    commit: bool = True,
+) -> None:
+    cleaned_concepts = [concept for concept in concepts if concept.get("name", "").strip()]
+    for concept in cleaned_concepts:
         name = concept["name"].strip()
         description = concept.get("description", f"{name} 相关概念")
         conn.execute(
@@ -241,7 +313,7 @@ def attach_concepts(conn: sqlite3.Connection, paper_id: int, concepts: list[dict
                 float(concept.get("weight", 1.0)),
             ),
         )
-    for left, right in zip(concepts, concepts[1:]):
+    for left, right in zip(cleaned_concepts, cleaned_concepts[1:]):
         left_id = conn.execute("SELECT id FROM concepts WHERE name = ?", (left["name"],)).fetchone()["id"]
         right_id = conn.execute("SELECT id FROM concepts WHERE name = ?", (right["name"],)).fetchone()["id"]
         conn.execute(
@@ -251,7 +323,8 @@ def attach_concepts(conn: sqlite3.Connection, paper_id: int, concepts: list[dict
             """,
             (left_id, right_id, "共同出现在论文中", 0.75),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def list_papers(
@@ -327,7 +400,10 @@ def get_paper_detail(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any] 
 
 
 def set_favorite(conn: sqlite3.Connection, paper_id: int, favorite: bool) -> dict[str, Any]:
-    conn.execute("UPDATE papers SET is_favorite = ? WHERE id = ?", (1 if favorite else 0, paper_id))
+    cursor = conn.execute("UPDATE papers SET is_favorite = ? WHERE id = ?", (1 if favorite else 0, paper_id))
+    if cursor.rowcount == 0:
+        conn.rollback()
+        raise ValueError("paper not found")
     conn.execute(
         "INSERT INTO reading_history (paper_id, action) VALUES (?, ?)",
         (paper_id, "收藏" if favorite else "取消收藏"),

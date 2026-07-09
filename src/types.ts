@@ -55,6 +55,19 @@ export type Stats = {
   categories: Array<{ category: string; count: number }>;
 };
 
+export type IngestResult = {
+  count: number;
+  fetched_count: number;
+  duplicate_count: number;
+  paper_ids: number[];
+};
+
+export type Subscription = {
+  id: number;
+  topic: string;
+  created_at: string;
+};
+
 export type WikiSearchResult = {
   id: number;
   paper_id: number;

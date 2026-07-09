@@ -4,6 +4,7 @@ import json
 import sqlite3
 from typing import Any
 
+from .llm import LLMClient
 from .text_utils import cosine_similarity, deterministic_embedding, keyword_score
 
 
@@ -73,18 +74,41 @@ def answer_question(conn: sqlite3.Connection, question: str, paper_ids: list[int
             "confidence": 0.18,
             "agent_trace": ["QAAgent", "HybridRetriever", "EvidenceValidator"],
         }
-    bullets = []
-    for item in useful[:3]:
-        snippet = extract_snippet(item["content"])
-        bullets.append(f"《{item['paper_title']}》的 {item['section_title']} 指出：{snippet}")
-    answer = "基于当前论文 Wiki，可以得到以下结论：\n\n" + "\n".join(f"{index + 1}. {bullet}" for index, bullet in enumerate(bullets))
-    answer += "\n\n这些结论来自已处理论文片段，适合继续进入论文详情页核对原文链接。"
+    answer = synthesize_answer(question, useful[:5])
+    agent_trace = ["QAAgent", "HybridRetriever", "EvidenceValidator"]
+    if answer is None:
+        bullets = []
+        for item in useful[:3]:
+            snippet = extract_snippet(item["content"])
+            bullets.append(f"《{item['paper_title']}》的 {item['section_title']} 指出：{snippet}")
+        answer = "基于当前论文 Wiki，可以得到以下结论：\n\n" + "\n".join(f"{index + 1}. {bullet}" for index, bullet in enumerate(bullets))
+        answer += "\n\n这些结论来自已处理论文片段，适合继续进入论文详情页核对原文链接。"
+    else:
+        agent_trace.insert(2, "LLMAnswerSynthesizer")
     return {
         "answer": answer,
         "citations": useful,
         "confidence": round(min(0.92, 0.55 + sum(item["score"] for item in useful[:3]) / 3), 2),
-        "agent_trace": ["QAAgent", "HybridRetriever", "EvidenceValidator"],
+        "agent_trace": agent_trace,
     }
+
+
+def synthesize_answer(question: str, evidence: list[dict[str, Any]]) -> str | None:
+    client = LLMClient()
+    if client.settings.should_use_mock_llm:
+        return None
+    evidence_text = "\n\n".join(
+        f"[{index + 1}] 论文：{item['paper_title']}\n章节：{item['section_title']}\n片段：{extract_snippet(item['content'], 320)}"
+        for index, item in enumerate(evidence)
+    )
+    try:
+        answer = client.complete(
+            "你是科研论文问答助手。只能基于给定证据回答，必须在回答中说明依据来自哪些论文或章节。",
+            f"问题：{question}\n\n证据：\n{evidence_text}\n\n请用中文给出简洁答案，并保留论文出处。",
+        ).strip()
+    except Exception:
+        return None
+    return answer or None
 
 
 def build_graph(conn: sqlite3.Connection, topic: str = "", limit: int = 42) -> dict[str, Any]:
@@ -116,6 +140,8 @@ def build_graph(conn: sqlite3.Connection, topic: str = "", limit: int = 42) -> d
         )
     visible_concepts = {int(node["id"].split("-")[1]) for node in nodes}
     if not visible_concepts:
+        if topic_norm:
+            return {"nodes": [], "links": []}
         visible_concepts = set(concept_ids[: min(12, len(concept_ids))])
         nodes = [
             {
