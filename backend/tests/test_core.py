@@ -11,13 +11,16 @@ from backend.app.database import (
     init_schema,
     list_paper_chunks,
     list_papers,
+    paper_chunks_fts_ready,
+    rebuild_paper_chunks_fts,
     replace_paper_chunks,
     set_favorite,
+    supports_fts5,
     upsert_paper,
 )
 from backend.app.main import app
 from backend.app.seed_data import seed_database
-from backend.app.services import fulltext
+from backend.app.services import fulltext, search as search_module
 from backend.app.services.agents import process_paper
 from backend.app.services.fulltext import FullTextDocument, chunk_document
 from backend.app.services.search import answer_question, build_graph, search_wiki
@@ -59,6 +62,49 @@ def test_schema_creates_paper_chunks_table():
     conn = memory_db()
     row = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'paper_chunks'").fetchone()
     assert row is not None
+
+
+def test_schema_creates_paper_chunks_fts_table_when_supported():
+    conn = memory_db()
+    if not supports_fts5(conn):
+        pytest.skip("SQLite FTS5 is not available")
+    assert paper_chunks_fts_ready(conn)
+
+
+def test_schema_without_fts5_still_supports_search(monkeypatch):
+    from backend.app import database as database_module
+
+    monkeypatch.setattr(database_module, "supports_fts5", lambda conn: False)
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    database_module.init_schema(conn)
+    seed_database(conn)
+
+    assert not paper_chunks_fts_ready(conn)
+    assert search_wiki(conn, "RAG Evidence Grounding", limit=5)
+
+
+def test_seed_backfills_processed_paper_chunks_fts():
+    conn = memory_db()
+    if not paper_chunks_fts_ready(conn):
+        pytest.skip("SQLite FTS5 is not available")
+    chunks = conn.execute("SELECT COUNT(*) AS count FROM paper_chunks").fetchone()["count"]
+    fts_rows = conn.execute("SELECT COUNT(*) AS count FROM paper_chunks_fts").fetchone()["count"]
+    assert fts_rows == chunks
+
+
+def test_rebuild_paper_chunks_fts_indexes_existing_chunks():
+    conn = memory_db()
+    if not paper_chunks_fts_ready(conn):
+        pytest.skip("SQLite FTS5 is not available")
+    conn.execute("DELETE FROM paper_chunks_fts")
+    assert conn.execute("SELECT COUNT(*) AS count FROM paper_chunks_fts").fetchone()["count"] == 0
+
+    assert rebuild_paper_chunks_fts(conn) is True
+    chunks = conn.execute("SELECT COUNT(*) AS count FROM paper_chunks").fetchone()["count"]
+    fts_rows = conn.execute("SELECT COUNT(*) AS count FROM paper_chunks_fts").fetchone()["count"]
+    assert fts_rows == chunks
 
 
 def test_chunk_document_preserves_order_offsets_and_overlap():
@@ -134,6 +180,74 @@ def test_replace_paper_chunks_removes_stale_rows():
     assert chunks[0]["content"] == "replacement chunk"
 
 
+def test_replace_paper_chunks_syncs_fts_rows():
+    conn = memory_db()
+    if not paper_chunks_fts_ready(conn):
+        pytest.skip("SQLite FTS5 is not available")
+    paper_id = conn.execute("SELECT id FROM papers LIMIT 1").fetchone()["id"]
+    replace_paper_chunks(
+        conn,
+        paper_id,
+        [{"chunk_index": 0, "source_type": "metadata", "content": "iter03stale chunk", "token_count": 2}],
+    )
+    replace_paper_chunks(
+        conn,
+        paper_id,
+        [{"chunk_index": 0, "source_type": "metadata", "content": "iter03replacement chunk", "token_count": 2}],
+    )
+
+    stale = conn.execute(
+        "SELECT COUNT(*) AS count FROM paper_chunks_fts WHERE paper_chunks_fts MATCH ?",
+        ('"iter03stale"',),
+    ).fetchone()["count"]
+    replacement = conn.execute(
+        "SELECT rowid, chunk_id FROM paper_chunks_fts WHERE paper_chunks_fts MATCH ?",
+        ('"iter03replacement"',),
+    ).fetchall()
+
+    assert stale == 0
+    assert replacement
+    assert replacement[0]["rowid"] == replacement[0]["chunk_id"]
+
+
+def test_replace_paper_chunks_falls_back_when_fts_sync_fails(monkeypatch):
+    from backend.app import database as database_module
+
+    conn = memory_db()
+    if not paper_chunks_fts_ready(conn):
+        pytest.skip("SQLite FTS5 is not available")
+    paper_id = conn.execute("SELECT id FROM papers LIMIT 1").fetchone()["id"]
+
+    def failed_fts_insert(conn, row):
+        raise sqlite3.OperationalError("simulated fts failure")
+
+    monkeypatch.setattr(database_module, "insert_paper_chunk_fts_row", failed_fts_insert)
+    replace_paper_chunks(
+        conn,
+        paper_id,
+        [{"chunk_index": 0, "source_type": "metadata", "content": "iter03fallback chunk", "token_count": 2}],
+    )
+
+    chunks, count = list_paper_chunks(conn, paper_id)
+    assert count == 1
+    assert chunks[0]["content"] == "iter03fallback chunk"
+    assert not paper_chunks_fts_ready(conn)
+    assert search_wiki(conn, "iter03fallback", limit=3)[0]["source"] == "chunk"
+
+
+def test_delete_paper_cascades_chunk_fts_rows():
+    conn = memory_db()
+    if not paper_chunks_fts_ready(conn):
+        pytest.skip("SQLite FTS5 is not available")
+    paper_id = conn.execute("SELECT paper_id FROM paper_chunks LIMIT 1").fetchone()["paper_id"]
+    assert conn.execute("SELECT COUNT(*) AS count FROM paper_chunks_fts WHERE paper_id = ?", (paper_id,)).fetchone()["count"] >= 1
+
+    conn.execute("DELETE FROM papers WHERE id = ?", (paper_id,))
+    conn.commit()
+
+    assert conn.execute("SELECT COUNT(*) AS count FROM paper_chunks_fts WHERE paper_id = ?", (paper_id,)).fetchone()["count"] == 0
+
+
 def test_search_and_qa_return_citations():
     conn = memory_db()
     conn.execute("DELETE FROM paper_chunks")
@@ -160,6 +274,107 @@ def test_search_and_qa_prefer_chunk_citations_after_processing():
     answer = answer_question(conn, detail["title"], paper_ids=[paper_id])
     assert answer["citations"]
     assert answer["citations"][0]["source"] == "chunk"
+
+
+def test_search_and_qa_keep_paper_scope_with_fts_candidates():
+    conn = memory_db()
+    target_id = conn.execute("SELECT id FROM papers ORDER BY id LIMIT 1").fetchone()["id"]
+    other_ids = [
+        row["id"]
+        for row in conn.execute("SELECT id FROM papers WHERE id != ? ORDER BY id LIMIT 30", (target_id,)).fetchall()
+    ]
+    for paper_id in other_ids:
+        replace_paper_chunks(
+            conn,
+            paper_id,
+            [{"chunk_index": 0, "source_type": "metadata", "content": f"iter03scoped popular other {paper_id}", "token_count": 4}],
+            commit=False,
+        )
+    replace_paper_chunks(
+        conn,
+        target_id,
+        [{"chunk_index": 0, "source_type": "metadata", "content": "iter03scoped target evidence", "token_count": 4}],
+        commit=False,
+    )
+    conn.commit()
+    if paper_chunks_fts_ready(conn):
+        candidate_ids = search_module._fts_chunk_candidate_ids(
+            conn,
+            "iter03scoped target evidence",
+            limit=1,
+            paper_ids=[target_id],
+        )
+        assert candidate_ids
+        candidate_paper_ids = {
+            row["paper_id"]
+            for row in conn.execute(
+                "SELECT paper_id FROM paper_chunks WHERE id IN ({})".format(",".join("?" for _ in candidate_ids)),
+                tuple(candidate_ids),
+            ).fetchall()
+        }
+        assert candidate_paper_ids == {target_id}
+
+    results = search_wiki(conn, "iter03scoped target evidence", limit=5, paper_ids=[target_id])
+    assert results
+    assert all(result["paper_id"] == target_id for result in results)
+    assert results[0]["source"] == "chunk"
+
+    answer = answer_question(conn, "iter03scoped target evidence", paper_ids=[target_id])
+    assert answer["citations"]
+    assert answer["citations"][0]["paper_id"] == target_id
+    assert answer["citations"][0]["source"] == "chunk"
+
+
+def test_search_handles_special_fts_queries():
+    conn = memory_db()
+    paper_id = conn.execute("SELECT id FROM papers LIMIT 1").fetchone()["id"]
+    replace_paper_chunks(
+        conn,
+        paper_id,
+        [
+            {
+                "chunk_index": 0,
+                "source_type": "metadata",
+                "content": "iter03special C++ gpt-4o-mini 图神经网络 知识图谱",
+                "token_count": 6,
+            }
+        ],
+    )
+
+    cxx_results = search_wiki(conn, 'C++ gpt-4o-mini "RAG"', limit=5)
+    assert cxx_results[0]["source"] == "chunk"
+    assert cxx_results[0]["paper_id"] == paper_id
+
+    chinese_results = search_wiki(conn, "图神经网络(知识图谱)", limit=5)
+    assert chinese_results[0]["source"] == "chunk"
+    assert chinese_results[0]["paper_id"] == paper_id
+
+    assert isinstance(search_wiki(conn, "", limit=5), list)
+    if paper_chunks_fts_ready(conn):
+        no_match_results = search_wiki(conn, "definitely-no-such-topic-xyz", limit=5)
+        assert all(result["source"] != "chunk" for result in no_match_results)
+
+
+def test_upsert_paper_updates_title_hash_for_title_deduplication():
+    conn = memory_db()
+    paper = {
+        "arxiv_id": "2699.20001",
+        "title": "iter03 Original Title",
+        "authors": ["Ada A."],
+        "abstract": "Initial title.",
+        "categories": ["cs.AI"],
+        "primary_category": "cs.AI",
+        "published_at": "2026-07-09",
+        "updated_at": "2026-07-09",
+        "pdf_url": "https://arxiv.org/pdf/2699.20001",
+        "arxiv_url": "https://arxiv.org/abs/2699.20001",
+    }
+    first_id = upsert_paper(conn, paper)
+    updated_id = upsert_paper(conn, {**paper, "title": "iter03 Updated Title", "abstract": "Updated title."})
+    duplicate_title_id = upsert_paper(conn, {**paper, "arxiv_id": "2699.20002", "title": "iter03 Updated Title"})
+
+    assert updated_id == first_id
+    assert duplicate_title_id == first_id
 
 
 def test_favorite_note_history_flow():
@@ -295,6 +510,20 @@ def test_api_paper_chunks_pagination_and_missing_paper(api_client):
 
     missing = api_client.get("/api/papers/999999/chunks")
     assert missing.status_code == 404
+
+
+def test_api_search_and_qa_keep_chunk_citation_shape(api_client):
+    response = api_client.get("/api/wiki/search?q=RAG&limit=8")
+    assert response.status_code == 200
+    chunk = next(item for item in response.json()["items"] if item.get("source") == "chunk")
+    for field in ["id", "chunk_id", "source", "source_type", "chunk_index", "char_start", "char_end", "token_count"]:
+        assert field in chunk
+
+    qa_response = api_client.post("/api/qa", json={"question": "RAG", "paper_ids": []})
+    assert qa_response.status_code == 200
+    citation = next(item for item in qa_response.json()["citations"] if item.get("source") == "chunk")
+    for field in ["id", "chunk_id", "source", "source_type", "chunk_index", "char_start", "char_end", "token_count"]:
+        assert field in citation
 
 
 def test_api_unknown_graph_topic_returns_empty(api_client):

@@ -1,12 +1,12 @@
 # Agent Handoff
 
-最后更新：2026-07-09，iter02 closeout 后。
+最后更新：2026-07-09，iter03 closeout 后。
 
 ## Current Status
 
 - 项目：arXiv 智能论文阅读工具。
-- 当前主分支：`main`，最近完成提交：`feat(iter02): add traceable fulltext chunks`。
-- 当前能力：论文库、arXiv 同步、结构化 Wiki、可追溯 chunks、chunk-first 检索问答、概念图谱、学习管理、关注主题、mock/real LLM 双路径。
+- 当前主分支：`main`，最近完成提交：`feat(iter03): add FTS5 chunk retrieval`。
+- 当前能力：论文库、arXiv 同步、结构化 Wiki、可追溯 chunks、FTS5 trigram 预过滤的 chunk-first 检索问答、概念图谱、学习管理、关注主题、mock/real LLM 双路径。
 - 默认运行方式：后端 FastAPI + SQLite，前端 Vite dev server；默认 `ENABLE_MOCK_LLM=true`、`ENABLE_FULLTEXT_FETCH=auto`、前端默认 `VITE_USE_MOCK=false`。
 - 交接锚点：本文件 + `docs/iterations/README.md` + 最新 iteration 文档。
 
@@ -18,11 +18,11 @@
 | 论文抓取与管理 | 已具备基础 | `/api/ingest/arxiv` 支持 arXiv 拉取、去重统计、分类和链接入库。 |
 | 论文结构化解析 | 已增强 | `process_paper` 生成可追溯 chunks、Wiki 分区和概念；非 mock 模式调用 `LLMClient.complete` 生成结构化 JSON。 |
 | 正文/Chunk 索引 | 已具备基础 | `paper_chunks` 存储 source、URL、offset、token 估算和 embedding；mock/offline 使用 metadata chunks，真实路径可尝试 arXiv HTML/PDF。 |
-| Wiki/Chunk 检索 | 已具备基础 | chunk-first + Wiki fallback，关键词 + deterministic embedding 混合检索；大规模库仍建议 FTS5。 |
+| Wiki/Chunk 检索 | 已增强 | 可选 FTS5 trigram chunk prefilter + 关键词/deterministic embedding rerank；FTS 不可用时 fallback 到旧路径。 |
 | 智能问答 | 已具备基础 | 先检索 chunk/wiki 证据，再返回 citations；非 mock 模式可用 LLM 合成回答。 |
 | 学习管理 | 已具备基础 | 收藏、笔记、历史、对比阅读、关注主题。 |
 | 知识图谱 | 已具备基础 | 概念-论文 SVG 图谱；无匹配主题返回空图。 |
-| 性能基线 | 已建立 | 100 requests / 100 workers smoke，包含 chunks/search/QA，iter02 closeout p95 `1.2061s`。 |
+| 性能基线 | 已建立 | 100 requests / 100 workers smoke，包含 chunks/search/QA，iter03 closeout p95 `0.9062s`。 |
 | 准确率基线 | 初步建立 | seed 数据上 citation/grounding 自动断言 `>= 90%`。 |
 
 ## Iteration Workflow Learned From iter01
@@ -78,17 +78,17 @@ git diff --check
 - 已实现基础 PDF/HTML 文本抽取与 metadata fallback，但尚未做版面结构、表格、公式、图片或章节层级还原。
 - SQLite 适合课程 MVP 和本地演示；更大数据量或多用户并发需要进一步拆分存储与任务队列。
 - LLM JSON 输出只做最小解析和校验；复杂论文抽取需要更严格 schema、重试和 citation 对齐。
-- Chunk 检索目前仍是 SQLite rows + Python scoring；大规模 chunk 库需要 FTS5 或 query-aware prefilter。
+- Chunk 检索已使用 SQLite FTS5 trigram 作为可选候选预筛；更大数据量仍需要真实语料基准、索引质量评估和可能的任务队列/专用检索服务。
 - 当前准确率基线来自 seed 数据，不能代表真实 arXiv 数据集。
 - `@app.on_event("startup")` 有 FastAPI deprecation warning，暂不阻塞。
 
 ## Next Candidates
 
-1. iter03：SQLite FTS5 或 chunk-level query-aware prefilter，减少全量 chunk 扫描。
-2. iter03：更真实的 PDF/HTML 解析，补章节标题、表格/图注和 citation 对齐。
-3. iter03：定时 arXiv ingestion 和订阅主题驱动推荐。
-4. iter03：更真实的 QA/retrieval gold set，覆盖真实 arXiv 论文。
-5. iter03：前端 Playwright smoke，覆盖论文库、详情解析、chunks 面板、问答、学习管理订阅路径。
+1. iter04：更真实的 PDF/HTML 解析，补章节标题、表格/图注和 citation 对齐。
+2. iter04：真实 QA/retrieval gold set，覆盖真实 arXiv 论文并评估 FTS chunk recall。
+3. iter04：前端 Playwright smoke，覆盖论文库、详情解析、chunks 面板、问答、学习管理订阅路径。
+4. iter04：定时 arXiv ingestion 和订阅主题驱动推荐。
+5. iter04：迁移/version 表与更显式的 SQLite schema upgrade 记录。
 
 ## Git And Collaboration Notes
 
@@ -111,3 +111,10 @@ git diff --check
 - 验证：22 backend tests passed；frontend build passed；100 并发 smoke passed，p95 `1.2061s`。
 - 提交：`feat(iter02): add traceable fulltext chunks`
 - 主要 follow-up：FTS5/query-aware chunk 检索、真实 PDF/HTML 结构解析、真实 QA/retrieval gold set、Playwright smoke。
+
+### iter03 - FTS5 Chunk 检索性能优化（Complete）
+
+- 文档：`docs/iterations/iteration_iter03_fts5-chunk-retrieval.md`
+- 验证：33 backend tests passed；frontend build passed；100 并发 smoke passed，p95 `0.9062s`。
+- 提交：`feat(iter03): add FTS5 chunk retrieval`
+- 主要 follow-up：真实 arXiv QA/retrieval gold set、PDF/HTML 结构解析、Playwright smoke、显式 schema migration/version 记录。

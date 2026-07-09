@@ -9,6 +9,9 @@ from .config import get_settings
 from .services.text_utils import deterministic_embedding, title_hash
 
 
+PAPER_CHUNKS_FTS_TABLE = "paper_chunks_fts"
+
+
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
     db_path = Path(path) if path is not None else get_settings().database_path
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,7 +128,133 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_notes_paper ON notes(paper_id);
         """
     )
+    if supports_fts5(conn):
+        init_paper_chunks_fts(conn)
+        rebuild_paper_chunks_fts(conn)
     conn.commit()
+
+
+def supports_fts5(conn: sqlite3.Connection) -> bool:
+    try:
+        conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp._fts5_probe USING fts5(value)")
+        conn.execute("DROP TABLE IF EXISTS temp._fts5_probe")
+    except sqlite3.Error:
+        return False
+    return True
+
+
+def init_paper_chunks_fts(conn: sqlite3.Connection) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = ?",
+            (PAPER_CHUNKS_FTS_TABLE,),
+        ).fetchone()
+        if row is not None and "tokenize='trigram'" not in str(row["sql"] or "").lower():
+            disable_paper_chunks_fts(conn)
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS paper_chunks_fts USING fts5(
+                chunk_id UNINDEXED,
+                paper_id UNINDEXED,
+                chunk_index UNINDEXED,
+                heading,
+                content,
+                paper_title,
+                tokenize='trigram'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_paper_chunks_delete_fts
+            AFTER DELETE ON paper_chunks
+            BEGIN
+                DELETE FROM paper_chunks_fts WHERE rowid = OLD.id;
+            END
+            """
+        )
+    except sqlite3.Error:
+        return False
+    return True
+
+
+def paper_chunks_fts_ready(conn: sqlite3.Connection) -> bool:
+    try:
+        conn.execute("SELECT rowid FROM paper_chunks_fts LIMIT 0")
+    except sqlite3.Error:
+        return False
+    return True
+
+
+def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = None) -> bool:
+    if not paper_chunks_fts_ready(conn):
+        return False
+    savepoint = "paper_chunks_fts_rebuild"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        if paper_id is None:
+            conn.execute("DELETE FROM paper_chunks_fts")
+            rows = conn.execute(
+                """
+                SELECT pc.id, pc.paper_id, pc.chunk_index, pc.heading, pc.content, p.title AS paper_title
+                FROM paper_chunks pc
+                JOIN papers p ON p.id = pc.paper_id
+                ORDER BY pc.id
+                """
+            ).fetchall()
+        else:
+            conn.execute("DELETE FROM paper_chunks_fts WHERE paper_id = ?", (paper_id,))
+            rows = conn.execute(
+                """
+                SELECT pc.id, pc.paper_id, pc.chunk_index, pc.heading, pc.content, p.title AS paper_title
+                FROM paper_chunks pc
+                JOIN papers p ON p.id = pc.paper_id
+                WHERE pc.paper_id = ?
+                ORDER BY pc.id
+                """,
+                (paper_id,),
+            ).fetchall()
+        for row in rows:
+            insert_paper_chunk_fts_row(conn, row)
+    except sqlite3.Error:
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
+        return False
+    conn.execute(f"RELEASE {savepoint}")
+    return True
+
+
+def insert_paper_chunk_fts_row(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO paper_chunks_fts (
+            rowid, chunk_id, paper_id, chunk_index, heading, content, paper_title
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(row["id"]),
+            int(row["id"]),
+            int(row["paper_id"]),
+            int(row["chunk_index"]),
+            str(row["heading"] or ""),
+            str(row["content"] or ""),
+            str(row["paper_title"] or ""),
+        ),
+    )
+
+
+def delete_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int) -> None:
+    if paper_chunks_fts_ready(conn):
+        conn.execute("DELETE FROM paper_chunks_fts WHERE paper_id = ?", (paper_id,))
+
+
+def disable_paper_chunks_fts(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("DROP TRIGGER IF EXISTS trg_paper_chunks_delete_fts")
+        conn.execute("DROP TABLE IF EXISTS paper_chunks_fts")
+    except sqlite3.Error:
+        pass
 
 
 def init_db(path: Path | str | None = None) -> None:
@@ -192,6 +321,14 @@ def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool =
             """
             UPDATE papers SET
                 title = ?,
+                title_hash = CASE
+                    WHEN NOT EXISTS (
+                        SELECT 1 FROM papers AS other
+                        WHERE other.title_hash = ? AND other.id != ?
+                    )
+                    THEN ?
+                    ELSE title_hash
+                END,
                 authors_json = ?,
                 abstract = ?,
                 categories_json = ?,
@@ -205,6 +342,9 @@ def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool =
             """,
             (
                 paper["title"],
+                hash_value,
+                existing_id,
+                hash_value,
                 json.dumps(authors, ensure_ascii=False),
                 paper["abstract"],
                 json.dumps(categories, ensure_ascii=False),
@@ -219,6 +359,7 @@ def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool =
                 existing_id,
             ),
         )
+        rebuild_paper_chunks_fts(conn, existing_id)
         if commit:
             conn.commit()
         return existing_id
@@ -241,7 +382,15 @@ def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool =
             updated_at = excluded.updated_at,
             pdf_url = excluded.pdf_url,
             arxiv_url = excluded.arxiv_url,
-            doi = excluded.doi
+            doi = excluded.doi,
+            title_hash = CASE
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM papers AS other
+                    WHERE other.title_hash = excluded.title_hash AND other.id != papers.id
+                )
+                THEN excluded.title_hash
+                ELSE papers.title_hash
+            END
         """,
         (
             paper["arxiv_id"],
@@ -262,6 +411,8 @@ def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool =
         ),
     )
     row = conn.execute("SELECT id FROM papers WHERE arxiv_id = ?", (paper["arxiv_id"],)).fetchone()
+    if row is not None:
+        rebuild_paper_chunks_fts(conn, int(row["id"]))
     if commit:
         conn.commit()
     return int(row["id"])
@@ -308,13 +459,49 @@ def replace_paper_chunks(
     chunks: list[dict[str, Any]],
     commit: bool = True,
 ) -> None:
+    savepoint = "replace_paper_chunks"
+    fts_ready = paper_chunks_fts_ready(conn)
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        _replace_paper_chunks(conn, paper_id, chunks, sync_fts=fts_ready)
+    except sqlite3.Error:
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
+        if not fts_ready:
+            raise
+        disable_paper_chunks_fts(conn)
+        conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            _replace_paper_chunks(conn, paper_id, chunks, sync_fts=False)
+        except sqlite3.Error:
+            conn.execute(f"ROLLBACK TO {savepoint}")
+            conn.execute(f"RELEASE {savepoint}")
+            raise
+        else:
+            conn.execute(f"RELEASE {savepoint}")
+    else:
+        conn.execute(f"RELEASE {savepoint}")
+    if commit:
+        conn.commit()
+
+
+def _replace_paper_chunks(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    chunks: list[dict[str, Any]],
+    sync_fts: bool,
+) -> None:
+    paper_row = conn.execute("SELECT title FROM papers WHERE id = ?", (paper_id,)).fetchone()
+    paper_title = paper_row["title"] if paper_row is not None else ""
+    if sync_fts:
+        delete_paper_chunks_fts(conn, paper_id)
     conn.execute("DELETE FROM paper_chunks WHERE paper_id = ?", (paper_id,))
     for index, chunk in enumerate(chunks):
         content = str(chunk.get("content", "")).strip()
         if not content:
             continue
         chunk_index = int(chunk.get("chunk_index", index))
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO paper_chunks (
                 paper_id, source_type, source_url, chunk_index, heading, content,
@@ -335,8 +522,19 @@ def replace_paper_chunks(
                 json.dumps(deterministic_embedding(content)),
             ),
         )
-    if commit:
-        conn.commit()
+        if sync_fts:
+            chunk_id = int(cursor.lastrowid)
+            insert_paper_chunk_fts_row(
+                conn,
+                {
+                    "id": chunk_id,
+                    "paper_id": paper_id,
+                    "chunk_index": chunk_index,
+                    "heading": str(chunk.get("heading", f"Chunk {chunk_index + 1}")),
+                    "content": content,
+                    "paper_title": paper_title,
+                },
+            )
 
 
 def list_paper_chunks(

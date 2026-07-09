@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from typing import Any
 
+from ..database import paper_chunks_fts_ready
 from .llm import LLMClient
-from .text_utils import cosine_similarity, deterministic_embedding, keyword_score
+from .text_utils import cosine_similarity, deterministic_embedding, keyword_score, normalize_text, tokenize
+
+
+CJK_SEQUENCE_RE = re.compile(r"[\u4e00-\u9fff]+")
 
 
 def extract_snippet(content: str, limit: int = 150) -> str:
@@ -47,13 +52,36 @@ def _search_chunks(
     limit: int = 8,
     paper_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
+    candidate_ids: list[int] | None = None
+    if query.strip():
+        candidate_ids = _fts_chunk_candidate_ids(conn, query, limit=limit, paper_ids=paper_ids)
+    if candidate_ids == []:
+        return []
+    rows = _fetch_chunk_rows(conn, paper_ids=paper_ids, chunk_ids=candidate_ids)
+    results = _rank_chunk_rows(rows, query)
+    if candidate_ids and query.strip() and not results:
+        results = _rank_chunk_rows(_fetch_chunk_rows(conn, paper_ids=paper_ids), query)
+    return results[:limit]
+
+
+def _fetch_chunk_rows(
+    conn: sqlite3.Connection,
+    paper_ids: list[int] | None = None,
+    chunk_ids: list[int] | None = None,
+) -> list[sqlite3.Row]:
     allowed = set(paper_ids or [])
     params: list[Any] = []
-    where = ""
+    clauses: list[str] = []
     if allowed:
-        where = "WHERE pc.paper_id IN ({})".format(",".join("?" for _ in allowed))
+        clauses.append("pc.paper_id IN ({})".format(",".join("?" for _ in allowed)))
         params.extend(sorted(allowed))
-    rows = conn.execute(
+    if chunk_ids is not None:
+        if not chunk_ids:
+            return []
+        clauses.append("pc.id IN ({})".format(",".join("?" for _ in chunk_ids)))
+        params.extend(chunk_ids)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return conn.execute(
         f"""
         SELECT pc.id, pc.paper_id, pc.source_type, pc.source_url, pc.chunk_index, pc.heading,
                pc.content, pc.char_start, pc.char_end, pc.token_count, pc.embedding_json,
@@ -65,6 +93,9 @@ def _search_chunks(
         """,
         tuple(params),
     ).fetchall()
+
+
+def _rank_chunk_rows(rows: list[sqlite3.Row], query: str) -> list[dict[str, Any]]:
     query_embedding = deterministic_embedding(query)
     results: list[dict[str, Any]] = []
     for row in rows:
@@ -100,7 +131,67 @@ def _search_chunks(
             }
         )
     results.sort(key=lambda item: item["score"], reverse=True)
-    return results[:limit]
+    return results
+
+
+def _fts_chunk_candidate_ids(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 8,
+    paper_ids: list[int] | None = None,
+) -> list[int] | None:
+    if not paper_chunks_fts_ready(conn):
+        return None
+    match_query = _fts_match_query(query)
+    if not match_query:
+        return None
+    allowed = set(paper_ids or [])
+    clauses = ["paper_chunks_fts MATCH ?"]
+    params: list[Any] = [match_query]
+    if allowed:
+        clauses.append("pc.paper_id IN ({})".format(",".join("?" for _ in allowed)))
+        params.extend(sorted(allowed))
+    candidate_limit = max(limit * 16, 80)
+    params.append(candidate_limit)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT pc.id
+            FROM paper_chunks_fts
+            JOIN paper_chunks pc ON pc.id = paper_chunks_fts.rowid
+            WHERE {' AND '.join(clauses)}
+            ORDER BY bm25(paper_chunks_fts), pc.created_at DESC, pc.chunk_index
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    return [int(row["id"]) for row in rows]
+
+
+def _fts_match_query(query: str) -> str:
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add_term(term: str) -> None:
+        cleaned = term.strip()
+        if len(cleaned) < 3 or cleaned in seen:
+            return
+        seen.add(cleaned)
+        terms.append(cleaned)
+
+    for phrase in CJK_SEQUENCE_RE.findall(normalize_text(query)):
+        add_term(phrase)
+    for token in tokenize(query):
+        if len(token) == 1 and CJK_SEQUENCE_RE.fullmatch(token):
+            continue
+        add_term(token)
+    return " OR ".join(_fts_quote(term) for term in terms[:16])
+
+
+def _fts_quote(term: str) -> str:
+    return '"' + term.replace('"', '""') + '"'
 
 
 def _search_wiki_sections(

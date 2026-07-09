@@ -7,5 +7,6 @@ Agent 续写入口：
 
 | Iteration | Title | Status | Notes |
 | --- | --- | --- | --- |
+| [iter03](iteration_iter03_fts5-chunk-retrieval.md) | FTS5 Chunk 检索性能优化 | Complete | FTS5 trigram chunk prefilter、旧库 backfill、同步写入/fallback、scoped QA/search 和测试覆盖已完成。 |
 | [iter02](iteration_iter02_traceable-fulltext-chunks.md) | 正文解析与可追溯 Chunk 知识链路 | Complete | 正文/metadata chunks、chunk-first 检索问答、chunks API、详情页片段展示和安全限制已完成。 |
 | [iter01](iteration_iter01_core-reliability.md) | 可信知识链路与稳定性修复 | Complete | 核心契约、mock 策略、SQLite 并发可靠性、订阅入口与测试基线已完成。 |
