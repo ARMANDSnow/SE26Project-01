@@ -5,22 +5,32 @@ import os
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
+PROJECT_DIR = BASE_DIR.parent
+
+
+def _read_api_key() -> str:
+    value = os.getenv("LLM_API_KEY", "").strip()
+    if value:
+        return value
+    key_path = Path(os.getenv("LLM_API_KEY_FILE", PROJECT_DIR / "apikey.txt"))
+    try:
+        return key_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 class Settings:
     def __init__(self) -> None:
         self.database_path = Path(os.getenv("DATABASE_PATH", DATA_DIR / "arxiv_wiki.sqlite3"))
-        self.llm_base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-        self.llm_api_key = os.getenv("LLM_API_KEY", "")
-        self.llm_chat_model = os.getenv("LLM_CHAT_MODEL", "gpt-4o-mini")
-        self.llm_embed_model = os.getenv("LLM_EMBED_MODEL", "text-embedding-3-small")
-        self.enable_mock_llm = os.getenv("ENABLE_MOCK_LLM", "true").lower() != "false"
+        self.llm_base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
+        self.llm_api_key = _read_api_key()
+        self.llm_chat_model = os.getenv("LLM_CHAT_MODEL", "deepseek-v4-flash")
         categories = os.getenv("ARXIV_DEFAULT_CATEGORIES", "cs.AI,cs.CL,cs.LG")
         self.default_categories = [item.strip() for item in categories.split(",") if item.strip()]
 
     @property
-    def should_use_mock_llm(self) -> bool:
-        return self.enable_mock_llm or not self.llm_api_key
+    def llm_available(self) -> bool:
+        return bool(self.llm_api_key)
 
 
 @lru_cache

@@ -9,3 +9,5 @@ __pycache__/
 .pytest_cache/
 .playwright-cli/
 .DS_Store
+.env
+apikey.txt

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
@@ -24,10 +25,17 @@ from .database import (
 )
 from .services.agents import process_paper
 from .services.arxiv_client import fetch_arxiv_papers
+from .services.llm import LLMConfigurationError, LLMServiceError
 from .services.search import answer_question, build_graph, search_wiki
 
 
-app = FastAPI(title="arXiv 智能论文阅读工具 API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="论文阅读工具 API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -63,17 +71,17 @@ class QARequest(BaseModel):
     paper_ids: list[int] = Field(default_factory=list)
 
 
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
-
-
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     settings = get_settings()
     with connect() as conn:
         count = conn.execute("SELECT COUNT(*) AS count FROM papers").fetchone()["count"]
-    return {"ok": True, "papers": count, "mock_llm": settings.should_use_mock_llm}
+    return {
+        "ok": True,
+        "papers": count,
+        "llm_available": settings.llm_available,
+        "llm_model": settings.llm_chat_model if settings.llm_available else None,
+    }
 
 
 @app.get("/api/stats")
@@ -162,6 +170,10 @@ def process(paper_id: int) -> Any:
             result = process_paper(conn, paper_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="论文不存在") from exc
+        except LLMConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=f"LLM 未配置：{exc}") from exc
+        except LLMServiceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     if result.get("status") == "failed":
         return JSONResponse(status_code=422, content=result)
     return result
@@ -183,7 +195,12 @@ def graph(topic: str = "", limit: int = Query(default=42, ge=8, le=80)) -> dict[
 @app.post("/api/qa")
 def qa(payload: QARequest) -> dict[str, Any]:
     with connect() as conn:
-        return answer_question(conn, payload.question, payload.paper_ids or None)
+        try:
+            return answer_question(conn, payload.question, payload.paper_ids or None)
+        except LLMConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=f"LLM 未配置：{exc}") from exc
+        except LLMServiceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/library/favorites")

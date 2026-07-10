@@ -6,22 +6,22 @@
 
 - 前端：Vite + React + TypeScript
 - 后端：FastAPI + SQLite
-- 智能能力：OpenAI 兼容接口，可通过环境变量配置；默认启用 mock LLM，保证离线可演示
+- 智能能力：兼容 OpenAI Chat Completions；默认使用 DeepSeek V4 Flash。未配置密钥时，结构化解析与问答会明确返回“LLM 未配置”。
 
 ## 快速启动
 
 安装依赖：
 
-```bash
+```powershell
 npm install
-python3 -m venv .venv
-.venv/bin/python -m pip install -r backend/requirements.txt
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 ```
 
 启动后端：
 
-```bash
-.venv/bin/python -m uvicorn backend.app.main:app --reload --port 8000
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --port 8000
 ```
 
 启动前端：
@@ -37,24 +37,20 @@ npm run dev
 
 ## 环境变量
 
-```bash
-LLM_BASE_URL=https://api.openai.com/v1
+```dotenv
+LLM_BASE_URL=https://api.deepseek.com
+LLM_CHAT_MODEL=deepseek-v4-flash
 LLM_API_KEY=your_api_key
-LLM_CHAT_MODEL=gpt-4o-mini
-LLM_EMBED_MODEL=text-embedding-3-small
 ARXIV_DEFAULT_CATEGORIES=cs.AI,cs.CL,cs.LG
-ENABLE_MOCK_LLM=true
-VITE_USE_MOCK=false
 ```
 
-`ENABLE_MOCK_LLM=true` 时系统使用本地规则生成摘要、概念、方法和问答结果。没有 API Key 时也会自动走 mock 路径。
-`VITE_USE_MOCK=true` 时前端直接使用内置样例数据；默认关闭，以便后端错误能进入页面错误态。
+也可以将仅包含 API Key 的 `apikey.txt` 放在项目根目录；该文件已被 Git 忽略。环境变量 `LLM_API_KEY` 的优先级高于文件。当前版本不使用伪向量检索，DeepSeek 配置只用于 Chat Completions。
 
 ## 测试
 
-```bash
-.venv/bin/python -m pytest backend/tests
-.venv/bin/python scripts/performance_smoke.py
+```powershell
+.\.venv\Scripts\python.exe -m pytest backend\tests
+.\.venv\Scripts\python.exe scripts\performance_smoke.py
 npm run build
 ```
 
