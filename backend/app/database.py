@@ -6,7 +6,7 @@ import sqlite3
 from typing import Any
 
 from .config import get_settings
-from .services.text_utils import deterministic_embedding, title_hash
+from .services.text_utils import title_hash
 
 
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
@@ -135,9 +135,6 @@ def _ensure_paper_columns(conn: sqlite3.Connection) -> None:
 def init_db(path: Path | str | None = None) -> None:
     with connect(path) as conn:
         init_schema(conn)
-        from .seed_data import seed_database
-
-        seed_database(conn)
 
 
 def row_to_paper(row: sqlite3.Row) -> dict[str, Any]:
@@ -312,7 +309,7 @@ def replace_wiki_sections(
                 section,
                 labels.get(section, f"{section}.md"),
                 content,
-                json.dumps(deterministic_embedding(content)),
+                "[]",
             ),
         )
     if commit:
@@ -335,7 +332,7 @@ def attach_concepts(
             VALUES (?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET description = excluded.description
             """,
-            (name, description, json.dumps(deterministic_embedding(name + " " + description))),
+            (name, description, "[]"),
         )
         concept_row = conn.execute("SELECT id FROM concepts WHERE name = ?", (name,)).fetchone()
         conn.execute(
