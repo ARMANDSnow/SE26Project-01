@@ -6,7 +6,7 @@ import sqlite3
 from typing import Any
 
 from ..database import attach_concepts, get_paper_detail, replace_wiki_sections
-from .llm import LLMClient
+from .llm import LLMClient, LLMConfigurationError, LLMServiceError
 
 
 class ReaderAgent:
@@ -16,8 +16,8 @@ class ReaderAgent:
         return {
             "title": paper["title"],
             "abstract": paper["abstract"],
-            "authors": "、".join(paper["authors"]),
-            "categories": "、".join(paper["categories"]),
+            "authors": ", ".join(paper["authors"]),
+            "categories": ", ".join(paper["categories"]),
         }
 
 
@@ -25,53 +25,7 @@ class SummaryAgent:
     name = "SummaryAgent"
 
     def summarize(self, reading: dict[str, str]) -> tuple[dict[str, str], list[dict[str, Any]]]:
-        client = LLMClient()
-        if not client.settings.should_use_mock_llm:
-            return self._summarize_with_llm(client, reading)
-        return self._summarize_with_rules(reading)
-
-    def _summarize_with_rules(self, reading: dict[str, str]) -> tuple[dict[str, str], list[dict[str, Any]]]:
-        title = reading["title"]
-        abstract = reading["abstract"]
-        words = [item for item in title.replace("：", " ").replace(":", " ").split(" ") if item]
-        concept_a = words[0] if words else "Paper Understanding"
-        concept_b = reading["categories"].split("、")[0] if reading["categories"] else "cs.AI"
-        method = "结构化论文解析"
-        if "RAG" in title or "检索" in title:
-            method = "retrieval-augmented generation"
-        elif "图" in title or "Graph" in title:
-            method = "knowledge graph"
-        elif "Agent" in title or "智能体" in title:
-            method = "multi-agent workflow"
-        sections = {
-            "summary": (
-                f"# 摘要\n\n{title} 关注的研究问题是如何从论文内容中抽象稳定知识。"
-                f"论文摘要指出：{abstract[:260]}。MVP 将其沉淀为可检索 Wiki，并保留 arXiv 来源。"
-            ),
-            "concepts": (
-                "# 核心概念\n\n"
-                f"- {concept_a}：论文标题和摘要中最突出的研究主题。\n"
-                f"- {concept_b}：arXiv 学科分类，用于主题聚合。\n"
-                f"- Evidence Grounding：问答时必须返回论文出处和相关片段。"
-            ),
-            "methods": (
-                "# 方法\n\n"
-                f"系统将论文元数据和摘要输入阅读流水线，经 ReaderAgent 清洗后由 SummaryAgent 生成 Wiki。"
-                f"方法标签暂定为 {method}，并通过概念边与相似论文连接。"
-            ),
-            "experiments": (
-                "# 实验结论\n\n"
-                "MVP 阶段使用摘要和结构化片段替代完整 PDF 实验表格抽取。"
-                "校验重点是答案可追溯、概念抽取稳定和检索响应时间。"
-            ),
-        }
-        concepts = [
-            {"name": concept_a, "description": "从论文标题中抽取的主题概念", "relation": "主题", "weight": 0.95},
-            {"name": concept_b, "description": "arXiv 学科分类", "relation": "研究方向", "weight": 0.82},
-            {"name": "Evidence Grounding", "description": "答案绑定论文出处和片段", "relation": "问答约束", "weight": 0.76},
-            {"name": method, "description": "论文处理或建模方法", "relation": "方法", "weight": 0.72},
-        ]
-        return sections, concepts
+        return self._summarize_with_llm(LLMClient(), reading)
 
     def _summarize_with_llm(
         self,
@@ -79,25 +33,29 @@ class SummaryAgent:
         reading: dict[str, str],
     ) -> tuple[dict[str, str], list[dict[str, Any]]]:
         prompt = (
-            "请阅读下面的 arXiv 论文元数据和摘要，生成可沉淀到论文 Wiki 的结构化 JSON。"
+            "请阅读下面的论文元数据和摘要，生成可沉淀到论文 Wiki 的结构化 JSON。"
             "只返回 JSON，不要返回 Markdown 代码块。JSON schema: "
             '{"sections":{"summary":"# 摘要\\n\\n...","concepts":"# 核心概念\\n\\n...",'
             '"methods":"# 方法\\n\\n...","experiments":"# 实验结论\\n\\n..."},'
-            '"concepts":[{"name":"概念名","description":"解释","relation":"关系","weight":0.8}]}。'
+            '"concepts":[{"name":"概念名","description":"解释","relation":"关系","weight":0.8}]}'
             f"\n\n标题：{reading['title']}\n作者：{reading['authors']}\n分类：{reading['categories']}\n摘要：{reading['abstract']}"
         )
         try:
-            raw = client.complete(
-                "你是科研论文阅读助手，必须输出可解析 JSON，并确保每个 Wiki 分区内容可追溯到论文摘要。",
-                prompt,
+            payload = _parse_json_object(
+                client.complete(
+                    "你是科研论文阅读助手。必须输出可解析 JSON，并确保内容可追溯到给定论文摘要。",
+                    prompt,
+                    json_mode=True,
+                )
             )
-            payload = _parse_json_object(raw)
-        except Exception:
-            return {}, []
+        except LLMConfigurationError:
+            raise
+        except (LLMServiceError, ValueError, json.JSONDecodeError) as exc:
+            raise LLMServiceError(f"无法生成有效的论文 Wiki：{exc}") from exc
         sections = payload.get("sections", {})
         concepts = payload.get("concepts", [])
         if not isinstance(sections, dict) or not isinstance(concepts, list):
-            return {}, []
+            raise LLMServiceError("LLM 返回的 JSON 不符合 Wiki schema")
         normalized_sections = {
             key: str(sections.get(key, "")).strip()
             for key in ValidatorAgent.required_sections
@@ -140,10 +98,10 @@ def _parse_json_object(raw: str) -> dict[str, Any]:
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1 or end <= start:
-        raise ValueError("LLM output is not a JSON object")
+        raise ValueError("LLM 输出不是 JSON 对象")
     payload = json.loads(text[start : end + 1])
     if not isinstance(payload, dict):
-        raise ValueError("LLM output is not a JSON object")
+        raise ValueError("LLM 输出不是 JSON 对象")
     return payload
 
 
@@ -158,8 +116,13 @@ def process_paper(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any]:
     paper = get_paper_detail(conn, paper_id)
     if paper is None:
         raise ValueError("paper not found")
-    reading = ReaderAgent().read(paper)
-    sections, concepts = SummaryAgent().summarize(reading)
+    try:
+        reading = ReaderAgent().read(paper)
+        sections, concepts = SummaryAgent().summarize(reading)
+    except (LLMConfigurationError, LLMServiceError):
+        conn.execute("UPDATE papers SET processing_status = 'failed' WHERE id = ?", (paper_id,))
+        conn.commit()
+        raise
     errors = ValidatorAgent().validate(sections, concepts)
     if errors:
         conn.execute("UPDATE papers SET processing_status = 'failed' WHERE id = ?", (paper_id,))
