@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import asynccontextmanager
+from datetime import date
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .config import get_settings
@@ -23,11 +27,18 @@ from .database import (
     upsert_subscription,
 )
 from .services.agents import process_paper
-from .services.arxiv_client import fetch_arxiv_papers
+from .services.pdf_import import save_and_extract_pdf
 from .services.search import answer_question, build_graph, search_wiki
+from .services.sources import fetch_arxiv_papers, fetch_sigops_papers, fetch_usenix_papers
 
 
-app = FastAPI(title="arXiv 智能论文阅读工具 API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="arXiv 智能论文阅读工具 API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -41,6 +52,12 @@ class IngestRequest(BaseModel):
     categories: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     max_results: int = Field(default=10, ge=1, le=50)
+
+
+class SourceIngestRequest(IngestRequest):
+    venue: str = ""
+    year: int = Field(default_factory=lambda: date.today().year, ge=2000, le=2100)
+    proceedings_url: str = ""
 
 
 class FavoriteRequest(BaseModel):
@@ -61,11 +78,6 @@ class SubscriptionRequest(BaseModel):
 class QARequest(BaseModel):
     question: str = Field(min_length=1)
     paper_ids: list[int] = Field(default_factory=list)
-
-
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
 
 
 @app.get("/api/health")
@@ -97,14 +109,7 @@ def stats() -> dict[str, Any]:
     }
 
 
-@app.post("/api/ingest/arxiv")
-def ingest_arxiv(payload: IngestRequest) -> dict[str, Any]:
-    settings = get_settings()
-    categories = payload.categories or settings.default_categories
-    try:
-        papers = fetch_arxiv_papers(categories, payload.keywords, payload.max_results)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"arXiv 抓取失败：{exc}") from exc
+def _save_ingested_papers(papers: list[dict[str, Any]]) -> dict[str, Any]:
     paper_ids: list[int] = []
     duplicate_count = 0
     try:
@@ -123,9 +128,83 @@ def ingest_arxiv(payload: IngestRequest) -> dict[str, Any]:
         "fetched_count": len(papers),
         "duplicate_count": duplicate_count,
         "paper_ids": paper_ids,
+    }
+
+
+@app.post("/api/ingest/arxiv")
+def ingest_arxiv(payload: IngestRequest) -> dict[str, Any]:
+    settings = get_settings()
+    categories = payload.categories or settings.default_categories
+    try:
+        papers = fetch_arxiv_papers(categories, payload.keywords, payload.max_results)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"arXiv 抓取失败：{exc}") from exc
+    return {
+        **_save_ingested_papers(papers),
         "categories": categories,
         "keywords": payload.keywords,
     }
+
+
+@app.post("/api/ingest/{source}")
+def ingest_source(source: str, payload: SourceIngestRequest) -> dict[str, Any]:
+    normalized_source = source.strip().lower()
+    try:
+        if normalized_source == "usenix":
+            papers = fetch_usenix_papers(payload.venue or "osdi", payload.year, payload.max_results)
+        elif normalized_source == "sigops":
+            papers = fetch_sigops_papers(payload.venue or "sosp", payload.year, payload.max_results, payload.proceedings_url)
+        else:
+            raise HTTPException(status_code=404, detail="不支持的论文来源")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"{normalized_source} 抓取失败：{exc}") from exc
+    return {
+        **_save_ingested_papers(papers),
+        "source": normalized_source,
+        "venue": payload.venue,
+        "year": payload.year,
+    }
+
+
+@app.post("/api/papers/upload")
+def upload_paper(
+    file: UploadFile = File(...),
+    title: str = Form(default=""),
+    authors: str = Form(default=""),
+    year: int = Form(default_factory=lambda: date.today().year),
+) -> dict[str, Any]:
+    settings = get_settings()
+    try:
+        extracted = save_and_extract_pdf(file, settings.upload_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"PDF 读取失败：{exc}") from exc
+    paper_title = title.strip() or extracted.title or Path(file.filename or "paper.pdf").stem
+    paper = {
+        "arxiv_id": f"upload:{uuid4().hex}",
+        "source": "upload",
+        "source_url": None,
+        "venue": "手动上传",
+        "file_path": extracted.path,
+        "title": paper_title,
+        "authors": [item.strip() for item in authors.split(",") if item.strip()],
+        "abstract": extracted.text or "用户上传的 PDF，尚未提取到可用摘要。",
+        "categories": ["manual"],
+        "primary_category": "manual",
+        "published_at": f"{year}-01-01",
+        "updated_at": None,
+        "pdf_url": None,
+        "arxiv_url": None,
+        "doi": None,
+        "processing_status": "pending",
+    }
+    with connect() as conn:
+        paper_id = upsert_paper(conn, paper)
+        detail = get_paper_detail(conn, paper_id)
+    return detail
 
 
 @app.get("/api/papers")
@@ -153,6 +232,19 @@ def paper_detail(paper_id: int) -> dict[str, Any]:
     if detail is None:
         raise HTTPException(status_code=404, detail="论文不存在")
     return detail
+
+
+@app.get("/api/papers/{paper_id}/file")
+def paper_file(paper_id: int) -> FileResponse:
+    settings = get_settings()
+    with connect() as conn:
+        row = conn.execute("SELECT file_path, title FROM papers WHERE id = ?", (paper_id,)).fetchone()
+    if row is None or not row["file_path"]:
+        raise HTTPException(status_code=404, detail="未找到本地 PDF")
+    file_path = (settings.upload_dir / row["file_path"]).resolve()
+    if settings.upload_dir.resolve() not in file_path.parents or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="未找到本地 PDF")
+    return FileResponse(file_path, media_type="application/pdf", filename=f"{row['title']}.pdf")
 
 
 @app.post("/api/papers/{paper_id}/process")

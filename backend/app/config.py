@@ -10,6 +10,7 @@ DATA_DIR = BASE_DIR / "data"
 class Settings:
     def __init__(self) -> None:
         self.database_path = Path(os.getenv("DATABASE_PATH", DATA_DIR / "arxiv_wiki.sqlite3"))
+        self.upload_dir = Path(os.getenv("UPLOAD_DIR", DATA_DIR / "uploads"))
         self.llm_base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.llm_api_key = os.getenv("LLM_API_KEY", "")
         self.llm_chat_model = os.getenv("LLM_CHAT_MODEL", "gpt-4o-mini")

@@ -33,6 +33,8 @@ def _entry_to_paper(entry: ET.Element) -> dict[str, object]:
     updated = _clean_text(entry.findtext(f"{ATOM}updated"))[:10]
     return {
         "arxiv_id": arxiv_id,
+        "source": "arxiv",
+        "source_url": arxiv_url or f"https://arxiv.org/abs/{arxiv_id}",
         "title": _clean_text(entry.findtext(f"{ATOM}title")),
         "authors": [author for author in authors if author],
         "abstract": _clean_text(entry.findtext(f"{ATOM}summary")),

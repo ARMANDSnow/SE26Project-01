@@ -1,13 +1,19 @@
 import sqlite3
+from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 
 from backend.app.config import get_settings
 from backend.app.database import add_note, get_paper_detail, init_schema, list_papers, set_favorite, upsert_paper
 from backend.app.main import app
 from backend.app.seed_data import seed_database
 from backend.app.services.agents import process_paper
+from backend.app.services.sources.common import MetadataPage
+from backend.app.services.sources.sigops import SigopsTocParser
+from backend.app.services.sources.usenix import _detail_to_paper
 from backend.app.services.search import answer_question, build_graph, search_wiki
 
 
@@ -23,6 +29,7 @@ def memory_db():
 @pytest.fixture()
 def api_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.sqlite3"))
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("ENABLE_MOCK_LLM", "true")
     get_settings.cache_clear()
     with TestClient(app) as client:
@@ -163,6 +170,110 @@ def test_api_ingest_reports_duplicate_count(api_client, monkeypatch):
     assert data["duplicate_count"] == 1
     assert data["count"] == 1
     assert len(data["paper_ids"]) == 1
+
+
+def test_sigops_toc_parser_reads_title_authors_and_abstract():
+    parser = SigopsTocParser()
+    parser.feed(
+        '<h3><a href="https://dl.acm.org/doi/10.1145/example">A Systems Paper</a></h3>'
+        '<ul><li>Ada Lovelace</li><li>Grace Hopper</li></ul>'
+        '<p>A concise abstract from the official proceedings page.</p>'
+    )
+    parser.close()
+    assert parser.papers == [
+        {
+            "title": "A Systems Paper",
+            "url": "https://dl.acm.org/doi/10.1145/example",
+            "authors": ["Ada Lovelace", "Grace Hopper"],
+            "abstract": "A concise abstract from the official proceedings page.",
+        }
+    ]
+
+
+def test_usenix_detail_normalizes_citation_metadata():
+    page = MetadataPage()
+    page.feed(
+        '<meta name="citation_title" content="A USENIX Paper">'
+        '<meta name="citation_author" content="Ada Lovelace">'
+        '<meta name="citation_abstract" content="An extracted abstract.">'
+        '<meta name="citation_pdf_url" content="https://example.test/paper.pdf">'
+    )
+    paper = _detail_to_paper(page, "https://www.usenix.org/conference/osdi24/presentation/example", "OSDI", 2024)
+    assert paper is not None
+    assert paper["source"] == "usenix"
+    assert paper["title"] == "A USENIX Paper"
+    assert paper["pdf_url"] == "https://example.test/paper.pdf"
+
+
+def test_usenix_detail_removes_bibtex_title_braces():
+    page = MetadataPage()
+    page.feed('<pre>@inproceedings {1, title = {A {Hardware-Accelerated} System}, author = {Ada and Grace}}</pre>')
+    paper = _detail_to_paper(page, "https://www.usenix.org/conference/osdi24/presentation/example", "OSDI", 2024)
+    assert paper is not None
+    assert paper["title"] == "A Hardware-Accelerated System"
+
+
+def test_api_ingests_usenix_source(api_client, monkeypatch):
+    monkeypatch.setattr(
+        "backend.app.main.fetch_usenix_papers",
+        lambda venue, year, max_results: [
+            {
+                "arxiv_id": "usenix:osdi:2024:demo",
+                "source": "usenix",
+                "source_url": "https://example.test/osdi-demo",
+                "venue": "OSDI 2024",
+                "title": "USENIX import demo",
+                "authors": ["Ada"],
+                "abstract": "Imported from a mocked USENIX page.",
+                "categories": ["systems"],
+                "primary_category": "systems",
+                "published_at": "2024-01-01",
+            }
+        ],
+    )
+    response = api_client.post("/api/ingest/usenix", json={"venue": "osdi", "year": 2024, "max_results": 1})
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    paper = api_client.get("/api/papers?q=USENIX%20import%20demo").json()["items"][0]
+    assert paper["source"] == "usenix"
+    assert paper["venue"] == "OSDI 2024"
+
+
+def test_api_upload_records_local_pdf(api_client, monkeypatch):
+    monkeypatch.setattr(
+        "backend.app.main.save_and_extract_pdf",
+        lambda file, upload_dir: SimpleNamespace(path="demo.pdf", title="Extracted PDF title", text="Extracted PDF text."),
+    )
+    response = api_client.post(
+        "/api/papers/upload",
+        files={"file": ("demo.pdf", b"%PDF-1.4 mock", "application/pdf")},
+        data={"authors": "Ada, Grace", "year": "2025"},
+    )
+    assert response.status_code == 200
+    paper = response.json()
+    assert paper["source"] == "upload"
+    assert paper["file_url"] == f"/api/papers/{paper['id']}/file"
+    assert paper["authors"] == ["Ada", "Grace"]
+
+
+def test_api_upload_and_download_real_pdf(api_client):
+    payload = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_metadata({"/Title": "Real PDF upload"})
+    writer.write(payload)
+    response = api_client.post(
+        "/api/papers/upload",
+        files={"file": ("real.pdf", payload.getvalue(), "application/pdf")},
+        data={"year": "2025"},
+    )
+    assert response.status_code == 200
+    paper = response.json()
+    assert paper["title"] == "Real PDF upload"
+    download = api_client.get(paper["file_url"])
+    assert download.status_code == 200
+    assert download.headers["content-type"] == "application/pdf"
+    assert download.content.startswith(b"%PDF-")
 
 
 def test_api_unknown_graph_topic_returns_empty(api_client):

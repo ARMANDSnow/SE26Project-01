@@ -5,13 +5,11 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const USE_MOCK = String(import.meta.env.VITE_USE_MOCK ?? "false").toLowerCase() === "true";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options?.headers ?? {})
-    },
-    ...options
-  });
+  const headers = new Headers(options?.headers ?? {})
+  if (!(options?.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json")
+  }
+  const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || `HTTP ${response.status}`);
@@ -64,6 +62,31 @@ export async function ingestArxiv(payload: { categories: string[]; keywords: str
     method: "POST",
     body: JSON.stringify(payload)
   });
+}
+
+export async function ingestSource(
+  source: "usenix" | "sigops",
+  payload: { venue: string; year: number; keywords?: string[]; max_results: number; proceedings_url?: string }
+) {
+  if (USE_MOCK) {
+    return { count: 0, fetched_count: 0, duplicate_count: 0, paper_ids: [] } satisfies IngestResult;
+  }
+  return request<IngestResult>(`/api/ingest/${source}`, {
+    method: "POST",
+    body: JSON.stringify({ categories: [], keywords: payload.keywords ?? [], ...payload })
+  });
+}
+
+export async function uploadPaper(file: File, details: { title?: string; authors?: string; year?: number } = {}): Promise<Paper> {
+  if (USE_MOCK) {
+    return { ...mockPapers[0], id: Date.now(), title: details.title || file.name, source: "upload" };
+  }
+  const body = new FormData()
+  body.set("file", file)
+  if (details.title) body.set("title", details.title)
+  if (details.authors) body.set("authors", details.authors)
+  if (details.year) body.set("year", String(details.year))
+  return request<Paper>("/api/papers/upload", { method: "POST", body })
 }
 
 export async function searchWiki(q: string): Promise<WikiSearchResult[]> {

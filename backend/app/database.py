@@ -27,6 +27,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS papers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             arxiv_id TEXT UNIQUE NOT NULL,
+            source TEXT NOT NULL DEFAULT 'arxiv',
+            source_url TEXT,
+            venue TEXT,
+            file_path TEXT,
             title TEXT NOT NULL,
             authors_json TEXT NOT NULL,
             abstract TEXT NOT NULL,
@@ -103,11 +107,29 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_papers_category ON papers(primary_category);
         CREATE INDEX IF NOT EXISTS idx_papers_published ON papers(published_at);
+        CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source);
         CREATE INDEX IF NOT EXISTS idx_wiki_sections_section ON wiki_sections(section);
         CREATE INDEX IF NOT EXISTS idx_notes_paper ON notes(paper_id);
         """
     )
+    _ensure_paper_columns(conn)
     conn.commit()
+
+
+def _ensure_paper_columns(conn: sqlite3.Connection) -> None:
+    """Additive migration for databases created before multi-source imports."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(papers)").fetchall()}
+    additions = {
+        "source": "TEXT NOT NULL DEFAULT 'arxiv'",
+        "source_url": "TEXT",
+        "venue": "TEXT",
+        "file_path": "TEXT",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE papers ADD COLUMN {name} {definition}")
+    conn.execute("UPDATE papers SET source = COALESCE(NULLIF(source, ''), 'arxiv')")
+    conn.execute("UPDATE papers SET source_url = COALESCE(source_url, arxiv_url)")
 
 
 def init_db(path: Path | str | None = None) -> None:
@@ -122,6 +144,11 @@ def row_to_paper(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
         "arxiv_id": row["arxiv_id"],
+        "source": row["source"],
+        "source_id": row["arxiv_id"].split(":", 1)[-1] if ":" in row["arxiv_id"] else row["arxiv_id"],
+        "source_url": row["source_url"],
+        "venue": row["venue"],
+        "file_url": f"/api/papers/{row['id']}/file" if row["file_path"] else None,
         "title": row["title"],
         "authors": json.loads(row["authors_json"]),
         "abstract": row["abstract"],
@@ -141,14 +168,17 @@ def row_to_paper(row: sqlite3.Row) -> dict[str, Any]:
 
 def find_existing_paper_id(conn: sqlite3.Connection, paper: dict[str, Any]) -> int | None:
     hash_value = paper.get("title_hash") or title_hash(paper["title"])
+    doi = (paper.get("doi") or "").strip().lower()
     row = conn.execute(
         """
         SELECT id FROM papers
-        WHERE arxiv_id = ? OR title_hash = ?
-        ORDER BY CASE WHEN arxiv_id = ? THEN 0 ELSE 1 END
+        WHERE arxiv_id = ?
+           OR (? != '' AND lower(COALESCE(doi, '')) = ?)
+           OR title_hash = ?
+        ORDER BY CASE WHEN arxiv_id = ? THEN 0 WHEN ? != '' AND lower(COALESCE(doi, '')) = ? THEN 1 ELSE 2 END
         LIMIT 1
         """,
-        (paper["arxiv_id"], hash_value, paper["arxiv_id"]),
+        (paper["arxiv_id"], doi, doi, hash_value, paper["arxiv_id"], doi, doi),
     ).fetchone()
     return int(row["id"]) if row is not None else None
 
@@ -177,7 +207,10 @@ def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool =
                 updated_at = ?,
                 pdf_url = CASE WHEN ? THEN ? ELSE pdf_url END,
                 arxiv_url = CASE WHEN ? THEN ? ELSE arxiv_url END,
-                doi = COALESCE(?, doi)
+                doi = COALESCE(?, doi),
+                source_url = COALESCE(?, source_url),
+                venue = COALESCE(?, venue),
+                file_path = COALESCE(?, file_path)
             WHERE id = ?
             """,
             (
@@ -193,6 +226,9 @@ def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool =
                 1 if same_arxiv_id else 0,
                 paper.get("arxiv_url"),
                 paper.get("doi"),
+                paper.get("source_url") or paper.get("arxiv_url"),
+                paper.get("venue"),
+                paper.get("file_path"),
                 existing_id,
             ),
         )
@@ -203,11 +239,11 @@ def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool =
     conn.execute(
         """
         INSERT INTO papers (
-            arxiv_id, title, authors_json, abstract, categories_json, primary_category,
+            arxiv_id, source, source_url, venue, file_path, title, authors_json, abstract, categories_json, primary_category,
             published_at, updated_at, pdf_url, arxiv_url, doi, title_hash,
             processing_status, reading_status, is_favorite
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(arxiv_id) DO UPDATE SET
             title = excluded.title,
             authors_json = excluded.authors_json,
@@ -222,6 +258,10 @@ def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool =
         """,
         (
             paper["arxiv_id"],
+            paper.get("source", "arxiv"),
+            paper.get("source_url") or paper.get("arxiv_url"),
+            paper.get("venue"),
+            paper.get("file_path"),
             paper["title"],
             json.dumps(authors, ensure_ascii=False),
             paper["abstract"],

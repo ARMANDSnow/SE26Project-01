@@ -10,9 +10,11 @@ import {
   fetchStats,
   fetchSubscriptions,
   ingestArxiv,
+  ingestSource,
   processPaper,
   searchWiki,
   toggleFavorite,
+  uploadPaper,
 } from "@/api"
 
 export type PaperFilters = {
@@ -94,6 +96,30 @@ export function useIngestArxivMutation() {
       queryClient.invalidateQueries({ queryKey: ["papers"] })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats })
       queryClient.invalidateQueries({ queryKey: ["graph"] })
+    },
+  })
+}
+
+export function useIngestSourceMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ source, ...payload }: { source: "usenix" | "sigops"; venue: string; year: number; max_results: number }) =>
+      ingestSource(source, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["papers"] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats })
+    },
+  })
+}
+
+export function useUploadPaperMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ file, title, authors, year }: { file: File; title?: string; authors?: string; year?: number }) =>
+      uploadPaper(file, { title, authors, year }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["papers"] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats })
     },
   })
 }

@@ -55,7 +55,7 @@ export function PaperCard({ paper, compact = false, onFavorite, favoriteBusy = f
           </span>
           <span className="inline-flex items-center gap-1">
             <FileText className="size-3.5" />
-            {paper.arxiv_id}
+            {paper.venue ?? paper.source ?? "arXiv"} · {paper.source_id ?? paper.arxiv_id}
           </span>
         </div>
 

@@ -138,7 +138,7 @@ export function PaperDetailPage() {
               </span>
               <span className="inline-flex items-center gap-1">
                 <FileText className="size-3.5" />
-                {paper.arxiv_id}
+                {paper.source_id ?? paper.arxiv_id}
               </span>
             </div>
           </div>
@@ -158,11 +158,19 @@ export function PaperDetailPage() {
               {processMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
               结构化解析
             </Button>
-            {paper.arxiv_url ? (
+            {paper.source_url || paper.arxiv_url ? (
               <Button asChild variant="outline" className="h-11">
-                <a href={paper.arxiv_url} target="_blank" rel="noreferrer">
+                <a href={paper.source_url ?? paper.arxiv_url} target="_blank" rel="noreferrer">
                   <ExternalLink className="size-4" />
-                  arXiv
+                  来源页面
+                </a>
+              </Button>
+            ) : null}
+            {paper.file_url ? (
+              <Button asChild variant="outline" className="h-11">
+                <a href={paper.file_url} target="_blank" rel="noreferrer">
+                  <FileText className="size-4" />
+                  本地 PDF
                 </a>
               </Button>
             ) : null}

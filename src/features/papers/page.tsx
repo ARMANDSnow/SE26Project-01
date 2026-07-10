@@ -1,5 +1,5 @@
-import { Filter, Loader2, RefreshCw, Search } from "lucide-react"
-import { FormEvent, useEffect, useMemo, useState } from "react"
+import { Filter, Loader2, RefreshCw, Search, Upload } from "lucide-react"
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "react-router"
 import { toast } from "sonner"
 import { PageHeader } from "@/components/common/page-header"
@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { defaultCategories, uniqueValues } from "@/lib/format"
-import { PaperFilters, useFavoriteMutation, useIngestArxivMutation, usePapersQuery } from "@/lib/query-hooks"
+import { PaperFilters, useFavoriteMutation, useIngestArxivMutation, useIngestSourceMutation, usePapersQuery, useUploadPaperMutation } from "@/lib/query-hooks"
 import type { Paper } from "@/types"
 
 function filtersFromParams(searchParams: URLSearchParams): PaperFilters {
@@ -42,9 +42,15 @@ export function PapersPage() {
   const [category, setCategory] = useState(filters.category ?? "")
   const [concept, setConcept] = useState(filters.concept ?? "")
   const [favoriteOnly, setFavoriteOnly] = useState(Boolean(filters.favorite))
+  const [source, setSource] = useState<"arxiv" | "usenix" | "sigops">("arxiv")
+  const [venue, setVenue] = useState("osdi")
+  const [year, setYear] = useState(String(new Date().getFullYear()))
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const papersQuery = usePapersQuery(filters)
   const ingestMutation = useIngestArxivMutation()
+  const sourceIngestMutation = useIngestSourceMutation()
+  const uploadMutation = useUploadPaperMutation()
   const favoriteMutation = useFavoriteMutation()
   const papers = papersQuery.data ?? []
 
@@ -88,14 +94,36 @@ export function PapersPage() {
   const onIngest = async () => {
     const keywords = q.trim() ? q.trim().split(/\s+/).filter(Boolean) : ["RAG"]
     try {
-      const result = await ingestMutation.mutateAsync({
-        categories: category ? [category] : [],
-        keywords,
-        max_results: 8,
-      })
-      toast.success(`已从 arXiv 新增 ${result.count} 篇论文，抓取 ${result.fetched_count} 篇，去重 ${result.duplicate_count} 篇。`)
+      const result = source === "arxiv"
+        ? await ingestMutation.mutateAsync({ categories: category ? [category] : [], keywords, max_results: 8 })
+        : await sourceIngestMutation.mutateAsync({
+            source,
+            venue: venue.trim() || (source === "usenix" ? "osdi" : "sosp"),
+            year: Number(year) || new Date().getFullYear(),
+            max_results: 8,
+          })
+      toast.success(`已导入 ${result.count} 篇论文，抓取 ${result.fetched_count} 篇，去重 ${result.duplicate_count} 篇。`)
     } catch {
-      toast.warning("arXiv 抓取失败，当前仍可使用内置样例数据。")
+      toast.warning("论文导入失败，请确认会议年份、来源页面和网络连接。")
+    }
+  }
+
+  const onSourceChange = (value: "arxiv" | "usenix" | "sigops") => {
+    setSource(value)
+    if (value === "usenix") setVenue("osdi")
+    if (value === "sigops") setVenue("sosp")
+  }
+
+  const onUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      const paper = await uploadMutation.mutateAsync({ file, year: Number(year) || new Date().getFullYear() })
+      toast.success(`已上传《${paper.title}》`)
+    } catch {
+      toast.error("PDF 上传或读取失败，请确认文件未加密且不超过 30 MB。")
+    } finally {
+      event.target.value = ""
     }
   }
 
@@ -111,20 +139,27 @@ export function PapersPage() {
   return (
     <section className="grid gap-5">
       <PageHeader
-        eyebrow="论文自动抓取与管理"
+        eyebrow="论文自动导入与管理"
         title="论文库"
         description="以标题、作者、摘要、分类和概念标签检索论文，并进入详情页继续阅读。"
         actions={
-          <Button className="h-11" onClick={onIngest} disabled={ingestMutation.isPending || papersQuery.isFetching}>
-            {ingestMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-            同步 arXiv
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={onUpload} />
+            <Button variant="outline" className="h-11" onClick={() => fileInputRef.current?.click()} disabled={uploadMutation.isPending}>
+              {uploadMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
+              上传 PDF
+            </Button>
+            <Button className="h-11" onClick={onIngest} disabled={ingestMutation.isPending || sourceIngestMutation.isPending || papersQuery.isFetching}>
+              {ingestMutation.isPending || sourceIngestMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+              导入来源论文
+            </Button>
+          </div>
         }
       />
 
       <Card>
         <CardContent className="p-4">
-          <form className="grid gap-3 xl:grid-cols-[minmax(260px,1fr)_180px_180px_auto_auto]" onSubmit={applyFilters} aria-label="论文检索筛选">
+          <form className="grid gap-3 xl:grid-cols-[minmax(220px,1fr)_160px_150px_150px_100px_auto]" onSubmit={applyFilters} aria-label="论文检索筛选">
             <div className="grid gap-2 xl:col-auto">
               <Label htmlFor="paper-q">搜索</Label>
               <div className="relative">
@@ -155,6 +190,31 @@ export function PapersPage() {
                 </SelectContent>
               </Select>
             </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="ingest-source">导入来源</Label>
+              <Select value={source} onValueChange={(value) => onSourceChange(value as "arxiv" | "usenix" | "sigops")}>
+                <SelectTrigger id="ingest-source" className="h-11 w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="arxiv">arXiv</SelectItem>
+                  <SelectItem value="usenix">USENIX</SelectItem>
+                  <SelectItem value="sigops">SIGOPS / SOSP</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {source !== "arxiv" ? (
+              <>
+                <div className="grid gap-2">
+                  <Label htmlFor="ingest-venue">会议</Label>
+                  <Input id="ingest-venue" className="h-11" value={venue} onChange={(event) => setVenue(event.target.value)} placeholder={source === "usenix" ? "osdi 或 atc" : "sosp"} />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="ingest-year">年份</Label>
+                  <Input id="ingest-year" className="h-11" inputMode="numeric" value={year} onChange={(event) => setYear(event.target.value)} />
+                </div>
+              </>
+            ) : <div className="hidden xl:block" />}
 
             <div className="grid gap-2">
               <Label htmlFor="paper-concept">概念</Label>

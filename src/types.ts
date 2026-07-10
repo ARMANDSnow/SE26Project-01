@@ -27,6 +27,11 @@ export type Note = {
 export type Paper = {
   id: number;
   arxiv_id: string;
+  source?: "arxiv" | "usenix" | "sigops" | "upload" | string;
+  source_id?: string;
+  source_url?: string;
+  venue?: string;
+  file_url?: string;
   title: string;
   authors: string[];
   abstract: string;
