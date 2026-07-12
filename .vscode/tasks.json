@@ -1,0 +1,52 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "\u542f\u52a8\u540e\u7aef\uff08FastAPI\uff09",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "uvicorn",
+        "backend.app.main:app",
+        "--reload",
+        "--port",
+        "8000"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "fastapi",
+        "pattern": {
+          "regexp": "^$"
+        },
+        "background": {
+          "beginsPattern": "Uvicorn running on",
+          "endsPattern": "^\\b\\B$"
+        }
+      }
+    },
+    {
+      "label": "调试前端",
+      "type": "process",
+      "command": "npm",
+      "args": ["run", "dev"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": {
+          "regexp": "^$"
+        },
+        "background": {
+          "beginsPattern": "Local:\\s+http://127\\.0\\.0\\.1:5173",
+          "endsPattern": "^\\b\\B$"
+        }
+      }
+    }
+  ]
+}

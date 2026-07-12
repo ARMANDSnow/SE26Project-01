@@ -13,7 +13,7 @@ from backend.app.database import add_note, connect, get_paper_detail, init_db, i
 from backend.app.main import app
 from backend.app.services.agents import SummaryAgent, process_paper
 from backend.app.services.sources.common import MetadataPage
-from backend.app.services.sources.sigops import SigopsTocParser
+from backend.app.services.sources.sigops import SigopsAcceptedPapersParser, SigopsTocParser
 from backend.app.services.sources.usenix import _detail_to_paper
 from backend.app.services.search import answer_question, build_graph, search_wiki
 from backend.tests.fixtures import add_test_paper, populate_test_library
@@ -211,6 +211,31 @@ def test_sigops_toc_parser_reads_title_authors_and_abstract():
             "authors": ["Ada Lovelace", "Grace Hopper"],
             "abstract": "A concise abstract from the official proceedings page.",
         }
+    ]
+
+
+def test_sigops_accepted_papers_parser_reads_recent_sosp_list():
+    parser = SigopsAcceptedPapersParser()
+    parser.feed(
+        '<ul class="paperlist">'
+        '<li><b>A Recent SOSP Paper</b><br><em>Ada Lovelace, Grace Hopper</em></li>'
+        '<li><b>Another SOSP Paper</b><br><em>Linus Torvalds</em></li>'
+        '</ul>'
+    )
+    parser.close()
+    assert parser.papers == [
+        {
+            "title": "A Recent SOSP Paper",
+            "url": "",
+            "authors": ["Ada Lovelace", "Grace Hopper"],
+            "abstract": "",
+        },
+        {
+            "title": "Another SOSP Paper",
+            "url": "",
+            "authors": ["Linus Torvalds"],
+            "abstract": "",
+        },
     ]
 
 

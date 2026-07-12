@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from html.parser import HTMLParser
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import quote, urljoin
+from urllib.request import Request, urlopen
 
 from .common import clean_text
 
@@ -63,6 +66,72 @@ class SigopsTocParser(HTMLParser):
         self._finish_current()
 
 
+class SigopsAcceptedPapersParser(HTMLParser):
+    """Parse the ``ul.paperlist`` structure used by recent SOSP sites."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.papers: list[dict[str, Any]] = []
+        self.current: dict[str, list[str]] | None = None
+        self._in_paper_list = False
+        self._in_title = False
+        self._in_authors = False
+
+    def _finish_current(self) -> None:
+        if self.current is None:
+            return
+        title = clean_text(" ".join(self.current["title"]))
+        author_text = clean_text(" ".join(self.current["authors"]))
+        if title:
+            self.papers.append(
+                {
+                    "title": title,
+                    "url": "",
+                    "authors": [clean_text(item) for item in author_text.split(",") if clean_text(item)],
+                    "abstract": "",
+                }
+            )
+        self.current = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {key.lower(): value or "" for key, value in attrs}
+        if tag == "ul" and "paperlist" in values.get("class", "").split():
+            self._in_paper_list = True
+        elif tag == "li" and self._in_paper_list:
+            self._finish_current()
+            self.current = {"title": [], "authors": []}
+        elif tag == "b" and self.current is not None:
+            self._in_title = True
+        elif tag == "em" and self.current is not None:
+            self._in_authors = True
+
+    def handle_data(self, data: str) -> None:
+        if self.current is None:
+            return
+        text = clean_text(data)
+        if not text:
+            return
+        if self._in_title:
+            self.current["title"].append(text)
+        elif self._in_authors:
+            self.current["authors"].append(text)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "b":
+            self._in_title = False
+        elif tag == "em":
+            self._in_authors = False
+        elif tag == "li" and self._in_paper_list:
+            self._finish_current()
+        elif tag == "ul" and self._in_paper_list:
+            self._finish_current()
+            self._in_paper_list = False
+
+    def close(self) -> None:
+        super().close()
+        self._finish_current()
+
+
 def fetch_sigops_papers(venue: str, year: int, max_results: int = 10, proceedings_url: str = "") -> list[dict[str, Any]]:
     """Import metadata linked by a SIGOPS proceedings page.
 
@@ -70,20 +139,34 @@ def fetch_sigops_papers(venue: str, year: int, max_results: int = 10, proceeding
     editions do not all share one stable URL pattern.
     """
     venue_code = venue.strip().lower() or "sosp"
-    url = proceedings_url.strip() or f"https://sigops.org/s/conferences/{quote(venue_code)}/{year}/toc.html"
-    parser = SigopsTocParser()
-    from urllib.request import Request, urlopen
+    base_url = f"https://sigops.org/s/conferences/{quote(venue_code)}/{year}"
+    url = proceedings_url.strip() or f"{base_url}/accepted.html"
     request = Request(url, headers={"User-Agent": "PaperWiki/0.2 (+metadata import)"})
-    with urlopen(request, timeout=15) as response:
-        parser.feed(response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace"))
+    try:
+        with urlopen(request, timeout=15) as response:
+            html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+    except HTTPError as exc:
+        if proceedings_url.strip() or exc.code != 404:
+            raise
+        url = f"{base_url}/toc.html"
+        request = Request(url, headers={"User-Agent": "PaperWiki/0.2 (+metadata import)"})
+        with urlopen(request, timeout=15) as response:
+            html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+
+    accepted_parser = SigopsAcceptedPapersParser()
+    accepted_parser.feed(html)
+    accepted_parser.close()
+    parser = SigopsTocParser()
+    parser.feed(html)
     parser.close()
+    source_items = accepted_parser.papers or parser.papers
     papers: list[dict[str, Any]] = []
-    for item in parser.papers[:max_results]:
+    for item in source_items[:max_results]:
         title = clean_text(item["title"])
-        detail_url = urljoin(url, item["url"])
-        if not title or not detail_url:
+        detail_url = urljoin(url, item["url"]) if item["url"] else url
+        if not title:
             continue
-        external_id = detail_url.rstrip("/").split("/")[-1]
+        external_id = sha256(title.lower().encode("utf-8")).hexdigest()[:16]
         papers.append(
             {
                 "arxiv_id": f"sigops:{venue_code}:{year}:{external_id}",
@@ -92,7 +175,7 @@ def fetch_sigops_papers(venue: str, year: int, max_results: int = 10, proceeding
                 "venue": f"{venue_code.upper()} {year}",
                 "title": title,
                 "authors": item["authors"],
-                "abstract": item["abstract"] or f"Imported from {venue_code.upper()} {year}.",
+                "abstract": item["abstract"] or f"Imported from {venue_code.upper()} {year} accepted papers; the official list does not provide an abstract.",
                 "categories": ["systems", venue_code],
                 "primary_category": venue_code.upper(),
                 "published_at": f"{year}-01-01",
