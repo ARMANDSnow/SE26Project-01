@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -16,12 +16,17 @@ from .config import get_settings
 from .database import (
     add_note,
     connect,
+    create_library_folder,
+    delete_library_folder,
     find_existing_paper_id,
     get_history,
     get_paper_detail,
     get_subscriptions,
     init_db,
+    list_library_folders,
+    list_library_items,
     list_papers,
+    move_library_item,
     set_favorite,
     upsert_paper,
     upsert_subscription,
@@ -30,6 +35,7 @@ from .services.agents import process_paper
 from .services.pdf_import import save_and_extract_pdf
 from .services.llm import LLMConfigurationError, LLMServiceError
 from .services.search import answer_question, build_graph, search_wiki
+from .services.library import recommend_folder
 from .services.sources import fetch_arxiv_papers, fetch_sigops_papers, fetch_usenix_papers
 
 
@@ -42,7 +48,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="论文阅读工具 API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:5174", "http://localhost:5174"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -81,6 +87,16 @@ class QARequest(BaseModel):
     paper_ids: list[int] = Field(default_factory=list)
 
 
+class FolderRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    parent_id: int | None = None
+    description: str = Field(default="", max_length=300)
+
+
+class MoveLibraryItemRequest(BaseModel):
+    folder_id: int
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     settings = get_settings()
@@ -95,11 +111,11 @@ def health() -> dict[str, Any]:
 
 
 @app.get("/api/stats")
-def stats() -> dict[str, Any]:
+def stats(x_user_id: int = Header(default=1)) -> dict[str, Any]:
     with connect() as conn:
         paper_count = conn.execute("SELECT COUNT(*) AS count FROM papers").fetchone()["count"]
         processed_count = conn.execute("SELECT COUNT(*) AS count FROM papers WHERE processing_status = 'processed'").fetchone()["count"]
-        favorite_count = conn.execute("SELECT COUNT(*) AS count FROM papers WHERE is_favorite = 1").fetchone()["count"]
+        favorite_count = conn.execute("SELECT COUNT(*) AS count FROM library_items WHERE user_id = ?", (x_user_id,)).fetchone()["count"]
         concept_count = conn.execute("SELECT COUNT(*) AS count FROM concepts").fetchone()["count"]
         notes_count = conn.execute("SELECT COUNT(*) AS count FROM notes").fetchone()["count"]
         categories = conn.execute(
@@ -222,16 +238,17 @@ def papers(
     favorite: bool | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    x_user_id: int = Header(default=1),
 ) -> dict[str, Any]:
     with connect() as conn:
-        items = list_papers(conn, q=q, category=category, concept=concept, author=author, favorite=favorite, limit=limit, offset=offset)
+        items = list_papers(conn, q=q, category=category, concept=concept, author=author, favorite=favorite, limit=limit, offset=offset, user_id=x_user_id)
     return {"items": items, "count": len(items)}
 
 
 @app.get("/api/papers/{paper_id}")
-def paper_detail(paper_id: int) -> dict[str, Any]:
+def paper_detail(paper_id: int, x_user_id: int = Header(default=1)) -> dict[str, Any]:
     with connect() as conn:
-        detail = get_paper_detail(conn, paper_id)
+        detail = get_paper_detail(conn, paper_id, user_id=x_user_id)
         if detail is not None:
             conn.execute("INSERT INTO reading_history (paper_id, action) VALUES (?, ?)", (paper_id, "阅读论文详情"))
             conn.commit()
@@ -294,12 +311,68 @@ def qa(payload: QARequest) -> dict[str, Any]:
 
 
 @app.post("/api/library/favorites")
-def favorites(payload: FavoriteRequest) -> dict[str, Any]:
+def favorites(payload: FavoriteRequest, x_user_id: int = Header(default=1)) -> dict[str, Any]:
     with connect() as conn:
         try:
-            return set_favorite(conn, payload.paper_id, payload.favorite)
+            return set_favorite(conn, payload.paper_id, payload.favorite, user_id=x_user_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="论文不存在") from exc
+
+
+@app.get("/api/library/folders")
+def library_folders(x_user_id: int = Header(default=1)) -> dict[str, Any]:
+    with connect() as conn:
+        return {"items": list_library_folders(conn, user_id=x_user_id)}
+
+
+@app.post("/api/library/folders")
+def add_library_folder(payload: FolderRequest, x_user_id: int = Header(default=1)) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return create_library_folder(conn, payload.name, payload.parent_id, payload.description, user_id=x_user_id)
+        except ValueError as exc:
+            status = 409 if str(exc) == "folder already exists" else 404
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.delete("/api/library/folders/{folder_id}")
+def remove_library_folder(folder_id: int, x_user_id: int = Header(default=1)) -> dict[str, bool]:
+    with connect() as conn:
+        try:
+            delete_library_folder(conn, folder_id, user_id=x_user_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"deleted": True}
+
+
+@app.get("/api/library/items")
+def library_items(folder_id: int | None = None, x_user_id: int = Header(default=1)) -> dict[str, Any]:
+    with connect() as conn:
+        items = list_library_items(conn, folder_id=folder_id, user_id=x_user_id)
+        return {"items": items, "count": len(items)}
+
+
+@app.post("/api/library/items/{item_id}/move")
+def move_item(item_id: int, payload: MoveLibraryItemRequest, x_user_id: int = Header(default=1)) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return move_library_item(conn, item_id, payload.folder_id, user_id=x_user_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/library/items/{item_id}/recommend-folder")
+def recommend_item_folder(item_id: int, x_user_id: int = Header(default=1)) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return recommend_folder(conn, item_id, user_id=x_user_id)
+        except ValueError as exc:
+            status = 422 if str(exc) == "no candidate folders" else 404
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        except LLMConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=f"LLM 未配置：{exc}") from exc
+        except LLMServiceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/notes")

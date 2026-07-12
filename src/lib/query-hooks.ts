@@ -5,13 +5,19 @@ import {
   askQuestion,
   fetchGraph,
   fetchHistory,
+  fetchLibraryFolders,
+  fetchLibraryItems,
   fetchPaperDetail,
   fetchPapers,
   fetchStats,
   fetchSubscriptions,
+  createLibraryFolder,
+  deleteLibraryFolder,
   ingestArxiv,
   ingestSource,
   processPaper,
+  moveLibraryItem,
+  recommendLibraryFolder,
   searchWiki,
   toggleFavorite,
   uploadPaper,
@@ -43,6 +49,8 @@ export const queryKeys = {
   graph: (filters: GraphFilters = {}) => ["graph", filters] as const,
   history: ["history"] as const,
   subscriptions: ["subscriptions"] as const,
+  libraryFolders: ["library-folders"] as const,
+  libraryItems: (folderId?: number) => ["library-items", folderId ?? "all"] as const,
 }
 
 export function useStatsQuery() {
@@ -87,6 +95,14 @@ export function useSubscriptionsQuery() {
   return useQuery({ queryKey: queryKeys.subscriptions, queryFn: fetchSubscriptions })
 }
 
+export function useLibraryFoldersQuery() {
+  return useQuery({ queryKey: queryKeys.libraryFolders, queryFn: fetchLibraryFolders })
+}
+
+export function useLibraryItemsQuery(folderId?: number) {
+  return useQuery({ queryKey: queryKeys.libraryItems(folderId), queryFn: () => fetchLibraryItems(folderId) })
+}
+
 export function useIngestArxivMutation() {
   const queryClient = useQueryClient()
 
@@ -98,6 +114,38 @@ export function useIngestArxivMutation() {
       queryClient.invalidateQueries({ queryKey: ["graph"] })
     },
   })
+}
+
+
+export function useCreateLibraryFolderMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: createLibraryFolder,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.libraryFolders }),
+  })
+}
+
+export function useDeleteLibraryFolderMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: deleteLibraryFolder,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.libraryFolders }),
+  })
+}
+
+export function useMoveLibraryItemMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ itemId, folderId }: { itemId: number; folderId: number }) => moveLibraryItem(itemId, folderId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["library-items"] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.libraryFolders })
+    },
+  })
+}
+
+export function useRecommendLibraryFolderMutation() {
+  return useMutation({ mutationFn: recommendLibraryFolder })
 }
 
 export function useIngestSourceMutation() {
@@ -134,6 +182,8 @@ export function useFavoriteMutation() {
       queryClient.invalidateQueries({ queryKey: ["papers"] })
       queryClient.invalidateQueries({ queryKey: queryKeys.paper(paper.id) })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats })
+      queryClient.invalidateQueries({ queryKey: ["library-items"] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.libraryFolders })
     },
   })
 }

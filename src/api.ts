@@ -1,4 +1,4 @@
-import type { GraphData, HistoryItem, IngestResult, Note, Paper, QaResponse, Stats, Subscription, WikiSearchResult } from "./types";
+import type { FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, QaResponse, Stats, Subscription, WikiSearchResult } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -110,4 +110,34 @@ export async function addSubscription(topic: string): Promise<Subscription> {
     method: "POST",
     body: JSON.stringify({ topic })
   });
+}
+
+export async function fetchLibraryFolders(): Promise<LibraryFolder[]> {
+  const data = await request<{ items: LibraryFolder[] }>("/api/library/folders");
+  return data.items;
+}
+
+export async function createLibraryFolder(payload: { name: string; parent_id?: number; description?: string }): Promise<LibraryFolder> {
+  return request<LibraryFolder>("/api/library/folders", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function deleteLibraryFolder(folderId: number): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/api/library/folders/${folderId}`, { method: "DELETE" });
+}
+
+export async function fetchLibraryItems(folderId?: number): Promise<LibraryItem[]> {
+  const suffix = folderId ? `?folder_id=${folderId}` : "";
+  const data = await request<{ items: LibraryItem[] }>(`/api/library/items${suffix}`);
+  return data.items;
+}
+
+export async function moveLibraryItem(itemId: number, folderId: number): Promise<LibraryItem> {
+  return request<LibraryItem>(`/api/library/items/${itemId}/move`, {
+    method: "POST",
+    body: JSON.stringify({ folder_id: folderId })
+  });
+}
+
+export async function recommendLibraryFolder(itemId: number): Promise<FolderRecommendation> {
+  return request<FolderRecommendation>(`/api/library/items/${itemId}/recommend-folder`, { method: "POST" });
 }
