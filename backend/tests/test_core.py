@@ -339,3 +339,59 @@ def test_api_subscriptions_list_and_create(api_client):
     assert response.json()["topic"] == "可信 RAG"
     topics = [item["topic"] for item in api_client.get("/api/subscriptions").json()["items"]]
     assert "可信 RAG" in topics
+
+
+def test_library_folder_recommendation_requires_user_approval(api_client, monkeypatch):
+    paper_id = api_client.get("/api/papers?limit=1").json()["items"][0]["id"]
+    saved = api_client.post("/api/library/favorites", json={"paper_id": paper_id, "favorite": True})
+    assert saved.status_code == 200
+
+    folders = api_client.get("/api/library/folders").json()["items"]
+    root = next(folder for folder in folders if folder["is_root"])
+    inbox = next(folder for folder in folders if folder["name"] == "待整理")
+    created = api_client.post(
+        "/api/library/folders",
+        json={"name": "可信 RAG", "parent_id": root["id"], "description": "检索增强与证据引用"},
+    ).json()
+    item = api_client.get(f"/api/library/items?folder_id={inbox['id']}").json()["items"][0]
+
+    monkeypatch.setattr(
+        "backend.app.services.library.LLMClient.complete",
+        lambda self, system_prompt, user_prompt, json_mode=False: (
+            f'{{"folder_id": {created["id"]}, "reason": "论文研究证据增强检索。"}}'
+        ),
+    )
+    recommendation = api_client.post(f"/api/library/items/{item['library_item_id']}/recommend-folder")
+    assert recommendation.status_code == 200
+    assert recommendation.json()["folder_id"] == created["id"]
+
+    unchanged = api_client.get(f"/api/library/items?folder_id={inbox['id']}").json()["items"]
+    assert [entry["library_item_id"] for entry in unchanged] == [item["library_item_id"]]
+
+    moved = api_client.post(
+        f"/api/library/items/{item['library_item_id']}/move",
+        json={"folder_id": created["id"]},
+    )
+    assert moved.status_code == 200
+    assert moved.json()["folder_id"] == created["id"]
+    assert api_client.get(f"/api/library/items?folder_id={inbox['id']}").json()["items"] == []
+
+
+def test_library_favorites_are_isolated_by_user_header(api_client):
+    paper_id = api_client.get("/api/papers?limit=1").json()["items"][0]["id"]
+    response = api_client.post(
+        "/api/library/favorites",
+        headers={"X-User-ID": "2"},
+        json={"paper_id": paper_id, "favorite": True},
+    )
+    assert response.status_code == 200
+    assert response.json()["is_favorite"] is True
+    assert api_client.get("/api/library/items").json()["items"] == []
+    user_two_items = api_client.get("/api/library/items", headers={"X-User-ID": "2"}).json()["items"]
+    assert [item["id"] for item in user_two_items] == [paper_id]
+
+
+def test_library_schema_does_not_store_last_recommendation():
+    conn = memory_db()
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(library_items)").fetchall()}
+    assert "last_recommended_folder_id" not in columns

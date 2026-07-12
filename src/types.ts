@@ -123,3 +123,27 @@ export type HistoryItem = {
   title: string;
   primary_category: string;
 };
+
+export type LibraryFolder = {
+  id: number;
+  parent_id?: number;
+  name: string;
+  description: string;
+  is_system: boolean;
+  is_root: boolean;
+  item_count: number;
+  path: string;
+};
+
+export type LibraryItem = Paper & {
+  library_item_id: number;
+  folder_id: number;
+  saved_at: string;
+};
+
+export type FolderRecommendation = {
+  folder_id: number;
+  folder_name: string;
+  folder_path: string;
+  reason: string;
+};

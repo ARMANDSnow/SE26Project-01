@@ -105,14 +105,46 @@ def init_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS library_folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            parent_id INTEGER REFERENCES library_folders(id) ON DELETE RESTRICT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            is_system INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, parent_id, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS library_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+            folder_id INTEGER NOT NULL REFERENCES library_folders(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, paper_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_papers_category ON papers(primary_category);
         CREATE INDEX IF NOT EXISTS idx_papers_published ON papers(published_at);
         CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source);
         CREATE INDEX IF NOT EXISTS idx_wiki_sections_section ON wiki_sections(section);
         CREATE INDEX IF NOT EXISTS idx_notes_paper ON notes(paper_id);
+        CREATE INDEX IF NOT EXISTS idx_library_folders_user ON library_folders(user_id, parent_id);
+        CREATE INDEX IF NOT EXISTS idx_library_items_folder ON library_items(user_id, folder_id);
         """
     )
     _ensure_paper_columns(conn)
+    ensure_user_library(conn, 1)
+    _migrate_legacy_favorites(conn)
     conn.commit()
 
 
@@ -137,7 +169,7 @@ def init_db(path: Path | str | None = None) -> None:
         init_schema(conn)
 
 
-def row_to_paper(row: sqlite3.Row) -> dict[str, Any]:
+def row_to_paper(row: sqlite3.Row, is_favorite: bool | None = None) -> dict[str, Any]:
     return {
         "id": row["id"],
         "arxiv_id": row["arxiv_id"],
@@ -158,7 +190,7 @@ def row_to_paper(row: sqlite3.Row) -> dict[str, Any]:
         "doi": row["doi"],
         "processing_status": row["processing_status"],
         "reading_status": row["reading_status"],
-        "is_favorite": bool(row["is_favorite"]),
+        "is_favorite": bool(row["is_favorite"]) if is_favorite is None else is_favorite,
         "created_at": row["created_at"],
     }
 
@@ -373,14 +405,20 @@ def list_papers(
     favorite: bool | None = None,
     limit: int = 50,
     offset: int = 0,
+    user_id: int = 1,
 ) -> list[dict[str, Any]]:
+    ensure_user_library(conn, user_id)
+    saved_ids = {
+        int(row["paper_id"])
+        for row in conn.execute("SELECT paper_id FROM library_items WHERE user_id = ?", (user_id,)).fetchall()
+    }
     rows = conn.execute("SELECT * FROM papers ORDER BY published_at DESC").fetchall()
     query = q.strip().lower()
     author_query = author.strip().lower()
     concept_query = concept.strip().lower()
     results: list[dict[str, Any]] = []
     for row in rows:
-        paper = row_to_paper(row)
+        paper = row_to_paper(row, int(row["id"]) in saved_ids)
         haystack = " ".join(
             [paper["title"], paper["abstract"], " ".join(paper["authors"]), " ".join(paper["categories"])]
         ).lower()
@@ -407,11 +445,15 @@ def list_papers(
     return results[offset : offset + limit]
 
 
-def get_paper_detail(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any] | None:
+def get_paper_detail(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM papers WHERE id = ?", (paper_id,)).fetchone()
     if row is None:
         return None
-    paper = row_to_paper(row)
+    saved = conn.execute(
+        "SELECT 1 FROM library_items WHERE user_id = ? AND paper_id = ?",
+        (user_id, paper_id),
+    ).fetchone() is not None
+    paper = row_to_paper(row, saved)
     sections = conn.execute(
         "SELECT section, title, content, updated_at FROM wiki_sections WHERE paper_id = ? ORDER BY id",
         (paper_id,),
@@ -436,20 +478,213 @@ def get_paper_detail(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any] 
     return paper
 
 
-def set_favorite(conn: sqlite3.Connection, paper_id: int, favorite: bool) -> dict[str, Any]:
-    cursor = conn.execute("UPDATE papers SET is_favorite = ? WHERE id = ?", (1 if favorite else 0, paper_id))
-    if cursor.rowcount == 0:
+def set_favorite(conn: sqlite3.Connection, paper_id: int, favorite: bool, user_id: int = 1) -> dict[str, Any]:
+    if conn.execute("SELECT 1 FROM papers WHERE id = ?", (paper_id,)).fetchone() is None:
         conn.rollback()
         raise ValueError("paper not found")
+    folders = ensure_user_library(conn, user_id)
+    if favorite:
+        conn.execute(
+            "INSERT OR IGNORE INTO library_items (user_id, paper_id, folder_id) VALUES (?, ?, ?)",
+            (user_id, paper_id, folders["inbox_id"]),
+        )
+    else:
+        conn.execute("DELETE FROM library_items WHERE user_id = ? AND paper_id = ?", (user_id, paper_id))
     conn.execute(
         "INSERT INTO reading_history (paper_id, action) VALUES (?, ?)",
         (paper_id, "收藏" if favorite else "取消收藏"),
     )
     conn.commit()
-    detail = get_paper_detail(conn, paper_id)
+    detail = get_paper_detail(conn, paper_id, user_id=user_id)
     if detail is None:
         raise ValueError("paper not found")
     return detail
+
+
+def ensure_user_library(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
+    conn.execute("INSERT OR IGNORE INTO users (id, name) VALUES (?, ?)", (user_id, f"用户 {user_id}"))
+    root = conn.execute(
+        "SELECT id FROM library_folders WHERE user_id = ? AND parent_id IS NULL AND is_system = 1",
+        (user_id,),
+    ).fetchone()
+    if root is None:
+        cursor = conn.execute(
+            "INSERT INTO library_folders (user_id, parent_id, name, description, is_system) VALUES (?, NULL, ?, ?, 1)",
+            (user_id, "我的资料库", "个人论文资料库根目录"),
+        )
+        root_id = int(cursor.lastrowid)
+    else:
+        root_id = int(root["id"])
+    inbox = conn.execute(
+        "SELECT id FROM library_folders WHERE user_id = ? AND parent_id = ? AND is_system = 1",
+        (user_id, root_id),
+    ).fetchone()
+    if inbox is None:
+        cursor = conn.execute(
+            "INSERT INTO library_folders (user_id, parent_id, name, description, is_system) VALUES (?, ?, ?, ?, 1)",
+            (user_id, root_id, "待整理", "新收藏的论文默认放在这里"),
+        )
+        inbox_id = int(cursor.lastrowid)
+    else:
+        inbox_id = int(inbox["id"])
+    return {"root_id": root_id, "inbox_id": inbox_id}
+
+
+def _migrate_legacy_favorites(conn: sqlite3.Connection) -> None:
+    folders = ensure_user_library(conn, 1)
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO library_items (user_id, paper_id, folder_id)
+        SELECT 1, id, ? FROM papers WHERE is_favorite = 1
+        """,
+        (folders["inbox_id"],),
+    )
+    conn.execute("UPDATE papers SET is_favorite = 0 WHERE is_favorite = 1")
+
+
+def list_library_folders(conn: sqlite3.Connection, user_id: int = 1) -> list[dict[str, Any]]:
+    defaults = ensure_user_library(conn, user_id)
+    rows = conn.execute(
+        """
+        SELECT f.*, COUNT(i.id) AS item_count
+        FROM library_folders f
+        LEFT JOIN library_items i ON i.folder_id = f.id AND i.user_id = f.user_id
+        WHERE f.user_id = ?
+        GROUP BY f.id
+        ORDER BY f.is_system DESC, lower(f.name), f.id
+        """,
+        (user_id,),
+    ).fetchall()
+    by_id = {int(row["id"]): row for row in rows}
+
+    def path_for(folder_id: int) -> str:
+        names: list[str] = []
+        current = by_id.get(folder_id)
+        seen: set[int] = set()
+        while current is not None and int(current["id"]) not in seen:
+            seen.add(int(current["id"]))
+            names.append(str(current["name"]))
+            current = by_id.get(int(current["parent_id"])) if current["parent_id"] is not None else None
+        return " / ".join(reversed(names))
+
+    payload = [
+        {
+            "id": int(row["id"]),
+            "parent_id": int(row["parent_id"]) if row["parent_id"] is not None else None,
+            "name": row["name"],
+            "description": row["description"],
+            "is_system": bool(row["is_system"]),
+            "item_count": int(row["item_count"]),
+            "path": path_for(int(row["id"])),
+            "is_root": int(row["id"]) == defaults["root_id"],
+        }
+        for row in rows
+    ]
+    children: dict[int | None, list[dict[str, Any]]] = {}
+    for folder in payload:
+        children.setdefault(folder["parent_id"], []).append(folder)
+    for entries in children.values():
+        entries.sort(key=lambda folder: (not folder["is_system"], folder["name"].casefold(), folder["id"]))
+    ordered: list[dict[str, Any]] = []
+
+    def visit(parent_id: int | None) -> None:
+        for folder in children.get(parent_id, []):
+            ordered.append(folder)
+            visit(folder["id"])
+
+    visit(None)
+    return ordered
+
+
+def create_library_folder(
+    conn: sqlite3.Connection,
+    name: str,
+    parent_id: int | None = None,
+    description: str = "",
+    user_id: int = 1,
+) -> dict[str, Any]:
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("folder name is required")
+    defaults = ensure_user_library(conn, user_id)
+    target_parent = parent_id or defaults["root_id"]
+    parent = conn.execute(
+        "SELECT id FROM library_folders WHERE id = ? AND user_id = ?",
+        (target_parent, user_id),
+    ).fetchone()
+    if parent is None:
+        raise ValueError("folder not found")
+    try:
+        cursor = conn.execute(
+            "INSERT INTO library_folders (user_id, parent_id, name, description) VALUES (?, ?, ?, ?)",
+            (user_id, target_parent, clean_name, description.strip()),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        raise ValueError("folder already exists") from exc
+    return next(folder for folder in list_library_folders(conn, user_id) if folder["id"] == cursor.lastrowid)
+
+
+def delete_library_folder(conn: sqlite3.Connection, folder_id: int, user_id: int = 1) -> None:
+    folder = conn.execute(
+        "SELECT is_system FROM library_folders WHERE id = ? AND user_id = ?",
+        (folder_id, user_id),
+    ).fetchone()
+    if folder is None:
+        raise ValueError("folder not found")
+    if folder["is_system"]:
+        raise ValueError("system folder cannot be deleted")
+    has_content = conn.execute(
+        "SELECT 1 FROM library_items WHERE folder_id = ? UNION SELECT 1 FROM library_folders WHERE parent_id = ? LIMIT 1",
+        (folder_id, folder_id),
+    ).fetchone()
+    if has_content is not None:
+        raise ValueError("folder is not empty")
+    conn.execute("DELETE FROM library_folders WHERE id = ? AND user_id = ?", (folder_id, user_id))
+    conn.commit()
+
+
+def list_library_items(conn: sqlite3.Connection, folder_id: int | None = None, user_id: int = 1) -> list[dict[str, Any]]:
+    ensure_user_library(conn, user_id)
+    params: list[Any] = [user_id]
+    where = "i.user_id = ?"
+    if folder_id is not None:
+        where += " AND i.folder_id = ?"
+        params.append(folder_id)
+    rows = conn.execute(
+        f"""
+        SELECT i.id AS library_item_id, i.folder_id, i.created_at AS saved_at, p.*
+        FROM library_items i JOIN papers p ON p.id = i.paper_id
+        WHERE {where}
+        ORDER BY i.updated_at DESC, i.id DESC
+        """,
+        params,
+    ).fetchall()
+    items = []
+    for row in rows:
+        paper = row_to_paper(row, True)
+        paper.update({"library_item_id": int(row["library_item_id"]), "folder_id": int(row["folder_id"]), "saved_at": row["saved_at"]})
+        items.append(paper)
+    return items
+
+
+def move_library_item(conn: sqlite3.Connection, item_id: int, folder_id: int, user_id: int = 1) -> dict[str, Any]:
+    folder = conn.execute(
+        "SELECT id FROM library_folders WHERE id = ? AND user_id = ?",
+        (folder_id, user_id),
+    ).fetchone()
+    if folder is None:
+        raise ValueError("folder not found")
+    cursor = conn.execute(
+        "UPDATE library_items SET folder_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+        (folder_id, item_id, user_id),
+    )
+    if cursor.rowcount == 0:
+        conn.rollback()
+        raise ValueError("library item not found")
+    conn.commit()
+    return next(item for item in list_library_items(conn, user_id=user_id) if item["library_item_id"] == item_id)
 
 
 def add_note(conn: sqlite3.Connection, paper_id: int, note: str, comment: str = "") -> dict[str, Any]:

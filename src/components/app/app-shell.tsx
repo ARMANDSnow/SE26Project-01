@@ -39,9 +39,10 @@ type NavItem = {
 const navItems: NavItem[] = [
   { path: "/", label: "仪表盘", description: "全局概览", icon: BarChart3 },
   { path: "/papers", label: "论文库", description: "检索与同步", icon: Library },
+  { path: "/library", label: "我的资料库", description: "收藏与目录", icon: BookMarked },
   { path: "/qa", label: "智能问答", description: "带出处回答", icon: MessageSquareText },
   { path: "/graph", label: "知识图谱", description: "概念网络", icon: Network },
-  { path: "/learning", label: "学习管理", description: "收藏与笔记", icon: BookMarked },
+  { path: "/learning", label: "学习管理", description: "历史与笔记", icon: BookMarked },
 ]
 
 function BrandLink() {
