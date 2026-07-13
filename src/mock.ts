@@ -98,10 +98,22 @@ export const mockSearchResults: WikiSearchResult[] = mockPapers.slice(0, 4).map(
 
 export const mockQa: QaResponse = {
   answer:
-    "基于当前论文 Wiki，可以得到以下结论：\n\n1. RAG 类论文通常通过检索论文片段约束回答范围。\n2. Evidence Grounding 要求答案返回论文标题、章节和相关内容。\n3. 结构化 Wiki 能将摘要、方法和实验结论变成可复用知识。",
-  citations: mockSearchResults,
+    "基于本次实际打开的证据，可以得到以下结论：\n\n1. [E1] RAG 类论文通常通过检索论文片段约束回答范围。\n2. [E2] Evidence Grounding 要求答案返回论文标题、章节和相关内容。\n3. [E3] 结构化 Wiki 能将摘要、方法和实验结论变成可复用知识。",
+  citations: mockSearchResults.slice(0, 3).map((item, index) => ({ ...item, evidence_id: `E${index + 1}` })),
   confidence: 0.82,
-  agent_trace: ["QAAgent", "HybridRetriever", "EvidenceValidator"]
+  agent_trace: ["QAAgent", "PaperRepositoryTools", "EvidenceAllowlist", "MockAnswerSynthesizer"],
+  execution: {
+    mode: "agentic_mock",
+    status: "completed",
+    stop_reason: "evidence_opened",
+    tool_call_count: 4,
+    steps: [
+      { index: 1, kind: "tool", tool: "search_text", result_count: 4, evidence_ids: [], note: "本地确定性检索" },
+      { index: 2, kind: "tool", tool: "open_evidence", result_count: 1, evidence_ids: ["E1"], note: mockPapers[0].title },
+      { index: 3, kind: "tool", tool: "open_evidence", result_count: 1, evidence_ids: ["E2"], note: mockPapers[1].title },
+      { index: 4, kind: "tool", tool: "open_evidence", result_count: 1, evidence_ids: ["E3"], note: mockPapers[2].title },
+    ]
+  }
 };
 
 export const mockHistory: HistoryItem[] = mockPapers.slice(0, 6).map((paper, index) => ({

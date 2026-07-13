@@ -85,6 +85,7 @@ export type Subscription = {
 
 export type WikiSearchResult = {
   id: number;
+  evidence_id?: string;
   chunk_id?: number;
   paper_id: number;
   paper_title: string;
@@ -106,11 +107,29 @@ export type WikiSearchResult = {
   token_count?: number;
 };
 
+export type QaExecutionStep = {
+  index: number;
+  kind: "tool" | string;
+  tool: string;
+  result_count: number;
+  evidence_ids: string[];
+  note: string;
+};
+
+export type QaExecution = {
+  mode: "agentic_real" | "agentic_mock" | "classic" | string;
+  status: "completed" | "fallback" | "failed" | string;
+  stop_reason: string;
+  tool_call_count: number;
+  steps: QaExecutionStep[];
+};
+
 export type QaResponse = {
   answer: string;
   citations: WikiSearchResult[];
   confidence: number;
   agent_trace: string[];
+  execution?: QaExecution;
 };
 
 export type GraphNode = {

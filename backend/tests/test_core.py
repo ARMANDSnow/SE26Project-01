@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from backend.app.config import get_settings
 from backend.app.database import (
     add_note,
+    attach_concepts,
     connect,
     get_paper_detail,
     init_schema,
@@ -23,6 +24,7 @@ from backend.app.seed_data import seed_database
 from backend.app.services import fulltext, search as search_module
 from backend.app.services.agents import process_paper
 from backend.app.services.fulltext import FullTextDocument, chunk_document
+from backend.app.services.llm import LLMProviderError
 from backend.app.services.search import answer_question, build_graph, search_wiki
 
 
@@ -233,6 +235,70 @@ def test_replace_paper_chunks_falls_back_when_fts_sync_fails(monkeypatch):
     assert chunks[0]["content"] == "iter03fallback chunk"
     assert not paper_chunks_fts_ready(conn)
     assert search_wiki(conn, "iter03fallback", limit=3)[0]["source"] == "chunk"
+
+
+def test_chunk_constraint_error_keeps_healthy_fts_index():
+    conn = memory_db()
+    if not paper_chunks_fts_ready(conn):
+        pytest.skip("SQLite FTS5 is not available")
+    paper_id = conn.execute("SELECT id FROM papers LIMIT 1").fetchone()["id"]
+
+    with pytest.raises(sqlite3.IntegrityError):
+        replace_paper_chunks(
+            conn,
+            paper_id,
+            [
+                {"chunk_index": 0, "source_type": "metadata", "content": "first duplicate", "token_count": 2},
+                {"chunk_index": 0, "source_type": "metadata", "content": "second duplicate", "token_count": 2},
+            ],
+        )
+
+    assert paper_chunks_fts_ready(conn)
+
+
+def test_attach_concepts_replaces_stale_paper_associations():
+    conn = memory_db()
+    paper_id = conn.execute("SELECT id FROM papers LIMIT 1").fetchone()["id"]
+    attach_concepts(conn, paper_id, [{"name": "iter04 OLD", "description": "old"}])
+    attach_concepts(conn, paper_id, [{"name": "iter04 NEW", "description": "new"}])
+
+    names = [
+        row["name"]
+        for row in conn.execute(
+            """
+            SELECT c.name FROM concepts c
+            JOIN paper_concepts pc ON pc.concept_id = c.id
+            WHERE pc.paper_id = ?
+            """,
+            (paper_id,),
+        ).fetchall()
+    ]
+    assert names == ["iter04 NEW"]
+    assert conn.execute("SELECT id FROM concepts WHERE name = 'iter04 OLD'").fetchone() is None
+
+
+def test_attach_concepts_rebuilds_stale_shared_concept_edges():
+    conn = memory_db()
+    paper_ids = [row["id"] for row in conn.execute("SELECT id FROM papers ORDER BY id LIMIT 3").fetchall()]
+    attach_concepts(conn, paper_ids[0], [{"name": "EDGE X"}, {"name": "EDGE Y"}])
+    attach_concepts(conn, paper_ids[1], [{"name": "EDGE X"}])
+    attach_concepts(conn, paper_ids[2], [{"name": "EDGE Y"}])
+    attach_concepts(conn, paper_ids[0], [{"name": "EDGE X"}, {"name": "EDGE Z"}])
+
+    pairs = {
+        (row["source"], row["target"])
+        for row in conn.execute(
+            """
+            SELECT source.name AS source, target.name AS target
+            FROM concept_edges edge
+            JOIN concepts source ON source.id = edge.source_concept_id
+            JOIN concepts target ON target.id = edge.target_concept_id
+            WHERE source.name LIKE 'EDGE %' OR target.name LIKE 'EDGE %'
+            """
+        ).fetchall()
+    }
+    assert ("EDGE X", "EDGE Y") not in pairs
+    assert ("EDGE X", "EDGE Z") in pairs
 
 
 def test_delete_paper_cascades_chunk_fts_rows():
@@ -521,7 +587,10 @@ def test_api_search_and_qa_keep_chunk_citation_shape(api_client):
 
     qa_response = api_client.post("/api/qa", json={"question": "RAG", "paper_ids": []})
     assert qa_response.status_code == 200
-    citation = next(item for item in qa_response.json()["citations"] if item.get("source") == "chunk")
+    qa_data = qa_response.json()
+    assert qa_data["execution"]["mode"] == "agentic_mock"
+    assert qa_data["execution"]["tool_call_count"] >= 2
+    citation = next(item for item in qa_data["citations"] if item.get("source") == "chunk")
     for field in ["id", "chunk_id", "source", "source_type", "chunk_index", "char_start", "char_end", "token_count"]:
         assert field in citation
 
@@ -540,6 +609,62 @@ def test_api_subscriptions_list_and_create(api_client):
     assert response.json()["topic"] == "可信 RAG"
     topics = [item["topic"] for item in api_client.get("/api/subscriptions").json()["items"]]
     assert "可信 RAG" in topics
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/qa", {"question": "   "}),
+        ("/api/subscriptions", {"topic": "   "}),
+        ("/api/notes", {"paper_id": 1, "note": "   "}),
+    ],
+)
+def test_api_rejects_blank_text_inputs(api_client, path, payload):
+    response = api_client.post(path, json=payload)
+    assert response.status_code == 422
+
+
+def test_api_qa_deduplicates_and_validates_paper_scope(api_client):
+    paper_id = api_client.get("/api/papers?limit=1").json()["items"][0]["id"]
+    response = api_client.post(
+        "/api/qa",
+        json={"question": "Evidence Grounding", "paper_ids": [paper_id, paper_id]},
+    )
+    assert response.status_code == 200
+    assert all(item["paper_id"] == paper_id for item in response.json()["citations"])
+
+    invalid = api_client.post("/api/qa", json={"question": "test", "paper_ids": [0]})
+    assert invalid.status_code == 422
+    for invalid_id in [True, 1.0, "1"]:
+        invalid_type = api_client.post("/api/qa", json={"question": "test", "paper_ids": [invalid_id]})
+        assert invalid_type.status_code == 422
+
+
+def test_api_real_provider_failure_is_explicit_and_sanitized(api_client, monkeypatch):
+    def failed_agent(*args, **kwargs):
+        raise LLMProviderError("provider_http_401")
+
+    monkeypatch.setattr("backend.app.main.run_qa_agent", failed_agent)
+    response = api_client.post("/api/qa", json={"question": "real path"})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == {"code": "llm_provider_error", "reason": "provider_http_401"}
+
+
+def test_api_process_provider_failure_is_explicit_and_sanitized(api_client, monkeypatch):
+    class FailedClient:
+        settings = type("Settings", (), {"should_use_mock_llm": False})()
+
+        def complete(self, system_prompt, user_prompt):
+            raise LLMProviderError("provider_http_429")
+
+    monkeypatch.setattr("backend.app.services.agents.LLMClient", FailedClient)
+    papers = api_client.get("/api/papers?limit=100").json()["items"]
+    pending_id = next(item["id"] for item in papers if item["processing_status"] == "pending")
+    response = api_client.post(f"/api/papers/{pending_id}/process")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == {"code": "llm_provider_error", "reason": "provider_http_429"}
 
 
 def test_seed_qa_citation_accuracy_baseline():

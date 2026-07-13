@@ -6,7 +6,7 @@ import sqlite3
 from typing import Any
 
 from ..database import paper_chunks_fts_ready
-from .llm import LLMClient
+from .llm import LLMClient, LLMProviderError
 from .text_utils import cosine_similarity, deterministic_embedding, keyword_score, normalize_text, tokenize
 
 
@@ -283,6 +283,8 @@ def synthesize_answer(question: str, evidence: list[dict[str, Any]]) -> str | No
             "你是科研论文问答助手。只能基于给定证据回答，必须在回答中说明依据来自哪些论文或章节。",
             f"问题：{question}\n\n证据：\n{evidence_text}\n\n请用中文给出简洁答案，并保留论文出处。",
         ).strip()
+    except LLMProviderError:
+        raise
     except Exception:
         return None
     return answer or None

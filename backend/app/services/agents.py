@@ -7,7 +7,7 @@ from typing import Any
 
 from ..database import attach_concepts, get_paper_detail, replace_paper_chunks, replace_wiki_sections
 from .fulltext import chunk_excerpt, chunks_for_paper
-from .llm import LLMClient
+from .llm import LLMClient, LLMProviderError
 
 
 class ReaderAgent:
@@ -98,6 +98,8 @@ class SummaryAgent:
                 prompt,
             )
             payload = _parse_json_object(raw)
+        except LLMProviderError:
+            raise
         except Exception:
             return {}, []
         sections = payload.get("sections", {})

@@ -464,6 +464,10 @@ def replace_paper_chunks(
     conn.execute(f"SAVEPOINT {savepoint}")
     try:
         _replace_paper_chunks(conn, paper_id, chunks, sync_fts=fts_ready)
+    except sqlite3.IntegrityError:
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
+        raise
     except sqlite3.Error:
         conn.execute(f"ROLLBACK TO {savepoint}")
         conn.execute(f"RELEASE {savepoint}")
@@ -568,6 +572,7 @@ def attach_concepts(
     commit: bool = True,
 ) -> None:
     cleaned_concepts = [concept for concept in concepts if concept.get("name", "").strip()]
+    conn.execute("DELETE FROM paper_concepts WHERE paper_id = ?", (paper_id,))
     for concept in cleaned_concepts:
         name = concept["name"].strip()
         description = concept.get("description", f"{name} 相关概念")
@@ -595,18 +600,33 @@ def attach_concepts(
                 float(concept.get("weight", 1.0)),
             ),
         )
-    for left, right in zip(cleaned_concepts, cleaned_concepts[1:]):
-        left_id = conn.execute("SELECT id FROM concepts WHERE name = ?", (left["name"],)).fetchone()["id"]
-        right_id = conn.execute("SELECT id FROM concepts WHERE name = ?", (right["name"],)).fetchone()["id"]
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO concept_edges (source_concept_id, target_concept_id, relation, weight)
-            VALUES (?, ?, ?, ?)
-            """,
-            (left_id, right_id, "共同出现在论文中", 0.75),
-        )
+    conn.execute(
+        "DELETE FROM concepts WHERE NOT EXISTS (SELECT 1 FROM paper_concepts pc WHERE pc.concept_id = concepts.id)"
+    )
+    rebuild_concept_edges(conn)
     if commit:
         conn.commit()
+
+
+def rebuild_concept_edges(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM concept_edges")
+    rows = conn.execute(
+        "SELECT paper_id, concept_id FROM paper_concepts ORDER BY paper_id, concept_id"
+    ).fetchall()
+    by_paper: dict[int, list[int]] = {}
+    for row in rows:
+        by_paper.setdefault(int(row["paper_id"]), []).append(int(row["concept_id"]))
+    for concept_ids in by_paper.values():
+        for index, source_id in enumerate(concept_ids):
+            for target_id in concept_ids[index + 1 :]:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO concept_edges (
+                        source_concept_id, target_concept_id, relation, weight
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (source_id, target_id, "共同出现在论文中", 0.75),
+                )
 
 
 def list_papers(

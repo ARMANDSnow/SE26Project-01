@@ -105,7 +105,7 @@ export async function askQuestion(question: string, paperIds: number[] = []): Pr
   }
   return request<QaResponse>("/api/qa", {
     method: "POST",
-    body: JSON.stringify({ question, paper_ids: paperIds })
+    body: JSON.stringify({ question, paper_ids: paperIds, mode: "agentic" })
   });
 }
 

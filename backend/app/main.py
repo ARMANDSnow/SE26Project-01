@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import sqlite3
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from .config import get_settings
 from .database import (
@@ -26,10 +27,18 @@ from .database import (
 )
 from .services.agents import process_paper
 from .services.arxiv_client import fetch_arxiv_papers
-from .services.search import answer_question, build_graph, search_wiki
+from .services.llm import LLMProviderError
+from .services.qa_agent import run_qa_agent
+from .services.search import build_graph, search_wiki
 
 
-app = FastAPI(title="arXiv 智能论文阅读工具 API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="arXiv 智能论文阅读工具 API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -50,24 +59,32 @@ class FavoriteRequest(BaseModel):
     favorite: bool = True
 
 
+NoteText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=8_000)]
+TopicText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
+QuestionText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2_000)]
+
+
 class NoteRequest(BaseModel):
     paper_id: int
-    note: str = Field(min_length=1)
-    comment: str = ""
+    note: NoteText
+    comment: Annotated[str, StringConstraints(strip_whitespace=True, max_length=4_000)] = ""
 
 
 class SubscriptionRequest(BaseModel):
-    topic: str = Field(min_length=1)
+    topic: TopicText
 
 
 class QARequest(BaseModel):
-    question: str = Field(min_length=1)
-    paper_ids: list[int] = Field(default_factory=list)
+    question: QuestionText
+    paper_ids: list[int] = Field(default_factory=list, max_length=20)
+    mode: Literal["agentic", "classic"] = "agentic"
 
-
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
+    @field_validator("paper_ids", mode="before")
+    @classmethod
+    def validate_paper_ids(cls, value: Any) -> list[int]:
+        if not isinstance(value, list) or any(type(item) is not int or item <= 0 for item in value):
+            raise ValueError("paper_ids must contain positive integers")
+        return list(dict.fromkeys(value))
 
 
 @app.get("/api/health")
@@ -175,6 +192,11 @@ def process(paper_id: int) -> Any:
     with connect() as conn:
         try:
             result = process_paper(conn, paper_id)
+        except LLMProviderError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={"code": "llm_provider_error", "reason": str(exc)},
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="论文不存在") from exc
     if result.get("status") == "failed":
@@ -198,7 +220,13 @@ def graph(topic: str = "", limit: int = Query(default=42, ge=8, le=80)) -> dict[
 @app.post("/api/qa")
 def qa(payload: QARequest) -> dict[str, Any]:
     with connect() as conn:
-        return answer_question(conn, payload.question, payload.paper_ids or None)
+        try:
+            return run_qa_agent(conn, payload.question, payload.paper_ids or None, mode=payload.mode)
+        except LLMProviderError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={"code": "llm_provider_error", "reason": str(exc)},
+            ) from exc
 
 
 @app.post("/api/library/favorites")
