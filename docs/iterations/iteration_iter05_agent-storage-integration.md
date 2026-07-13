@@ -54,7 +54,40 @@
 - 2026-07-13：自动 merge-tree 演练报告 16 个冲突文件；真实工作区未被改动。
 - 2026-07-13：用户批准删除 mock、不做数据库兼容迁移，并以本地存储方案覆盖旧存储。
 - 2026-07-13：Windows 用户环境已设置 DeepSeek API key、基址和 `deepseek-v4-flash`，未输出密钥。
+- 2026-07-13：完成真实 merge，以新存储为基线适配 PaperDocument Chunk、FTS5、Agent 工具/编排和前端 execution trace。
+- 2026-07-13：删除根应用 seed/mock 与页面自动提问；真实 smoke 保持显式 opt-in。
 
 ## Closeout
 
-待 `iter-finish` 填写。
+### Summary
+
+- 将 `origin/main` 的 6 个团队提交合入当前 feature branch；`UIPrototype/` 交付物原样保留。
+- 以 `source + source_id`、AssetStore、PaperDocument 和 `source_hash` 为唯一数据链路，不保留旧 schema 迁移或 metadata 正文 fallback。
+- 完成 PaperDocument -> Chunk -> FTS5 -> Agent 工具链路；PDF hash 变化时会失效全部旧派生知识。
+- QA 默认真实 agentic，保留显式 classic；删除 mock/seed、自动提问与性能 smoke 中的付费调用。
+- LLM 客户端使用环境变量、清洗 provider 错误、瞬时错误重试和 Agent 剩余 wall-clock timeout。
+
+### Validation
+
+- `.\\.venv\\Scripts\\python.exe -m pytest backend\\tests --basetemp=.codex-tmp\\pytest-merge-4 -p no:cacheprovider`：47 passed。
+- `.\\.venv\\Scripts\\python.exe -m mypy`：9 个项目配置模块通过。
+- 扩展 mypy（config/main/Agent/LLM/search 等 9 个合并核心模块）：通过。
+- `npm run build`：TypeScript 检查和 Vite 生产构建通过；仅有已知 bundle size warning。
+- `scripts/performance_smoke.py --requests 100 --workers 100 --threshold 3.0`：0 failures，p95 `0.4087s`，max `0.4165s`。
+- `git diff --check -- . ':!UIPrototype/**'`：业务代码与文档通过；远端 `UIPrototype/` 原始交付物保留 2 处已存在空白警告，本轮不改写团队交付物。
+- `scripts/real_agent_smoke.py`：未运行；该命令需 `RUN_REAL_LLM_TESTS=true` 并会产生真实网络/付费调用。
+
+### Review
+
+- 正确性：回归覆盖当前 hash Chunk、资产变化失效、FTS/Agent scope、引用白名单、元数据无 fallback 和 API 输入限制。
+- 安全：Agent 不暴露本地路径；API key 不从文件读取、不写日志、不进 Git；provider 错误不返回 body。
+- 集成：后端 Chunk/QA 契约已同步 TypeScript types、API 和 React Query；根应用 mock 文件已删除。
+- 运维：默认测试、页面加载和性能 smoke 都不会调用真实模型。无阻断 finding。
+
+### Follow-ups
+
+- 用真实论文 gold set 评估检索/引用质量，而不是将当前确定性 embedding 视为真实语义检索。
+- 将 PDF/Docling/Chunk 长任务移入任务队列，并增加 Playwright 工作台/Agent QA 端到端覆盖。
+- 真实 provider 的 read-side 连接重置、`Retry-After` 和更完整重试矩阵仍可增强。
+
+提交信息：`merge(iter05): integrate agent QA with paper asset storage`

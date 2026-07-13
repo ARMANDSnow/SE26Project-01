@@ -67,6 +67,19 @@ export type PaperDocument = {
   updated_at?: string;
 };
 
+export type PaperChunk = {
+  id: number;
+  paper_id: number;
+  source_hash: string;
+  chunk_index: number;
+  heading: string;
+  content: string;
+  char_start: number;
+  char_end: number;
+  token_count: number;
+  created_at: string;
+};
+
 export type PaperSummary = {
   id: number;
   paper_id?: number;
@@ -138,6 +151,33 @@ export type WikiSearchResult = {
   section_title: string;
   content: string;
   score: number;
+  evidence_id?: string;
+  chunk_id?: number;
+  chunk_index?: number;
+  paper_source?: string;
+  source_type?: string;
+  pdf_view_url?: string;
+  source_hash?: string;
+  char_start?: number;
+  char_end?: number;
+  token_count?: number;
+};
+
+export type QaExecutionStep = {
+  index: number;
+  kind: "tool" | string;
+  tool: string;
+  result_count: number;
+  evidence_ids: string[];
+  note: string;
+};
+
+export type QaExecution = {
+  mode: "agentic_real" | "classic" | string;
+  status: "completed" | "fallback" | "failed" | string;
+  stop_reason: string;
+  tool_call_count: number;
+  steps: QaExecutionStep[];
 };
 
 export type QaResponse = {
@@ -145,6 +185,7 @@ export type QaResponse = {
   citations: WikiSearchResult[];
   confidence: number;
   agent_trace: string[];
+  execution?: QaExecution;
 };
 
 export type GraphNode = {

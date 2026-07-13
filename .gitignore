@@ -3,6 +3,7 @@ node_modules/
 dist/
 output/
 *.tsbuildinfo
+.codex-tmp/
 backend/data/*.sqlite3
 backend/data/*.sqlite3-*
 backend/data/uploads/
@@ -11,4 +12,6 @@ __pycache__/
 .playwright-cli/
 .DS_Store
 .env
+.env.*
+!.env.example
 apikey.txt

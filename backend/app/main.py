@@ -5,13 +5,13 @@ import json
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator, Iterator, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .config import get_settings
 from .models import PaperCandidate, PaperSource
@@ -27,6 +27,7 @@ from .database import (
     init_db,
     list_library_folders,
     list_library_items,
+    list_paper_chunks,
     list_papers,
     move_library_item,
     set_favorite,
@@ -37,7 +38,8 @@ from .services.agents import process_paper
 from .services.asset_store import AssetStoreError
 from .services.pdf_import import save_and_extract_pdf
 from .services.llm import LLMConfigurationError, LLMServiceError
-from .services.search import answer_question, build_graph, search_wiki
+from .services.qa_agent import run_qa_agent
+from .services.search import build_graph, search_wiki
 from .services.library import recommend_folder
 from .services.remote_pdf import PaperPdfService, RemotePdfError, default_asset_store
 from .services.sources import fetch_arxiv_papers, fetch_sigops_papers, fetch_usenix_papers
@@ -55,7 +57,7 @@ from .services.conversations import (
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     init_db()
     yield
 
@@ -90,17 +92,33 @@ class FavoriteRequest(BaseModel):
 
 class NoteRequest(BaseModel):
     paper_id: int
-    note: str = Field(min_length=1)
-    comment: str = ""
+    note: str = Field(min_length=1, max_length=20_000)
+    comment: str = Field(default="", max_length=2_000)
 
 
 class SubscriptionRequest(BaseModel):
-    topic: str = Field(min_length=1)
+    topic: str = Field(min_length=1, max_length=120)
 
 
 class QARequest(BaseModel):
-    question: str = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=2_000)
     paper_ids: list[int] = Field(default_factory=list)
+    mode: Literal["agentic", "classic"] = "agentic"
+
+    @field_validator("question")
+    @classmethod
+    def validate_question(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("question must not be blank")
+        return cleaned
+
+    @field_validator("paper_ids")
+    @classmethod
+    def validate_paper_ids(cls, value: list[int]) -> list[int]:
+        if len(value) > 20 or any(item <= 0 for item in value):
+            raise ValueError("paper_ids must contain at most 20 positive IDs")
+        return list(dict.fromkeys(value))
 
 
 class FolderRequest(BaseModel):
@@ -261,6 +279,8 @@ def upload_paper(
     with connect() as conn:
         paper_id = upsert_paper(conn, paper)
         detail = get_paper_detail(conn, paper_id)
+    if detail is None:
+        raise HTTPException(status_code=500, detail="论文入库后无法读取")
     return detail
 
 
@@ -290,6 +310,19 @@ def paper_detail(paper_id: int, x_user_id: int = Header(default=1)) -> dict[str,
     if detail is None:
         raise HTTPException(status_code=404, detail="论文不存在")
     return detail
+
+
+@app.get("/api/papers/{paper_id}/chunks")
+def paper_chunks(
+    paper_id: int,
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    with connect() as conn:
+        if get_paper_detail(conn, paper_id) is None:
+            raise HTTPException(status_code=404, detail="论文不存在")
+        items, total = list_paper_chunks(conn, paper_id, limit=limit, offset=offset)
+    return {"items": items, "count": len(items), "total": total}
 
 
 PDF_CACHE_CONTROL = "private, max-age=3600, must-revalidate"
@@ -358,6 +391,8 @@ def download_paper_pdf(paper_id: int) -> Response:
 
 @app.post("/api/papers/{paper_id}/process")
 def process(paper_id: int) -> Any:
+    if not get_settings().llm_available:
+        raise HTTPException(status_code=503, detail="LLM 未配置")
     with connect() as conn:
         try:
             result = process_paper(conn, paper_id)
@@ -367,6 +402,8 @@ def process(paper_id: int) -> Any:
             raise HTTPException(status_code=503, detail=f"LLM 未配置：{exc}") from exc
         except LLMServiceError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     if result.get("status") == "failed":
         return JSONResponse(status_code=422, content=result)
     return result
@@ -467,7 +504,7 @@ def start_chat_run(payload: ChatRunRequest, x_user_id: int = Header(default=1)) 
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    def event_stream():
+    def event_stream() -> Iterator[str]:
         with connect() as stream_conn:
             for event, data in stream_run(stream_conn, run):
                 yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -496,7 +533,21 @@ def graph(topic: str = "", limit: int = Query(default=42, ge=8, le=80)) -> dict[
 def qa(payload: QARequest) -> dict[str, Any]:
     with connect() as conn:
         try:
-            return answer_question(conn, payload.question, payload.paper_ids or None)
+            if payload.paper_ids:
+                placeholders = ",".join("?" for _ in payload.paper_ids)
+                found = {
+                    int(row["id"])
+                    for row in conn.execute(
+                        f"SELECT id FROM papers WHERE id IN ({placeholders})",
+                        tuple(payload.paper_ids),
+                    ).fetchall()
+                }
+                missing = [item for item in payload.paper_ids if item not in found]
+                if missing:
+                    raise HTTPException(status_code=404, detail=f"论文不存在：{missing}")
+            return run_qa_agent(conn, payload.question, payload.paper_ids or None, mode=payload.mode)
+        except HTTPException:
+            raise
         except LLMConfigurationError as exc:
             raise HTTPException(status_code=503, detail=f"LLM 未配置：{exc}") from exc
         except LLMServiceError as exc:

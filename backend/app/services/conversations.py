@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 from ..config import get_settings
@@ -248,7 +248,7 @@ def build_model_messages(conn: sqlite3.Connection, run: dict[str, Any]) -> list[
     return model_messages
 
 
-def stream_run(conn: sqlite3.Connection, run: dict[str, Any]):
+def stream_run(conn: sqlite3.Connection, run: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
     messages = build_model_messages(conn, run)
     accumulated = ""
     completed = False

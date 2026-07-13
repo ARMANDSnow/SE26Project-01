@@ -1,4 +1,4 @@
-import type { ChatMessageRepository, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperDocument, PaperSummary, QaResponse, Stats, Subscription, WikiSearchResult } from "./types";
+import type { ChatMessageRepository, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, Stats, Subscription, WikiSearchResult } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -32,6 +32,11 @@ export async function fetchPapers(params: Record<string, string | boolean | numb
 
 export async function fetchPaperDetail(id: number): Promise<Paper> {
   return request<Paper>(`/api/papers/${id}`);
+}
+
+export async function fetchPaperChunks(id: number): Promise<PaperChunk[]> {
+  const data = await request<{ items: PaperChunk[] }>(`/api/papers/${id}/chunks?limit=200`)
+  return data.items
 }
 
 export async function processPaper(id: number): Promise<Paper> {
@@ -101,10 +106,10 @@ export async function searchWiki(q: string): Promise<WikiSearchResult[]> {
   return data.items;
 }
 
-export async function askQuestion(question: string, paperIds: number[] = []): Promise<QaResponse> {
+export async function askQuestion(question: string, paperIds: number[] = [], mode: "agentic" | "classic" = "agentic"): Promise<QaResponse> {
   return request<QaResponse>("/api/qa", {
     method: "POST",
-    body: JSON.stringify({ question, paper_ids: paperIds })
+    body: JSON.stringify({ question, paper_ids: paperIds, mode })
   });
 }
 

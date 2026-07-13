@@ -5,7 +5,8 @@ import re
 import sqlite3
 from typing import Any
 
-from ..database import attach_concepts, get_paper_detail, replace_wiki_sections
+from ..database import attach_concepts, get_paper_detail, get_paper_record, replace_wiki_sections
+from .documents import get_paper_document, parse_paper_document
 from .llm import LLMClient, LLMConfigurationError, LLMServiceError
 
 
@@ -13,11 +14,13 @@ class ReaderAgent:
     name = "ReaderAgent"
 
     def read(self, paper: dict[str, Any]) -> dict[str, str]:
+        document = paper.get("document") or {}
         return {
             "title": paper["title"],
             "abstract": paper["abstract"],
             "authors": ", ".join(paper["authors"]),
             "categories": ", ".join(paper["categories"]),
+            "content": str(document.get("content_markdown") or "")[:80_000],
         }
 
 
@@ -33,17 +36,18 @@ class SummaryAgent:
         reading: dict[str, str],
     ) -> tuple[dict[str, str], list[dict[str, Any]]]:
         prompt = (
-            "请阅读下面的论文元数据和摘要，生成可沉淀到论文 Wiki 的结构化 JSON。"
+            "请阅读下面的论文正文，生成可沉淀到论文 Wiki 的结构化 JSON。"
             "只返回 JSON，不要返回 Markdown 代码块。JSON schema: "
             '{"sections":{"summary":"# 摘要\\n\\n...","concepts":"# 核心概念\\n\\n...",'
             '"methods":"# 方法\\n\\n...","experiments":"# 实验结论\\n\\n..."},'
             '"concepts":[{"name":"概念名","description":"解释","relation":"关系","weight":0.8}]}'
-            f"\n\n标题：{reading['title']}\n作者：{reading['authors']}\n分类：{reading['categories']}\n摘要：{reading['abstract']}"
+            f"\n\n标题：{reading['title']}\n作者：{reading['authors']}\n分类：{reading['categories']}"
+            f"\n摘要：{reading['abstract']}\n\n已解析正文：\n{reading['content']}"
         )
         try:
             payload = _parse_json_object(
                 client.complete(
-                    "你是科研论文阅读助手。必须输出可解析 JSON，并确保内容可追溯到给定论文摘要。",
+                    "你是科研论文阅读助手。必须输出可解析 JSON，并确保内容可追溯到给定论文正文。",
                     prompt,
                     json_mode=True,
                 )
@@ -117,9 +121,23 @@ def process_paper(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any]:
     if paper is None:
         raise ValueError("paper not found")
     try:
+        record = get_paper_record(conn, paper_id)
+        document = get_paper_document(conn, paper_id)
+        expected_hash = str(record.asset_id).removeprefix("sha256:") if record and record.asset_id else None
+        if (
+            document is None
+            or document.get("status") != "completed"
+            or document.get("source_hash") != expected_hash
+        ):
+            parse_paper_document(conn, paper_id)
+            paper = get_paper_detail(conn, paper_id)
+            if paper is None:
+                raise ValueError("paper not found")
         reading = ReaderAgent().read(paper)
+        if not reading["content"].strip():
+            raise LLMServiceError("论文正文解析结果为空")
         sections, concepts = SummaryAgent().summarize(reading)
-    except (LLMConfigurationError, LLMServiceError):
+    except (LLMConfigurationError, LLMServiceError, RuntimeError):
         conn.execute("UPDATE papers SET processing_status = 'failed' WHERE id = ?", (paper_id,))
         conn.commit()
         raise

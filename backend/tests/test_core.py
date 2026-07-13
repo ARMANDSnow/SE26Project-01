@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
 from backend.app.config import get_settings
-from backend.app.database import add_note, connect, get_paper_detail, init_db, init_schema, list_papers, set_favorite, upsert_paper
+from backend.app.database import add_note, connect, get_paper_detail, init_db, init_schema, list_paper_chunks, list_papers, set_favorite, set_paper_asset_id, upsert_paper
 from backend.app.main import app
 from backend.app.models import AssetId, AssetInfo, PaperCandidate, PaperSource
 from backend.app.services.agents import SummaryAgent, process_paper
@@ -41,7 +41,6 @@ def api_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.sqlite3"))
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("LLM_API_KEY", "")
-    monkeypatch.setenv("LLM_API_KEY_FILE", str(tmp_path / "missing-api-key.txt"))
     get_settings.cache_clear()
     with TestClient(app) as client:
         with connect() as conn:
@@ -79,11 +78,14 @@ def test_local_asset_store_deduplicates_pdf_content(tmp_path):
     assert len(list((tmp_path / "assets" / "blobs").rglob("*.pdf"))) == 1
 
 
-def test_config_reads_key_from_explicit_file(tmp_path, monkeypatch):
+def test_config_reads_key_only_from_environment(tmp_path, monkeypatch):
     key_path = tmp_path / "api-key.txt"
     key_path.write_text("test-key\n", encoding="utf-8")
     monkeypatch.setenv("LLM_API_KEY", "")
     monkeypatch.setenv("LLM_API_KEY_FILE", str(key_path))
+    get_settings.cache_clear()
+    assert get_settings().llm_available is False
+    monkeypatch.setenv("LLM_API_KEY", "environment-key")
     get_settings.cache_clear()
     assert get_settings().llm_available is True
     assert get_settings().llm_chat_model == "deepseek-v4-flash"
@@ -113,6 +115,21 @@ def test_process_paper_generates_required_wiki_sections(monkeypatch):
         )
 
     monkeypatch.setattr(SummaryAgent, "summarize", summarize)
+
+    def parse_document(conn, paper_id):
+        conn.execute(
+            """
+            INSERT INTO paper_documents(
+                paper_id, parser_name, parser_version, source_hash,
+                content_markdown, token_count, status, parsed_at
+            ) VALUES (?, 'test-parser', '1', ?, ?, 20, 'completed', CURRENT_TIMESTAMP)
+            """,
+            (paper_id, "b" * 64, "# Test paper\n\nA complete parsed document used by the unit test."),
+        )
+        conn.commit()
+        return {"status": "completed"}
+
+    monkeypatch.setattr("backend.app.services.agents.parse_paper_document", parse_document)
     result = process_paper(conn, pending)
     assert result["status"] == "processed"
     detail = get_paper_detail(conn, pending)
@@ -125,9 +142,34 @@ def test_search_uses_real_keywords_only():
     assert search_wiki(conn, "definitely-no-such-topic", limit=5) == []
 
 
+def test_chunks_and_derived_knowledge_are_invalidated_when_pdf_asset_changes():
+    conn = memory_db()
+    paper_id = conn.execute("SELECT id FROM papers WHERE processing_status = 'processed' LIMIT 1").fetchone()["id"]
+    assert list_paper_chunks(conn, paper_id)[1] > 0
+    assert conn.execute("SELECT COUNT(*) FROM wiki_sections WHERE paper_id = ?", (paper_id,)).fetchone()[0] > 0
+
+    set_paper_asset_id(conn, paper_id, AssetId(f"sha256:{'c' * 64}"))
+
+    assert list_paper_chunks(conn, paper_id) == ([], 0)
+    assert conn.execute("SELECT 1 FROM paper_documents WHERE paper_id = ?", (paper_id,)).fetchone() is None
+    assert conn.execute("SELECT 1 FROM wiki_sections WHERE paper_id = ?", (paper_id,)).fetchone() is None
+    assert conn.execute("SELECT 1 FROM paper_concepts WHERE paper_id = ?", (paper_id,)).fetchone() is None
+
+
+def test_classic_qa_does_not_fall_back_to_unparsed_metadata():
+    conn = memory_db()
+    paper_id = conn.execute("SELECT id FROM papers WHERE processing_status = 'pending'").fetchone()["id"]
+    result = answer_question(conn, "Pending Paper", [paper_id])
+    assert result["citations"] == []
+    assert "已解析" in result["answer"]
+
+
 def test_qa_uses_explicit_test_double(monkeypatch):
     conn = memory_db()
-    monkeypatch.setattr("backend.app.services.search.synthesize_answer", lambda question, evidence: "Grounded answer from test evidence.")
+    monkeypatch.setattr(
+        "backend.app.services.search.LLMClient.complete",
+        lambda self, system_prompt, user_prompt: "Grounded answer from test evidence.",
+    )
     result = answer_question(conn, "How is evidence grounded?")
     assert result["citations"]
     assert result["answer"] == "Grounded answer from test evidence."
@@ -194,6 +236,16 @@ def test_api_process_requires_configured_llm(api_client):
 def test_api_qa_requires_configured_llm(api_client):
     response = api_client.post("/api/qa", json={"question": "How is evidence grounded?"})
     assert response.status_code == 503
+
+
+def test_api_chunks_returns_current_parsed_document_chunks(api_client):
+    paper_id = api_client.get("/api/papers?q=RAG%20Evidence%20Grounding").json()["items"][0]["id"]
+    response = api_client.get(f"/api/papers/{paper_id}/chunks?limit=2")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 2
+    assert payload["total"] >= 2
+    assert all(item["paper_id"] == paper_id for item in payload["items"])
 
 
 def test_api_ingest_reports_duplicate_count(api_client, monkeypatch):
@@ -530,8 +582,9 @@ def test_chat_message_tree_keeps_regenerated_answers_as_siblings():
     thread = create_thread(conn, paper_id)
     conn.execute(
         """
-        INSERT INTO paper_documents (paper_id, content_markdown, token_count, status)
-        VALUES (?, '# Full paper\n\nComplete source text.', 12, 'completed')
+        UPDATE paper_documents
+        SET content_markdown = '# Full paper\n\nComplete source text.', token_count = 12, status = 'completed'
+        WHERE paper_id = ?
         """,
         (paper_id,),
     )
@@ -567,10 +620,10 @@ def test_chat_context_always_contains_full_paper():
     full_text = "# Full paper\n\nMETHOD_SENTINEL and all original content."
     conn.execute(
         """
-        INSERT INTO paper_documents (paper_id, content_markdown, token_count, status)
-        VALUES (?, ?, 20, 'completed')
+        UPDATE paper_documents SET content_markdown = ?, token_count = 20, status = 'completed'
+        WHERE paper_id = ?
         """,
-        (paper_id, full_text),
+        (full_text, paper_id),
     )
     run = prepare_run(
         conn,

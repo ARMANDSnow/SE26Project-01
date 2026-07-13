@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import time
+from typing import Any, Iterator
+
 import httpx
-from urllib.request import Request, urlopen
-from urllib.error import URLError
 
 from ..config import get_settings
 
@@ -16,63 +17,118 @@ class LLMServiceError(RuntimeError):
     pass
 
 
+class LLMProviderError(LLMServiceError):
+    """Sanitized provider failure that never includes response bodies or credentials."""
+
+
+def _is_gpt5_family(model: str) -> bool:
+    normalized = model.strip().lower().removeprefix("openai/")
+    return normalized.startswith("gpt-5")
+
+
 class LLMClient:
     def __init__(self) -> None:
         self.settings = get_settings()
 
-    def complete(self, system_prompt: str, user_prompt: str, json_mode: bool = False) -> str:
+    def _require_configured(self) -> None:
         if not self.settings.llm_available:
-            raise LLMConfigurationError("LLM_API_KEY 或 apikey.txt 未配置")
-        payload = {
+            raise LLMConfigurationError("LLM_API_KEY is not configured")
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.settings.llm_api_key}",
+        }
+
+    def _payload(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        json_mode: bool = False,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "model": self.settings.llm_chat_model,
-            "messages": [
+            "messages": messages,
+            "stream": stream,
+        }
+        if _is_gpt5_family(self.settings.llm_chat_model):
+            payload["max_completion_tokens"] = self.settings.llm_max_output_tokens
+        else:
+            payload["temperature"] = 0.2
+            payload["max_tokens"] = self.settings.llm_max_output_tokens
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice or "auto"
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        return payload
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        *,
+        timeout_seconds: float = 120,
+        json_mode: bool = False,
+    ) -> dict[str, Any]:
+        self._require_configured()
+        payload = self._payload(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            json_mode=json_mode,
+        )
+        url = f"{self.settings.llm_base_url}/chat/completions"
+        for attempt in range(3):
+            try:
+                with httpx.Client(timeout=timeout_seconds, follow_redirects=False) as client:
+                    response = client.post(url, headers=self._headers(), json=payload)
+                if response.status_code in {408, 409, 429} or response.status_code >= 500:
+                    if attempt < 2:
+                        time.sleep(2**attempt)
+                        continue
+                response.raise_for_status()
+                data = response.json()
+                message = data["choices"][0]["message"]
+                if not isinstance(message, dict):
+                    raise TypeError("invalid message")
+                return message
+            except httpx.HTTPStatusError as exc:
+                raise LLMProviderError(f"provider_http_{exc.response.status_code}") from exc
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                if attempt < 2:
+                    time.sleep(2**attempt)
+                    continue
+                raise LLMProviderError("provider_unreachable") from exc
+            except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise LLMProviderError("provider_invalid_response") from exc
+        raise LLMProviderError("provider_unreachable")
+
+    def complete(self, system_prompt: str, user_prompt: str, json_mode: bool = False) -> str:
+        message = self.chat(
+            [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0.2,
-            "max_tokens": self.settings.llm_max_output_tokens,
-        }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        request = Request(
-            f"{self.settings.llm_base_url}/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.settings.llm_api_key}",
-            },
+            json_mode=json_mode,
         )
-        try:
-            with urlopen(request, timeout=45) as response:
-                data = json.loads(response.read().decode("utf-8"))
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError, ValueError, URLError, OSError) as exc:
-            raise LLMServiceError(f"LLM 请求失败：{exc}") from exc
+        content = message.get("content")
         if not isinstance(content, str) or not content.strip():
-            raise LLMServiceError("LLM 返回了空内容")
+            raise LLMProviderError("provider_empty_content")
         return content
 
-    def stream(self, messages: list[dict[str, str]]):
-        if not self.settings.llm_available:
-            raise LLMConfigurationError("LLM_API_KEY 或 apikey.txt 未配置")
-        payload = {
-            "model": self.settings.llm_chat_model,
-            "messages": messages,
-            "temperature": 0.2,
-            "max_tokens": self.settings.llm_max_output_tokens,
-            "stream": True,
-        }
+    def stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        self._require_configured()
+        payload = self._payload(messages, stream=True)
+        url = f"{self.settings.llm_base_url}/chat/completions"
         try:
-            with httpx.Client(timeout=90) as client:
-                with client.stream(
-                    "POST",
-                    f"{self.settings.llm_base_url}/chat/completions",
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {self.settings.llm_api_key}",
-                    },
-                    json=payload,
-                ) as response:
+            with httpx.Client(timeout=90, follow_redirects=False) as client:
+                with client.stream("POST", url, headers=self._headers(), json=payload) as response:
                     response.raise_for_status()
                     for line in response.iter_lines():
                         if not line.startswith("data:"):
@@ -87,5 +143,7 @@ class LLMClient:
                             continue
                         if isinstance(delta, str) and delta:
                             yield delta
-        except (httpx.HTTPError, OSError) as exc:
-            raise LLMServiceError(f"LLM 流式请求失败：{exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise LLMProviderError(f"provider_http_{exc.response.status_code}") from exc
+        except (httpx.TimeoutException, httpx.NetworkError, OSError) as exc:
+            raise LLMProviderError("provider_unreachable") from exc

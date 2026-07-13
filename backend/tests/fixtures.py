@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 
-from backend.app.database import attach_concepts, replace_wiki_sections, upsert_paper
+from backend.app.database import attach_concepts, replace_paper_chunks, replace_wiki_sections, upsert_paper
 from backend.app.models import PaperCandidate, PaperSource
+from backend.app.services.fulltext import chunk_markdown
 
 
 def add_test_paper(
@@ -32,6 +33,22 @@ def add_test_paper(
         ),
     )
     if processed:
+        source_hash = (source_id.replace(".", "") + "0" * 64)[:64]
+        paragraph = (
+            f"{title} evaluates RAG grounded answers using retrieved paper evidence. "
+            "The RAG method retrieves source passages before generation and measures citation accuracy."
+        )
+        content = f"# {title}\n\n" + "\n\n".join(paragraph for _ in range(12))
+        conn.execute(
+            """
+            INSERT INTO paper_documents(
+                paper_id, parser_name, parser_version, source_hash, content_markdown,
+                token_count, status, parsed_at
+            ) VALUES (?, 'test-parser', '1', ?, ?, 40, 'completed', CURRENT_TIMESTAMP)
+            """,
+            (paper_id, source_hash, content),
+        )
+        replace_paper_chunks(conn, paper_id, source_hash, chunk_markdown(content))
         replace_wiki_sections(
             conn,
             paper_id,

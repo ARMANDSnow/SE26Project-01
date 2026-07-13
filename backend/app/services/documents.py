@@ -5,7 +5,8 @@ import json
 import sqlite3
 from typing import Any
 
-from ..database import get_paper_record
+from ..database import get_paper_record, replace_paper_chunks
+from .fulltext import chunk_markdown
 from .remote_pdf import ensure_local_pdf
 
 
@@ -64,7 +65,7 @@ def parse_paper_document(conn: sqlite3.Connection, paper_id: int) -> dict[str, A
         structure = json.dumps(document.export_to_dict(), ensure_ascii=False)
         parser_version = importlib.metadata.version("docling")
         token_count = estimate_tokens(markdown)
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE paper_documents
             SET parser_name = 'docling', parser_version = ?, source_hash = ?,
@@ -74,6 +75,15 @@ def parse_paper_document(conn: sqlite3.Connection, paper_id: int) -> dict[str, A
             WHERE paper_id = ?
             """,
             (parser_version, source_hash, markdown, structure, token_count, paper_id),
+        )
+        if cursor.rowcount == 0:
+            raise RuntimeError("paper document row disappeared during parsing")
+        replace_paper_chunks(
+            conn,
+            paper_id,
+            source_hash,
+            chunk_markdown(markdown),
+            commit=False,
         )
         conn.commit()
     except Exception as exc:

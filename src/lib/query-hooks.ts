@@ -8,6 +8,7 @@ import {
   fetchLibraryFolders,
   fetchLibraryItems,
   fetchPaperDetail,
+  fetchPaperChunks,
   fetchPapers,
   fetchStats,
   fetchSubscriptions,
@@ -46,6 +47,7 @@ export const queryKeys = {
   stats: ["stats"] as const,
   papers: (filters: PaperFilters = {}) => ["papers", filters] as const,
   paper: (id: number) => ["paper", id] as const,
+  paperChunks: (id: number) => ["paper-chunks", id] as const,
   wikiSearch: (q: string) => ["wiki-search", q] as const,
   qa: ["qa"] as const,
   graph: (filters: GraphFilters = {}) => ["graph", filters] as const,
@@ -70,6 +72,14 @@ export function usePaperQuery(id: number) {
   return useQuery({
     queryKey: queryKeys.paper(id),
     queryFn: () => fetchPaperDetail(id),
+    enabled: Number.isFinite(id) && id > 0,
+  })
+}
+
+export function usePaperChunksQuery(id: number) {
+  return useQuery({
+    queryKey: queryKeys.paperChunks(id),
+    queryFn: () => fetchPaperChunks(id),
     enabled: Number.isFinite(id) && id > 0,
   })
 }
@@ -211,6 +221,7 @@ export function useParsePaperDocumentMutation() {
     onSuccess: (document, paperId) => {
       void document
       queryClient.invalidateQueries({ queryKey: queryKeys.paper(paperId) })
+      queryClient.invalidateQueries({ queryKey: queryKeys.paperChunks(paperId) })
     },
   })
 }
@@ -254,7 +265,7 @@ export function useAddSubscriptionMutation() {
 export function useAskQuestionMutation() {
   return useMutation({
     mutationKey: queryKeys.qa,
-    mutationFn: ({ question, paperIds = [] }: { question: string; paperIds?: number[] }) =>
-      askQuestion(question, paperIds),
+    mutationFn: ({ question, paperIds = [], mode = "agentic" }: { question: string; paperIds?: number[]; mode?: "agentic" | "classic" }) =>
+      askQuestion(question, paperIds, mode),
   })
 }

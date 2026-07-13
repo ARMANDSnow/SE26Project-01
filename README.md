@@ -47,7 +47,7 @@ LLM_MAX_OUTPUT_TOKENS=4096
 ARXIV_DEFAULT_CATEGORIES=cs.AI,cs.CL,cs.LG
 ```
 
-也可以将仅包含 API Key 的 `apikey.txt` 放在项目根目录；该文件已被 Git 忽略。环境变量 `LLM_API_KEY` 的优先级高于文件。单篇论文 Chat 不使用 RAG：Docling 解析后的论文全文始终加入上下文，`LLM_CONTEXT_WINDOW` 只会裁剪当前分支的历史消息；若论文全文本身超过模型窗口，请改用更长上下文模型。
+API Key 只从 `LLM_API_KEY` 环境变量读取。单篇论文 Chat 不使用 RAG：Docling 解析后的论文全文始终加入上下文，`LLM_CONTEXT_WINDOW` 只会裁剪当前分支的历史消息；若论文全文本身超过模型窗口，请改用更长上下文模型。
 
 ## 测试
 
@@ -59,13 +59,14 @@ npm run build
 
 ## MVP 覆盖
 
-- 论文自动抓取与管理：arXiv API、去重、分类、作者、时间、链接展示
-- 论文结构化解析：生成 summary、concepts、methods、experiments Wiki 内容
+- 论文自动抓取与管理：arXiv、USENIX、SIGOPS 与本地上传，按 `source + source_id` 去重
+- 内容寻址存储：PDF 按 SHA-256 去重缓存，Docling 解析结果与源文件 hash 绑定
+- 论文结构化解析：从已解析正文生成 summary、concepts、methods、experiments Wiki 内容
 - 论文 Wiki 与检索：标题、作者、关键词、类别、概念标签和 Wiki 检索
-- 智能问答：基于 Wiki 片段检索，答案带论文出处
+- 智能问答：Agent 通过 FTS5 与语义重排搜索当前正文 Chunk，只允许引用已打开证据
 - 单篇阅读工作台：PDF/解析文本/概要/笔记与 Chat 并排，支持消息编辑、重新生成、分支和服务端历史
 - 学习管理：收藏、笔记、评论、阅读历史、关注主题和对比阅读
-- 多 Agent：FetcherAgent、ReaderAgent、SummaryAgent、ValidatorAgent、QAAgent
+- 多 Agent：ReaderAgent、SummaryAgent、ValidatorAgent、QAAgent；默认为真实 agentic 模式，可显式选择 classic 单轮模式
 - 进阶预留：研究脉络、订阅推荐、概念知识图谱
 
 ## 开发者包括：
