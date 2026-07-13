@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
+from ...models import PaperCandidate, PaperSource
 from .common import MetadataPage, absolute_links, clean_text
 
 
@@ -288,7 +289,12 @@ def _fetch_schedule_candidates(base_url: str) -> list[dict[str, str]]:
     return _schedule_candidates(html, schedule_url)
 
 
-def fetch_sigops_papers(venue: str, year: int, max_results: int = 10, proceedings_url: str = "") -> list[dict[str, Any]]:
+def fetch_sigops_papers(
+    venue: str,
+    year: int,
+    max_results: int = 10,
+    proceedings_url: str = "",
+) -> list[PaperCandidate]:
     """Import metadata linked by a SIGOPS proceedings page.
 
     A caller may provide a specific proceedings URL because historical SIGOPS
@@ -318,7 +324,7 @@ def fetch_sigops_papers(venue: str, year: int, max_results: int = 10, proceeding
     source_items = accepted_parser.papers or parser.papers
     schedule_candidates = _fetch_schedule_candidates(base_url)
     crossref_candidates = _fetch_crossref_candidates(year) if venue_code == "sosp" else []
-    papers: list[dict[str, Any]] = []
+    papers: list[PaperCandidate] = []
     for item in source_items[:max_results]:
         title = clean_text(item["title"])
         if not title:
@@ -335,22 +341,18 @@ def fetch_sigops_papers(venue: str, year: int, max_results: int = 10, proceeding
         )
         external_id = sha256(title.lower().encode("utf-8")).hexdigest()[:16]
         papers.append(
-            {
-                "arxiv_id": f"sigops:{venue_code}:{year}:{external_id}",
-                "source": "sigops",
-                "source_url": detail_url,
-                "venue": f"{venue_code.upper()} {year}",
-                "title": title,
-                "authors": item["authors"],
-                "abstract": item["abstract"] or f"Imported from {venue_code.upper()} {year} accepted papers; the official list does not provide an abstract.",
-                "categories": ["systems", venue_code],
-                "primary_category": venue_code.upper(),
-                "published_at": f"{year}-01-01",
-                "updated_at": None,
-                "pdf_url": candidate["pdf_url"] if candidate else None,
-                "arxiv_url": None,
-                "doi": candidate["doi"] if candidate and candidate["doi"] else None,
-                "processing_status": "pending",
-            }
+            PaperCandidate(
+                source=PaperSource.SIGOPS,
+                source_id=f"{venue_code}:{year}:{external_id}",
+                source_url=detail_url,
+                venue=f"{venue_code.upper()} {year}",
+                title=title,
+                authors=tuple(item["authors"]),
+                abstract=item["abstract"] or f"Imported from {venue_code.upper()} {year} accepted papers; the official list does not provide an abstract.",
+                categories=("systems", venue_code),
+                primary_category=venue_code.upper(),
+                published_at=f"{year}-01-01",
+                pdf_url=candidate["pdf_url"] if candidate else None,
+            )
         )
     return papers

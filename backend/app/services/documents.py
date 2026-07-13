@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.metadata
 import json
 import sqlite3
 from typing import Any
 
+from ..database import get_paper_record
 from .remote_pdf import ensure_local_pdf
 
 
@@ -19,16 +19,16 @@ def estimate_tokens(text: str) -> int:
 
 
 def parse_paper_document(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any]:
-    paper = conn.execute(
-        "SELECT id, file_path, pdf_url, title FROM papers WHERE id = ?",
-        (paper_id,),
-    ).fetchone()
+    paper = get_paper_record(conn, paper_id)
     if paper is None:
         raise ValueError("paper not found")
 
     path = ensure_local_pdf(conn, paper_id)
     source = str(path)
-    source_bytes = path.read_bytes()
+    paper = get_paper_record(conn, paper_id)
+    if paper is None or paper.asset_id is None:
+        raise ValueError("paper has no stored PDF asset")
+    source_hash = str(paper.asset_id).removeprefix("sha256:")
 
     conn.execute(
         """
@@ -63,7 +63,6 @@ def parse_paper_document(conn: sqlite3.Connection, paper_id: int) -> dict[str, A
             raise RuntimeError("Docling 未提取到正文")
         structure = json.dumps(document.export_to_dict(), ensure_ascii=False)
         parser_version = importlib.metadata.version("docling")
-        source_hash = hashlib.sha256(source_bytes).hexdigest() if source_bytes is not None else hashlib.sha256(source.encode()).hexdigest()
         token_count = estimate_tokens(markdown)
         conn.execute(
             """

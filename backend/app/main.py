@@ -10,10 +10,11 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import get_settings
+from .models import PaperCandidate, PaperSource
 from .database import (
     add_note,
     connect,
@@ -33,11 +34,12 @@ from .database import (
     upsert_subscription,
 )
 from .services.agents import process_paper
+from .services.asset_store import AssetStoreError
 from .services.pdf_import import save_and_extract_pdf
 from .services.llm import LLMConfigurationError, LLMServiceError
 from .services.search import answer_question, build_graph, search_wiki
 from .services.library import recommend_folder
-from .services.remote_pdf import RemotePdfError, ensure_local_pdf
+from .services.remote_pdf import PaperPdfService, RemotePdfError, default_asset_store
 from .services.sources import fetch_arxiv_papers, fetch_sigops_papers, fetch_usenix_papers
 from .services.documents import parse_paper_document
 from .services.conversations import (
@@ -170,7 +172,7 @@ def stats(x_user_id: int = Header(default=1)) -> dict[str, Any]:
     }
 
 
-def _save_ingested_papers(papers: list[dict[str, Any]]) -> dict[str, Any]:
+def _save_ingested_papers(papers: list[PaperCandidate]) -> dict[str, Any]:
     paper_ids: list[int] = []
     duplicate_count = 0
     try:
@@ -236,32 +238,26 @@ def upload_paper(
     authors: str = Form(default=""),
     year: int = Form(default_factory=lambda: date.today().year),
 ) -> dict[str, Any]:
-    settings = get_settings()
     try:
-        extracted = save_and_extract_pdf(file, settings.upload_dir)
-    except ValueError as exc:
+        extracted = save_and_extract_pdf(file, default_asset_store())
+    except (ValueError, AssetStoreError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"PDF 读取失败：{exc}") from exc
     paper_title = title.strip() or extracted.title or Path(file.filename or "paper.pdf").stem
-    paper = {
-        "arxiv_id": f"upload:{uuid4().hex}",
-        "source": "upload",
-        "source_url": None,
-        "venue": "手动上传",
-        "file_path": extracted.path,
-        "title": paper_title,
-        "authors": [item.strip() for item in authors.split(",") if item.strip()],
-        "abstract": extracted.text or "用户上传的 PDF，尚未提取到可用摘要。",
-        "categories": ["manual"],
-        "primary_category": "manual",
-        "published_at": f"{year}-01-01",
-        "updated_at": None,
-        "pdf_url": None,
-        "arxiv_url": None,
-        "doi": None,
-        "processing_status": "pending",
-    }
+    paper = PaperCandidate(
+        source=PaperSource.UPLOAD,
+        source_id=uuid4().hex,
+        source_url=None,
+        venue="手动上传",
+        asset_id=extracted.asset.id,
+        title=paper_title,
+        authors=tuple(item.strip() for item in authors.split(",") if item.strip()),
+        abstract=extracted.text or "用户上传的 PDF，尚未提取到可用摘要。",
+        categories=("manual",),
+        primary_category="manual",
+        published_at=f"{year}-01-01",
+    )
     with connect() as conn:
         paper_id = upsert_paper(conn, paper)
         detail = get_paper_detail(conn, paper_id)
@@ -296,37 +292,68 @@ def paper_detail(paper_id: int, x_user_id: int = Header(default=1)) -> dict[str,
     return detail
 
 
-@app.get("/api/papers/{paper_id}/file")
-def paper_file(paper_id: int) -> FileResponse:
-    settings = get_settings()
-    with connect() as conn:
-        row = conn.execute("SELECT file_path, title FROM papers WHERE id = ?", (paper_id,)).fetchone()
-    if row is None or not row["file_path"]:
-        raise HTTPException(status_code=404, detail="未找到本地 PDF")
-    file_path = (settings.upload_dir / row["file_path"]).resolve()
-    if settings.upload_dir.resolve() not in file_path.parents or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="未找到本地 PDF")
-    return FileResponse(file_path, media_type="application/pdf", filename=f"{row['title']}.pdf")
+PDF_CACHE_CONTROL = "private, max-age=3600, must-revalidate"
 
 
-@app.get("/api/papers/{paper_id}/pdf")
-def paper_pdf(paper_id: int) -> FileResponse:
-    """Serve a same-origin PDF, downloading trusted remote sources on demand."""
+def _etag_matches(header_value: str | None, etag: str) -> bool:
+    if not header_value:
+        return False
+    return any(candidate.strip() in {"*", etag} for candidate in header_value.split(","))
+
+
+def _paper_pdf_response(
+    paper_id: int,
+    *,
+    disposition: str,
+    if_none_match: str | None = None,
+) -> Response:
     try:
         with connect() as conn:
-            file_path = ensure_local_pdf(conn, paper_id)
+            row = conn.execute("SELECT title FROM papers WHERE id = ?", (paper_id,)).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="论文不存在")
+            service = PaperPdfService(conn)
+            asset = service.ensure(paper_id)
+            file_path = service.store.path_for(asset.id)
+            title = str(row["title"])
     except RemotePdfError as exc:
         if str(exc) == "paper not found":
             raise HTTPException(status_code=404, detail="论文不存在") from exc
+        if str(exc) == "paper has no PDF source":
+            raise HTTPException(status_code=404, detail="论文没有可用的 PDF") from exc
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except AssetStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    etag = f'"{asset.id}"'
+    cache_headers = {
+        "Cache-Control": PDF_CACHE_CONTROL,
+        "ETag": etag,
+        "X-Content-Type-Options": "nosniff",
+    }
+    if disposition == "inline" and _etag_matches(if_none_match, etag):
+        return Response(status_code=304, headers=cache_headers)
     return FileResponse(
         file_path,
         media_type="application/pdf",
-        headers={
-            "Content-Disposition": "inline",
-            "X-Content-Type-Options": "nosniff",
-        },
+        filename=f"{title}.pdf",
+        content_disposition_type=disposition,
+        headers=cache_headers,
     )
+
+
+@app.get("/api/papers/{paper_id}/pdf")
+def paper_pdf(
+    paper_id: int,
+    if_none_match: str | None = Header(default=None),
+) -> Response:
+    """Serve a same-origin PDF, downloading trusted remote sources on demand."""
+    return _paper_pdf_response(paper_id, disposition="inline", if_none_match=if_none_match)
+
+
+@app.get("/api/papers/{paper_id}/pdf/download")
+def download_paper_pdf(paper_id: int) -> Response:
+    return _paper_pdf_response(paper_id, disposition="attachment")
 
 
 @app.post("/api/papers/{paper_id}/process")

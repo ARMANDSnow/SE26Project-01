@@ -13,10 +13,6 @@ export function statusText(status: Paper["processing_status"]) {
   return status === "processed" ? "已解析" : status === "pending" ? "待处理" : "失败"
 }
 
-export function readingText(status: Paper["reading_status"]) {
-  return status === "done" ? "已读完" : status === "reading" ? "阅读中" : "未开始"
-}
-
 export function uniqueValues(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)))
 }

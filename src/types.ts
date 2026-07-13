@@ -24,14 +24,20 @@ export type Note = {
   updated_at?: string;
 };
 
+export type PaperPdf = {
+  available: boolean;
+  cached: boolean;
+  view_url: string | null;
+  download_url: string | null;
+};
+
 export type Paper = {
   id: number;
-  arxiv_id: string;
   source?: "arxiv" | "usenix" | "sigops" | "upload" | string;
-  source_id?: string;
+  source_id: string;
   source_url?: string;
   venue?: string;
-  file_url?: string;
+  pdf: PaperPdf;
   title: string;
   authors: string[];
   abstract: string;
@@ -39,11 +45,7 @@ export type Paper = {
   primary_category: string;
   published_at: string;
   updated_at?: string;
-  pdf_url?: string;
-  arxiv_url?: string;
-  doi?: string;
   processing_status: "pending" | "processed" | "failed";
-  reading_status: "unread" | "reading" | "done";
   is_favorite: boolean;
   created_at?: string;
   wiki?: WikiSection[];
@@ -128,9 +130,9 @@ export type WikiSearchResult = {
   id: number;
   paper_id: number;
   paper_title: string;
-  arxiv_id: string;
-  arxiv_url?: string;
-  pdf_url?: string;
+  source: string;
+  source_id: string;
+  source_url?: string;
   primary_category: string;
   section: string;
   section_title: string;

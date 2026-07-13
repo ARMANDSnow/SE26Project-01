@@ -11,7 +11,9 @@ from pypdf import PdfWriter
 from backend.app.config import get_settings
 from backend.app.database import add_note, connect, get_paper_detail, init_db, init_schema, list_papers, set_favorite, upsert_paper
 from backend.app.main import app
+from backend.app.models import AssetId, AssetInfo, PaperCandidate, PaperSource
 from backend.app.services.agents import SummaryAgent, process_paper
+from backend.app.services.asset_store import LocalAssetStore
 from backend.app.services.sources.common import MetadataPage
 from backend.app.services.sources.sigops import (
     SigopsAcceptedPapersParser,
@@ -53,6 +55,28 @@ def test_init_db_does_not_create_demo_papers(tmp_path):
     init_db(path)
     conn = sqlite3.connect(path)
     assert conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 0
+
+
+def test_papers_schema_uses_asset_id_without_legacy_columns():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    init_schema(conn)
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(papers)").fetchall()}
+    assert {"source", "source_id", "source_url", "pdf_url", "venue", "asset_id"} <= columns
+    assert {"arxiv_id", "arxiv_url", "file_path", "doi", "reading_status", "is_favorite"}.isdisjoint(columns)
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assets'").fetchone() is None
+
+
+def test_local_asset_store_deduplicates_pdf_content(tmp_path):
+    store = LocalAssetStore(tmp_path / "assets")
+    payload = b"%PDF-1.4 identical content"
+    first = store.put_pdf(BytesIO(payload))
+    second = store.put_pdf(BytesIO(payload))
+
+    assert first.id == second.id
+    assert first.id == AssetId("sha256:ffb7192b0e6b6a4d3fbbe5dc8eecfa5828f0562d61511c94e7eb0cea0d8c4e23")
+    assert store.path_for(first.id).read_bytes() == payload
+    assert len(list((tmp_path / "assets" / "blobs").rglob("*.pdf"))) == 1
 
 
 def test_config_reads_key_from_explicit_file(tmp_path, monkeypatch):
@@ -136,22 +160,23 @@ def test_graph_unknown_topic_returns_empty_result():
     assert build_graph(conn, topic="definitely-no-such-topic-xyz") == {"nodes": [], "links": []}
 
 
-def test_upsert_paper_deduplicates_same_title_different_arxiv_id():
+def test_upsert_paper_deduplicates_same_title_different_source_id():
     conn = memory_db()
-    first_id = add_test_paper(conn, arxiv_id="dedupe.00001", title="A Stable Duplicate Title")
+    first_id = add_test_paper(conn, source_id="dedupe.00001", title="A Stable Duplicate Title")
     second_id = upsert_paper(
         conn,
-        {
-            "arxiv_id": "dedupe.00002",
-            "title": "A Stable Duplicate Title",
-            "authors": ["Ada"],
-            "abstract": "A duplicate title should map to one paper record.",
-            "categories": ["cs.AI"],
-            "primary_category": "cs.AI",
-            "published_at": "2026-07-09",
-        },
+        PaperCandidate(
+            source=PaperSource.ARXIV,
+            source_id="dedupe.00002",
+            title="A Stable Duplicate Title",
+            authors=("Ada",),
+            abstract="A duplicate title should map to one paper record.",
+            categories=("cs.AI",),
+            primary_category="cs.AI",
+            published_at="2026-07-09",
+        ),
     )
-    assert second_id == first_id
+    assert int(second_id) == first_id
 
 
 def test_api_health_reports_llm_unavailable(api_client):
@@ -173,24 +198,26 @@ def test_api_qa_requires_configured_llm(api_client):
 
 def test_api_ingest_reports_duplicate_count(api_client, monkeypatch):
     fetched = [
-        {
-            "arxiv_id": "2699.10001",
-            "title": "Imported duplicate title",
-            "authors": ["Ada"],
-            "abstract": "First fetched duplicate.",
-            "categories": ["cs.AI"],
-            "primary_category": "cs.AI",
-            "published_at": "2026-07-09",
-        },
-        {
-            "arxiv_id": "2699.10002",
-            "title": "Imported duplicate title",
-            "authors": ["Grace"],
-            "abstract": "Second fetched duplicate.",
-            "categories": ["cs.AI"],
-            "primary_category": "cs.AI",
-            "published_at": "2026-07-09",
-        },
+        PaperCandidate(
+            source=PaperSource.ARXIV,
+            source_id="2699.10001",
+            title="Imported duplicate title",
+            authors=("Ada",),
+            abstract="First fetched duplicate.",
+            categories=("cs.AI",),
+            primary_category="cs.AI",
+            published_at="2026-07-09",
+        ),
+        PaperCandidate(
+            source=PaperSource.ARXIV,
+            source_id="2699.10002",
+            title="Imported duplicate title",
+            authors=("Grace",),
+            abstract="Second fetched duplicate.",
+            categories=("cs.AI",),
+            primary_category="cs.AI",
+            published_at="2026-07-09",
+        ),
     ]
     monkeypatch.setattr("backend.app.main.fetch_arxiv_papers", lambda categories, keywords, max_results: fetched)
     response = api_client.post("/api/ingest/arxiv", json={"categories": ["cs.AI"], "keywords": [], "max_results": 2})
@@ -271,9 +298,9 @@ def test_usenix_detail_normalizes_citation_metadata():
     )
     paper = _detail_to_paper(page, "https://www.usenix.org/conference/osdi24/presentation/example", "OSDI", 2024)
     assert paper is not None
-    assert paper["source"] == "usenix"
-    assert paper["title"] == "A USENIX Paper"
-    assert paper["pdf_url"] == "https://example.test/paper.pdf"
+    assert paper.source == PaperSource.USENIX
+    assert paper.title == "A USENIX Paper"
+    assert paper.pdf_url == "https://example.test/paper.pdf"
 
 
 def test_usenix_detail_removes_bibtex_title_braces():
@@ -281,25 +308,25 @@ def test_usenix_detail_removes_bibtex_title_braces():
     page.feed('<pre>@inproceedings {1, title = {A {Hardware-Accelerated} System}, author = {Ada and Grace}}</pre>')
     paper = _detail_to_paper(page, "https://www.usenix.org/conference/osdi24/presentation/example", "OSDI", 2024)
     assert paper is not None
-    assert paper["title"] == "A Hardware-Accelerated System"
+    assert paper.title == "A Hardware-Accelerated System"
 
 
 def test_api_ingests_usenix_source(api_client, monkeypatch):
     monkeypatch.setattr(
         "backend.app.main.fetch_usenix_papers",
         lambda venue, year, max_results: [
-            {
-                "arxiv_id": "usenix:osdi:2024:demo",
-                "source": "usenix",
-                "source_url": "https://example.test/osdi-demo",
-                "venue": "OSDI 2024",
-                "title": "USENIX import demo",
-                "authors": ["Ada"],
-                "abstract": "Imported from a mocked USENIX page.",
-                "categories": ["systems"],
-                "primary_category": "systems",
-                "published_at": "2024-01-01",
-            }
+            PaperCandidate(
+                source=PaperSource.USENIX,
+                source_id="osdi:2024:demo",
+                source_url="https://example.test/osdi-demo",
+                venue="OSDI 2024",
+                title="USENIX import demo",
+                authors=("Ada",),
+                abstract="Imported from a mocked USENIX page.",
+                categories=("systems",),
+                primary_category="systems",
+                published_at="2024-01-01",
+            )
         ],
     )
     response = api_client.post("/api/ingest/usenix", json={"venue": "osdi", "year": 2024, "max_results": 1})
@@ -313,7 +340,11 @@ def test_api_ingests_usenix_source(api_client, monkeypatch):
 def test_api_upload_records_local_pdf(api_client, monkeypatch):
     monkeypatch.setattr(
         "backend.app.main.save_and_extract_pdf",
-        lambda file, upload_dir: SimpleNamespace(path="demo.pdf", title="Extracted PDF title", text="Extracted PDF text."),
+        lambda file, store: SimpleNamespace(
+            asset=AssetInfo(id=AssetId(f"sha256:{'a' * 64}"), size_bytes=16),
+            title="Extracted PDF title",
+            text="Extracted PDF text.",
+        ),
     )
     response = api_client.post(
         "/api/papers/upload",
@@ -323,7 +354,13 @@ def test_api_upload_records_local_pdf(api_client, monkeypatch):
     assert response.status_code == 200
     paper = response.json()
     assert paper["source"] == "upload"
-    assert paper["file_url"] == f"/api/papers/{paper['id']}/file"
+    assert paper["pdf"] == {
+        "available": True,
+        "cached": True,
+        "view_url": f"/api/papers/{paper['id']}/pdf",
+        "download_url": f"/api/papers/{paper['id']}/pdf/download",
+    }
+    assert {"file_url", "pdf_url", "asset_id"}.isdisjoint(paper)
     assert paper["authors"] == ["Ada", "Grace"]
 
 
@@ -341,17 +378,33 @@ def test_api_upload_and_download_real_pdf(api_client):
     assert response.status_code == 200
     paper = response.json()
     assert paper["title"] == "Real PDF upload"
-    download = api_client.get(paper["file_url"])
+    view = api_client.get(paper["pdf"]["view_url"])
+    assert view.status_code == 200
+    assert view.headers["content-type"] == "application/pdf"
+    assert view.headers["content-disposition"].startswith("inline")
+    assert view.headers["accept-ranges"] == "bytes"
+    assert view.content.startswith(b"%PDF-")
+
+    partial = api_client.get(paper["pdf"]["view_url"], headers={"Range": "bytes=0-4"})
+    assert partial.status_code == 206
+    assert partial.content == b"%PDF-"
+
+    not_modified = api_client.get(paper["pdf"]["view_url"], headers={"If-None-Match": view.headers["etag"]})
+    assert not_modified.status_code == 304
+    assert not_modified.content == b""
+
+    download = api_client.get(paper["pdf"]["download_url"])
     assert download.status_code == 200
-    assert download.headers["content-type"] == "application/pdf"
-    assert download.content.startswith(b"%PDF-")
+    assert download.headers["content-disposition"].startswith("attachment")
+    assert download.content == view.content
+    assert api_client.get(f"/api/papers/{paper['id']}/file").status_code == 404
 
 
 def test_api_remote_pdf_downloads_once_and_serves_cache(api_client, monkeypatch):
     with connect() as conn:
         paper_id = conn.execute("SELECT id FROM papers ORDER BY id LIMIT 1").fetchone()["id"]
         conn.execute(
-            "UPDATE papers SET pdf_url = ?, file_path = NULL WHERE id = ?",
+            "UPDATE papers SET pdf_url = ?, asset_id = NULL WHERE id = ?",
             ("https://www.usenix.org/system/files/paper.pdf", paper_id),
         )
         conn.commit()
@@ -383,13 +436,19 @@ def test_api_remote_pdf_downloads_once_and_serves_cache(api_client, monkeypatch)
     monkeypatch.setattr("backend.app.services.remote_pdf.urlopen", fake_urlopen)
     first = api_client.get(f"/api/papers/{paper_id}/pdf")
     second = api_client.get(f"/api/papers/{paper_id}/pdf")
+    not_modified = api_client.get(
+        f"/api/papers/{paper_id}/pdf",
+        headers={"If-None-Match": first.headers["etag"]},
+    )
 
     assert first.status_code == 200
     assert first.headers["content-type"] == "application/pdf"
-    assert first.headers["content-disposition"] == "inline"
+    assert first.headers["content-disposition"].startswith("inline")
+    assert first.headers["cache-control"] == "private, max-age=3600, must-revalidate"
     assert first.content.startswith(b"%PDF-")
     assert second.status_code == 200
     assert second.content == first.content
+    assert not_modified.status_code == 304
     assert len(calls) == 1
 
 

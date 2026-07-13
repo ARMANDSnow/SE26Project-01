@@ -26,7 +26,7 @@ def search_wiki(
     rows = conn.execute(
         """
         SELECT ws.id, ws.paper_id, ws.section, ws.title AS section_title, ws.content,
-               p.title AS paper_title, p.arxiv_id, p.arxiv_url, p.pdf_url, p.primary_category
+               p.title AS paper_title, p.source, p.source_id, p.source_url, p.primary_category
         FROM wiki_sections ws
         JOIN papers p ON p.id = ws.paper_id
         ORDER BY ws.updated_at DESC
@@ -45,9 +45,9 @@ def search_wiki(
                 "id": row["id"],
                 "paper_id": row["paper_id"],
                 "paper_title": row["paper_title"],
-                "arxiv_id": row["arxiv_id"],
-                "arxiv_url": row["arxiv_url"],
-                "pdf_url": row["pdf_url"],
+                "source": row["source"],
+                "source_id": row["source_id"],
+                "source_url": row["source_url"],
                 "primary_category": row["primary_category"],
                 "section": row["section"],
                 "section_title": row["section_title"],

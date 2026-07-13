@@ -3,6 +3,7 @@ import {
   BookOpen,
   Bot,
   Columns2,
+  Download,
   ExternalLink,
   FileText,
   Loader2,
@@ -37,6 +38,7 @@ import { cn } from "@/lib/utils"
 import { PaperChat } from "./paper-chat"
 
 type LayoutMode = "reading" | "split" | "chat"
+type WorkspaceTab = "source" | "summary" | "notes"
 
 export function PaperDetailPage() {
   const { paperId = "" } = useParams()
@@ -47,6 +49,7 @@ export function PaperDetailPage() {
   const summaryMutation = useGeneratePaperSummaryMutation()
   const addNoteMutation = useAddNoteMutation()
   const [layout, setLayout] = useState<LayoutMode>("split")
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("summary")
   const [sourceView, setSourceView] = useState<"pdf" | "text">("pdf")
   const [note, setNote] = useState("")
   const [comment, setComment] = useState("")
@@ -63,7 +66,7 @@ export function PaperDetailPage() {
   }
 
   const documentReady = paper.document?.status === "completed"
-  const pdfUrl = paper.file_url ?? (paper.pdf_url ? `/api/papers/${paper.id}/pdf` : null)
+  const pdfUrl = paper.pdf.view_url
   const busy = favoriteMutation.isPending || parseMutation.isPending || summaryMutation.isPending || addNoteMutation.isPending
 
   const onParse = async () => {
@@ -137,13 +140,14 @@ export function PaperDetailPage() {
             <Button variant={paper.is_favorite ? "secondary" : "outline"} size="icon" className="size-10" onClick={onFavorite} disabled={busy} aria-label="收藏">
               <Star className={cn("size-4", paper.is_favorite && "fill-current")} />
             </Button>
-            <Button variant="outline" className="h-10" onClick={onParse} disabled={busy || (!paper.file_url && !paper.pdf_url)}>
+            <Button variant="outline" className="h-10" onClick={onParse} disabled={busy || !paper.pdf.available}>
               {parseMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />}{documentReady ? "重新解析全文" : "解析全文"}
             </Button>
             <Button className="h-10" onClick={onSummary} disabled={busy || !documentReady}>
               {summaryMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}{currentSummary ? "重新生成概要" : "生成概要"}
             </Button>
-            {paper.source_url || paper.arxiv_url ? <Button asChild variant="outline" size="icon" className="size-10"><a href={paper.source_url ?? paper.arxiv_url} target="_blank" rel="noreferrer" aria-label="来源页面"><ExternalLink className="size-4" /></a></Button> : null}
+            {paper.pdf.download_url ? <Button asChild variant="outline" size="icon" className="size-10"><a href={paper.pdf.download_url} aria-label="下载 PDF"><Download className="size-4" /></a></Button> : null}
+            {paper.source_url ? <Button asChild variant="outline" size="icon" className="size-10"><a href={paper.source_url} target="_blank" rel="noreferrer" aria-label="来源页面"><ExternalLink className="size-4" /></a></Button> : null}
           </div>
         </CardContent>
       </Card>
@@ -153,20 +157,22 @@ export function PaperDetailPage() {
       <div className={cn("grid min-h-[620px] gap-4", layout === "split" && "xl:grid-cols-2")}>
         {layout !== "chat" ? (
           <Card className="min-w-0 overflow-hidden">
-            <Tabs defaultValue="source" className="flex h-full min-h-[620px] flex-col">
+            <Tabs value={workspaceTab} onValueChange={(value) => {
+              if (value === "source" || value === "summary" || value === "notes") setWorkspaceTab(value)
+            }} className="flex h-full min-h-[620px] flex-col">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
                 <TabsList>
                   <TabsTrigger value="source"><BookOpen className="size-4" />原文</TabsTrigger>
                   <TabsTrigger value="summary"><Sparkles className="size-4" />概要</TabsTrigger>
                   <TabsTrigger value="notes"><NotebookPen className="size-4" />笔记</TabsTrigger>
                 </TabsList>
-                <div className="inline-flex rounded-md border p-0.5">
+                {workspaceTab === "source" ? <div className="inline-flex rounded-md border p-0.5">
                   <Button size="sm" variant={sourceView === "pdf" ? "secondary" : "ghost"} onClick={() => setSourceView("pdf")}>PDF</Button>
                   <Button size="sm" variant={sourceView === "text" ? "secondary" : "ghost"} onClick={() => setSourceView("text")} disabled={!documentReady}>解析文本</Button>
-                </div>
+                </div> : null}
               </div>
               <TabsContent value="source" className="mt-0 min-h-0 flex-1 overflow-auto p-0">
-                {sourceView === "pdf" && pdfUrl ? <iframe title={paper.title} src={pdfUrl} className="h-[720px] w-full bg-muted" /> : documentReady ? <div className="p-5"><MarkdownBlock content={paper.document?.content_markdown ?? ""} className="max-w-none" /></div> : <AppEmptyState title="尚未生成可阅读的全文" description="点击“解析全文”，使用 Docling 读取完整 PDF。" />}
+                {workspaceTab === "source" && sourceView === "pdf" && pdfUrl ? <iframe title={paper.title} src={pdfUrl} className="h-[720px] w-full bg-muted" /> : documentReady ? <div className="p-5"><MarkdownBlock content={paper.document?.content_markdown ?? ""} className="max-w-none" /></div> : <AppEmptyState title="尚未生成可阅读的全文" description="点击“解析全文”，使用 Docling 读取完整 PDF。" />}
               </TabsContent>
               <TabsContent value="summary" className="mt-0 min-h-0 flex-1 overflow-auto p-5">
                 {currentSummary ? <div className="grid gap-4"><div className="text-xs text-muted-foreground">{currentSummary.model} · {currentSummary.created_at}</div><MarkdownBlock content={currentSummary.content} className="max-w-none" /></div> : <AppEmptyState title="还没有全文概要" description={documentReady ? "点击顶部“生成概要”。" : "请先完成论文全文解析。"} />}
