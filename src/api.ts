@@ -1,4 +1,4 @@
-import type { FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, QaResponse, Stats, Subscription, WikiSearchResult } from "./types";
+import type { ChatMessageRepository, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperDocument, PaperSummary, QaResponse, Stats, Subscription, WikiSearchResult } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -37,6 +37,37 @@ export async function fetchPaperDetail(id: number): Promise<Paper> {
 export async function processPaper(id: number): Promise<Paper> {
   const data = await request<{ paper: Paper }>(`/api/papers/${id}/process`, { method: "POST" });
   return data.paper;
+}
+
+export async function parsePaperDocument(id: number): Promise<PaperDocument> {
+  return request<PaperDocument>(`/api/papers/${id}/document/parse`, { method: "POST" });
+}
+
+export async function generatePaperSummary(id: number): Promise<PaperSummary> {
+  return request<PaperSummary>(`/api/papers/${id}/summaries`, { method: "POST" });
+}
+
+export async function fetchPaperChatThreads(paperId: number): Promise<ChatThread[]> {
+  const data = await request<{ items: ChatThread[] }>(`/api/papers/${paperId}/chat/threads`);
+  return data.items;
+}
+
+export async function createPaperChatThread(paperId: number, title = "新对话"): Promise<ChatThread> {
+  return request<ChatThread>(`/api/papers/${paperId}/chat/threads`, {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function fetchChatMessages(threadId: string): Promise<ChatMessageRepository> {
+  return request<ChatMessageRepository>(`/api/chat/threads/${threadId}/messages`);
+}
+
+export async function updateChatThreadHead(threadId: string, headId?: string): Promise<ChatThread> {
+  return request<ChatThread>(`/api/chat/threads/${threadId}/head`, {
+    method: "PATCH",
+    body: JSON.stringify({ head_id: headId ?? null }),
+  });
 }
 
 export async function ingestArxiv(payload: { categories: string[]; keywords: string[]; max_results: number }) {

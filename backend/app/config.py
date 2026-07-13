@@ -26,6 +26,8 @@ class Settings:
         self.llm_base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
         self.llm_api_key = _read_api_key()
         self.llm_chat_model = os.getenv("LLM_CHAT_MODEL", "deepseek-v4-flash")
+        self.llm_context_window = int(os.getenv("LLM_CONTEXT_WINDOW", "131072"))
+        self.llm_max_output_tokens = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "4096"))
         categories = os.getenv("ARXIV_DEFAULT_CATEGORIES", "cs.AI,cs.CL,cs.LG")
         self.default_categories = [item.strip() for item in categories.split(",") if item.strip()]
 
