@@ -19,7 +19,7 @@
 | 论文结构化解析 | 已增强 | `process_paper` 生成可追溯 chunks、Wiki 分区和概念；非 mock 模式调用 `LLMClient.complete` 生成结构化 JSON。 |
 | 正文/Chunk 索引 | 已具备基础 | `paper_chunks` 存储 source、URL、offset、token 估算和 embedding；mock/offline 使用 metadata chunks，真实路径可尝试 arXiv HTML/PDF。 |
 | Wiki/Chunk 检索 | 已增强 | 可选 FTS5 trigram chunk prefilter + 关键词/deterministic embedding rerank；FTS 不可用时 fallback 到旧路径。 |
-| 智能问答 | 已增强 | QA Agent 可自主调用元数据搜索、论文片段搜索和证据打开工具；支持多轮 tool calling、paper scope、执行 trace、预算/停止条件和 citation allowlist。 |
+| 智能问答 | 已增强 | QA Agent 可自主调用元数据搜索、论文片段搜索和证据打开工具；支持多轮 tool calling、paper scope、执行 trace、预算/停止条件和 citation allowlist；模型在元数据阶段提前收尾时会为已处理候选自动补全可引用证据。 |
 | 学习管理 | 已具备基础 | 收藏、笔记、历史、对比阅读、关注主题。 |
 | 知识图谱 | 已具备基础 | 概念-论文 SVG 图谱；无匹配主题返回空图。 |
 | 性能基线 | 已建立 | 100 requests / 100 workers smoke，包含 chunks/search/QA，iter03 closeout p95 `0.9062s`。 |
@@ -124,6 +124,6 @@ git diff --check
 ### iter04 - Agent 驱动的跨论文知识库探索（Complete）
 
 - 文档：`docs/iterations/iteration_iter04_agentic-cross-paper-qa.md`
-- 验证：53 backend tests passed；frontend build passed；100 并发 smoke passed，p95 `0.9707s`；真实 `gpt-5.5-medium` smoke passed（10 tool calls、2 cited papers、HTML full text）。
+- 验证：54 backend tests passed；frontend build passed；100 并发 smoke passed，p95 `0.9707s`；真实 `gpt-5.5-medium` smoke passed（10 tool calls、2 cited papers、HTML full text）；真实前端复验完成双论文问答（7 tool calls、3 HTML evidence、86% evidence support）。
 - 主要能力：只读论文库工具、多轮 tool calling、引用白名单、执行 trace、mock/real 双路径、真实 provider 可观测错误和安全兼容。
 - 主要 follow-up：Review + Memory、真实 gold set、结构化章节/附录、Playwright 自动化、严格 deadline 与重试矩阵。

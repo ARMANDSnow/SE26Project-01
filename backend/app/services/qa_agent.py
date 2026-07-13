@@ -15,6 +15,7 @@ MAX_TURNS = 6
 MAX_TOOL_CALLS = 10
 MAX_TOOL_CALLS_PER_TURN = 3
 MAX_AGENT_SECONDS = 90
+MAX_RECOVERY_PAPERS = 2
 
 
 class ChatClient(Protocol):
@@ -129,6 +130,7 @@ def _run_real_agent(
     ]
     steps: list[dict[str, Any]] = []
     signature_counts: dict[str, int] = {}
+    metadata_candidates: dict[int, str] = {}
     tool_call_count = 0
     final_content = ""
     stop_reason = "max_turns"
@@ -146,6 +148,29 @@ def _run_real_agent(
         if not tool_calls:
             final_content = str(message.get("content") or "").strip()
             stop_reason = "model_completed"
+            if not toolbox.opened_registry and metadata_candidates and tool_call_count < MAX_TOOL_CALLS:
+                recovered, recovery_calls = _recover_metadata_candidates(
+                    toolbox,
+                    question,
+                    metadata_candidates,
+                    steps,
+                    MAX_TOOL_CALLS - tool_call_count,
+                )
+                tool_call_count += recovery_calls
+                if recovered:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "你提前结束时尚未打开证据。编排器已从你找到的候选论文中补全并打开以下证据。"
+                                "请立即只使用这些 E 编号输出规定 JSON，不再调用工具：\n"
+                                + json.dumps(recovered, ensure_ascii=False)
+                            ),
+                        }
+                    )
+                    final_message = client.chat(messages)
+                    final_content = str(final_message.get("content") or "").strip()
+                    stop_reason = "evidence_recovery_final"
             break
         budget_exhausted = False
         per_turn_executed = 0
@@ -181,6 +206,14 @@ def _run_real_agent(
                             result = toolbox.call(name, arguments)
                         except (ToolInputError, TypeError) as exc:
                             result = {"error": str(exc)}
+            if name == "search_metadata":
+                for item in result.get("items", []):
+                    if (
+                        isinstance(item, dict)
+                        and type(item.get("paper_id")) is int
+                        and item.get("processing_status") == "processed"
+                    ):
+                        metadata_candidates.setdefault(int(item["paper_id"]), str(item.get("title") or ""))
             evidence_ids = [result["evidence_id"]] if "evidence_id" in result else []
             result_count = int(result.get("count", 1 if evidence_ids else 0))
             if can_execute:
@@ -252,6 +285,53 @@ def _run_real_agent(
             "steps": steps,
         },
     }
+
+
+def _recover_metadata_candidates(
+    toolbox: PaperToolbox,
+    question: str,
+    candidates: dict[int, str],
+    steps: list[dict[str, Any]],
+    remaining_calls: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Open evidence deterministically when a model stops after metadata lookup."""
+    recovered: list[dict[str, Any]] = []
+    calls = 0
+    for paper_id, title in list(candidates.items())[:MAX_RECOVERY_PAPERS]:
+        if remaining_calls - calls < 2:
+            break
+        try:
+            search_result = toolbox.search_text(question, paper_ids=[paper_id], limit=4)
+        except (ToolInputError, TypeError):
+            search_result = {"items": [], "count": 0}
+        calls += 1
+        steps.append(
+            _step(
+                len(steps) + 1,
+                "search_text",
+                int(search_result.get("count", 0)),
+                note=f"编排器补全证据：{title}",
+            )
+        )
+        items = search_result.get("items") or []
+        if not items:
+            continue
+        try:
+            opened = toolbox.open_evidence(str(items[0]["ref_id"]))
+        except (KeyError, ToolInputError, TypeError):
+            continue
+        calls += 1
+        recovered.append(opened)
+        steps.append(
+            _step(
+                len(steps) + 1,
+                "open_evidence",
+                1,
+                evidence_ids=[opened["evidence_id"]],
+                note=f"编排器补全证据：{opened['paper_title']}",
+            )
+        )
+    return recovered, calls
 
 
 def _parse_final(content: str) -> dict[str, Any] | None:

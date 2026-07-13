@@ -130,6 +130,56 @@ def test_agent_refuses_answer_when_model_never_opens_evidence():
     assert result["citations"] == []
 
 
+class MetadataOnlyThenFinalLLM:
+    def __init__(self):
+        self.turn = 0
+
+    def chat(self, messages, tools=None, tool_choice=None):
+        self.turn += 1
+        if self.turn == 1:
+            return {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "metadata-1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_metadata",
+                            "arguments": json.dumps({"query": "大语言模型检索增强", "limit": 20}, ensure_ascii=False),
+                        },
+                    }
+                ],
+            }
+        if self.turn == 2:
+            return {
+                "role": "assistant",
+                "content": '{"answer":"仅凭元数据回答","citation_ids":[],"confidence":0.8}',
+            }
+        return {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "answer": "编排器补全了两篇论文的证据 [E1][E2]。",
+                    "citation_ids": ["E1", "E2"],
+                    "confidence": 0.76,
+                },
+                ensure_ascii=False,
+            ),
+        }
+
+
+def test_agent_recovers_when_model_stops_after_metadata_search():
+    conn = seeded_db()
+    result = run_qa_agent(conn, "比较 RAG Evidence Grounding", client=MetadataOnlyThenFinalLLM())
+
+    assert result["execution"]["status"] == "completed"
+    assert result["execution"]["stop_reason"] == "evidence_recovery_final"
+    assert result["execution"]["tool_call_count"] == 5
+    assert len({item["paper_id"] for item in result["citations"]}) == 2
+    assert [item["evidence_id"] for item in result["citations"]] == ["E1", "E2"]
+
+
 class InvalidCitationLLM(ScriptedToolCallingLLM):
     def chat(self, messages, tools=None, tool_choice=None):
         if self.turn < 2:

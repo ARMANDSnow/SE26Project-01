@@ -48,6 +48,7 @@ const stopReasonLabels: Record<string, string> = {
   max_tool_calls: "达到工具调用上限",
   max_turns: "达到最大探索轮数",
   budget_forced_final: "工具预算结束后强制收尾",
+  evidence_recovery_final: "编排器补全证据后完成回答",
   deadline_exceeded: "达到探索时间上限",
 }
 
