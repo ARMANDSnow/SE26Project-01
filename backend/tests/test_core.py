@@ -13,9 +13,15 @@ from backend.app.database import add_note, connect, get_paper_detail, init_db, i
 from backend.app.main import app
 from backend.app.services.agents import SummaryAgent, process_paper
 from backend.app.services.sources.common import MetadataPage
-from backend.app.services.sources.sigops import SigopsAcceptedPapersParser, SigopsTocParser
+from backend.app.services.sources.sigops import (
+    SigopsAcceptedPapersParser,
+    SigopsTocParser,
+    _match_candidate,
+    _schedule_candidates,
+)
 from backend.app.services.sources.usenix import _detail_to_paper
 from backend.app.services.search import answer_question, build_graph, search_wiki
+from backend.app.services.conversations import build_model_messages, create_thread, get_message_repository, prepare_run
 from backend.tests.fixtures import add_test_paper, populate_test_library
 
 
@@ -239,6 +245,22 @@ def test_sigops_accepted_papers_parser_reads_recent_sosp_list():
     ]
 
 
+def test_sigops_schedule_maps_direct_and_acm_pdf_links():
+    candidates = _schedule_candidates(
+        '<a href="assets/papers/example.pdf"><strong>A Direct SOSP Paper</strong></a>'
+        '<a href="https://dl.acm.org/doi/10.1145/3694715.3695951">An ACM SOSP Paper</a>',
+        "https://sigops.org/s/conferences/sosp/2024/schedule.html",
+    )
+
+    direct = _match_candidate("A Direct SOSP Paper", candidates)
+    acm = _match_candidate("An ACM SOSP Paper", candidates)
+    assert direct is not None
+    assert direct["pdf_url"] == "https://sigops.org/s/conferences/sosp/2024/assets/papers/example.pdf"
+    assert acm is not None
+    assert acm["doi"] == "10.1145/3694715.3695951"
+    assert acm["pdf_url"] == "https://dl.acm.org/doi/pdf/10.1145/3694715.3695951?download=true"
+
+
 def test_usenix_detail_normalizes_citation_metadata():
     page = MetadataPage()
     page.feed(
@@ -325,6 +347,52 @@ def test_api_upload_and_download_real_pdf(api_client):
     assert download.content.startswith(b"%PDF-")
 
 
+def test_api_remote_pdf_downloads_once_and_serves_cache(api_client, monkeypatch):
+    with connect() as conn:
+        paper_id = conn.execute("SELECT id FROM papers ORDER BY id LIMIT 1").fetchone()["id"]
+        conn.execute(
+            "UPDATE papers SET pdf_url = ?, file_path = NULL WHERE id = ?",
+            ("https://www.usenix.org/system/files/paper.pdf", paper_id),
+        )
+        conn.commit()
+
+    class FakeResponse:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def geturl(self):
+            return "https://www.usenix.org/system/files/paper.pdf"
+
+        def read(self, _size=-1):
+            if getattr(self, "read_once", False):
+                return b""
+            self.read_once = True
+            return b"%PDF-1.4 cached"
+
+    calls = []
+
+    def fake_urlopen(*_args, **_kwargs):
+        calls.append(True)
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.app.services.remote_pdf.urlopen", fake_urlopen)
+    first = api_client.get(f"/api/papers/{paper_id}/pdf")
+    second = api_client.get(f"/api/papers/{paper_id}/pdf")
+
+    assert first.status_code == 200
+    assert first.headers["content-type"] == "application/pdf"
+    assert first.headers["content-disposition"] == "inline"
+    assert first.content.startswith(b"%PDF-")
+    assert second.status_code == 200
+    assert second.content == first.content
+    assert len(calls) == 1
+
+
 def test_api_unknown_graph_topic_returns_empty(api_client):
     response = api_client.get("/api/graph?topic=definitely-no-such-topic-xyz&limit=42")
     assert response.status_code == 200
@@ -395,3 +463,79 @@ def test_library_schema_does_not_store_last_recommendation():
     conn = memory_db()
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(library_items)").fetchall()}
     assert "last_recommended_folder_id" not in columns
+
+
+def test_chat_message_tree_keeps_regenerated_answers_as_siblings():
+    conn = memory_db()
+    paper_id = conn.execute("SELECT id FROM papers LIMIT 1").fetchone()["id"]
+    thread = create_thread(conn, paper_id)
+    conn.execute(
+        """
+        INSERT INTO paper_documents (paper_id, content_markdown, token_count, status)
+        VALUES (?, '# Full paper\n\nComplete source text.', 12, 'completed')
+        """,
+        (paper_id,),
+    )
+    first = prepare_run(
+        conn,
+        thread_id=thread["id"],
+        user_message={"id": "u1", "parent_id": None, "content": "What is the contribution?"},
+        parent_message_id=None,
+        assistant_message_id="a1",
+        source_message_id=None,
+        message_token_limit=12000,
+    )
+    second = prepare_run(
+        conn,
+        thread_id=thread["id"],
+        user_message=None,
+        parent_message_id="u1",
+        assistant_message_id="a2",
+        source_message_id="a1",
+        message_token_limit=12000,
+    )
+    assert first["input_message_id"] == second["input_message_id"] == "u1"
+    repository = get_message_repository(conn, thread["id"])
+    parents = {row["id"]: row["parent_id"] for row in repository["messages"]}
+    assert parents["a1"] == parents["a2"] == "u1"
+    assert repository["headId"] == "a2"
+
+
+def test_chat_context_always_contains_full_paper():
+    conn = memory_db()
+    paper_id = conn.execute("SELECT id FROM papers LIMIT 1").fetchone()["id"]
+    thread = create_thread(conn, paper_id)
+    full_text = "# Full paper\n\nMETHOD_SENTINEL and all original content."
+    conn.execute(
+        """
+        INSERT INTO paper_documents (paper_id, content_markdown, token_count, status)
+        VALUES (?, ?, 20, 'completed')
+        """,
+        (paper_id, full_text),
+    )
+    run = prepare_run(
+        conn,
+        thread_id=thread["id"],
+        user_message={"id": "question", "parent_id": None, "content": "Explain the method."},
+        parent_message_id=None,
+        assistant_message_id="answer",
+        source_message_id=None,
+        message_token_limit=0,
+    )
+    messages = build_model_messages(conn, run)
+    assert "METHOD_SENTINEL" in messages[1]["content"]
+    assert messages[-1]["content"] == "Explain the method."
+
+
+def test_api_chat_requires_configured_llm(api_client):
+    paper_id = api_client.get("/api/papers?limit=1").json()["items"][0]["id"]
+    thread = api_client.post(f"/api/papers/{paper_id}/chat/threads", json={}).json()
+    response = api_client.post(
+        "/api/chat/runs",
+        json={
+            "thread_id": thread["id"],
+            "user_message": {"id": "u-api", "content": "Question"},
+            "assistant_message_id": "a-api",
+        },
+    )
+    assert response.status_code == 503
