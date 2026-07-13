@@ -35,6 +35,8 @@ function filtersFromParams(searchParams: URLSearchParams): PaperFilters {
   }
 }
 
+const SOURCE_INGEST_MAX_RESULTS = 50
+
 export function PapersPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const filters = filtersFromParams(searchParams)
@@ -100,7 +102,7 @@ export function PapersPage() {
             source,
             venue: venue.trim() || (source === "usenix" ? "osdi" : "sosp"),
             year: Number(year) || new Date().getFullYear(),
-            max_results: 8,
+            max_results: SOURCE_INGEST_MAX_RESULTS,
           })
       toast.success(`已导入 ${result.count} 篇论文，抓取 ${result.fetched_count} 篇，去重 ${result.duplicate_count} 篇。`)
     } catch {

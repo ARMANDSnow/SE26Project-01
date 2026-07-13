@@ -105,6 +105,70 @@ def init_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS paper_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_id INTEGER NOT NULL UNIQUE REFERENCES papers(id) ON DELETE CASCADE,
+            parser_name TEXT NOT NULL DEFAULT 'docling',
+            parser_version TEXT,
+            source_hash TEXT,
+            content_markdown TEXT NOT NULL DEFAULT '',
+            structure_json TEXT NOT NULL DEFAULT '{}',
+            token_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error TEXT,
+            parsed_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS summary_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+            content TEXT NOT NULL,
+            model TEXT NOT NULL,
+            prompt_version TEXT NOT NULL DEFAULT 'paper-summary-v1',
+            source_hash TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_threads (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+            title TEXT NOT NULL DEFAULT '新对话',
+            active_leaf_id TEXT,
+            message_token_limit INTEGER NOT NULL DEFAULT 12000,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            parent_id TEXT REFERENCES chat_messages(id),
+            source_message_id TEXT REFERENCES chat_messages(id),
+            role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
+            content TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'complete',
+            token_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_runs (
+            id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            input_message_id TEXT REFERENCES chat_messages(id),
+            output_message_id TEXT REFERENCES chat_messages(id),
+            status TEXT NOT NULL DEFAULT 'running',
+            model TEXT,
+            usage_json TEXT NOT NULL DEFAULT '{}',
+            error TEXT,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
@@ -138,6 +202,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source);
         CREATE INDEX IF NOT EXISTS idx_wiki_sections_section ON wiki_sections(section);
         CREATE INDEX IF NOT EXISTS idx_notes_paper ON notes(paper_id);
+        CREATE INDEX IF NOT EXISTS idx_summary_versions_paper ON summary_versions(paper_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_chat_threads_paper ON chat_threads(user_id, paper_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
         CREATE INDEX IF NOT EXISTS idx_library_folders_user ON library_folders(user_id, parent_id);
         CREATE INDEX IF NOT EXISTS idx_library_items_folder ON library_items(user_id, folder_id);
         """
@@ -472,9 +540,26 @@ def get_paper_detail(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) 
         "SELECT id, note, comment, created_at, updated_at FROM notes WHERE paper_id = ? ORDER BY created_at DESC",
         (paper_id,),
     ).fetchall()
+    document = conn.execute(
+        """
+        SELECT parser_name, parser_version, source_hash, content_markdown, token_count,
+               status, error, parsed_at, updated_at
+        FROM paper_documents WHERE paper_id = ?
+        """,
+        (paper_id,),
+    ).fetchone()
+    summaries = conn.execute(
+        """
+        SELECT id, content, model, prompt_version, source_hash, is_active, created_at
+        FROM summary_versions WHERE paper_id = ? ORDER BY created_at DESC, id DESC
+        """,
+        (paper_id,),
+    ).fetchall()
     paper["wiki"] = [dict(item) for item in sections]
     paper["concepts"] = [dict(item) for item in concepts]
     paper["notes"] = [dict(item) for item in notes]
+    paper["document"] = dict(document) if document else None
+    paper["summaries"] = [dict(item) for item in summaries]
     return paper
 
 

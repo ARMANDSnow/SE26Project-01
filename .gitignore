@@ -5,6 +5,7 @@ output/
 *.tsbuildinfo
 backend/data/*.sqlite3
 backend/data/*.sqlite3-*
+backend/data/uploads/
 __pycache__/
 .pytest_cache/
 .playwright-cli/

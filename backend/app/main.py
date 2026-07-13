@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
@@ -9,7 +10,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import get_settings
@@ -36,7 +37,19 @@ from .services.pdf_import import save_and_extract_pdf
 from .services.llm import LLMConfigurationError, LLMServiceError
 from .services.search import answer_question, build_graph, search_wiki
 from .services.library import recommend_folder
+from .services.remote_pdf import RemotePdfError, ensure_local_pdf
 from .services.sources import fetch_arxiv_papers, fetch_sigops_papers, fetch_usenix_papers
+from .services.documents import parse_paper_document
+from .services.conversations import (
+    create_summary,
+    create_thread,
+    get_message_repository,
+    get_thread,
+    list_threads,
+    prepare_run,
+    stream_run,
+    update_thread_head,
+)
 
 
 @asynccontextmanager
@@ -49,6 +62,7 @@ app = FastAPI(title="论文阅读工具 API", version="0.2.0", lifespan=lifespan
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:5174", "http://localhost:5174"],
+    allow_origin_regex=r"^http://(127\.0\.0\.1|localhost):\d+$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -95,6 +109,31 @@ class FolderRequest(BaseModel):
 
 class MoveLibraryItemRequest(BaseModel):
     folder_id: int
+
+
+class ThreadCreateRequest(BaseModel):
+    title: str = Field(default="新对话", max_length=100)
+
+
+class ThreadHeadRequest(BaseModel):
+    head_id: str | None = None
+
+
+class ChatUserMessage(BaseModel):
+    id: str = Field(min_length=1, max_length=100)
+    parent_id: str | None = None
+    source_message_id: str | None = None
+    content: str = Field(min_length=1)
+
+
+class ChatRunRequest(BaseModel):
+    thread_id: str
+    operation: str = Field(default="append", pattern="^(append|edit|regenerate)$")
+    user_message: ChatUserMessage | None = None
+    parent_message_id: str | None = None
+    source_message_id: str | None = None
+    assistant_message_id: str = Field(min_length=1, max_length=100)
+    message_token_limit: int = Field(default=12000, ge=0, le=100000)
 
 
 @app.get("/api/health")
@@ -270,6 +309,26 @@ def paper_file(paper_id: int) -> FileResponse:
     return FileResponse(file_path, media_type="application/pdf", filename=f"{row['title']}.pdf")
 
 
+@app.get("/api/papers/{paper_id}/pdf")
+def paper_pdf(paper_id: int) -> FileResponse:
+    """Serve a same-origin PDF, downloading trusted remote sources on demand."""
+    try:
+        with connect() as conn:
+            file_path = ensure_local_pdf(conn, paper_id)
+    except RemotePdfError as exc:
+        if str(exc) == "paper not found":
+            raise HTTPException(status_code=404, detail="论文不存在") from exc
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return FileResponse(
+        file_path,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": "inline",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @app.post("/api/papers/{paper_id}/process")
 def process(paper_id: int) -> Any:
     with connect() as conn:
@@ -284,6 +343,113 @@ def process(paper_id: int) -> Any:
     if result.get("status") == "failed":
         return JSONResponse(status_code=422, content=result)
     return result
+
+
+@app.post("/api/papers/{paper_id}/document/parse")
+def parse_document(paper_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return parse_paper_document(conn, paper_id)
+        except ValueError as exc:
+            status = 404 if str(exc) == "paper not found" else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/papers/{paper_id}/summaries")
+def generate_summary(paper_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return create_summary(conn, paper_id)
+        except ValueError as exc:
+            status = 404 if str(exc) == "paper not found" else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        except LLMConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=f"LLM 未配置：{exc}") from exc
+        except LLMServiceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/papers/{paper_id}/chat/threads")
+def paper_chat_threads(paper_id: int, x_user_id: int = Header(default=1)) -> dict[str, Any]:
+    with connect() as conn:
+        return {"items": list_threads(conn, paper_id, x_user_id)}
+
+
+@app.post("/api/papers/{paper_id}/chat/threads")
+def add_paper_chat_thread(
+    paper_id: int,
+    payload: ThreadCreateRequest,
+    x_user_id: int = Header(default=1),
+) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return create_thread(conn, paper_id, x_user_id, payload.title)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="论文不存在") from exc
+
+
+@app.get("/api/chat/threads/{thread_id}")
+def chat_thread(thread_id: str, x_user_id: int = Header(default=1)) -> dict[str, Any]:
+    with connect() as conn:
+        result = get_thread(conn, thread_id, x_user_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return result
+
+
+@app.get("/api/chat/threads/{thread_id}/messages")
+def chat_messages(thread_id: str, x_user_id: int = Header(default=1)) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return get_message_repository(conn, thread_id, x_user_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="对话不存在") from exc
+
+
+@app.patch("/api/chat/threads/{thread_id}/head")
+def set_chat_thread_head(
+    thread_id: str,
+    payload: ThreadHeadRequest,
+    x_user_id: int = Header(default=1),
+) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return update_thread_head(conn, thread_id, payload.head_id, x_user_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/chat/runs")
+def start_chat_run(payload: ChatRunRequest, x_user_id: int = Header(default=1)) -> StreamingResponse:
+    if not get_settings().llm_available:
+        raise HTTPException(status_code=503, detail="LLM 未配置")
+    with connect() as conn:
+        try:
+            run = prepare_run(
+                conn,
+                thread_id=payload.thread_id,
+                user_message=payload.user_message.model_dump() if payload.user_message else None,
+                parent_message_id=payload.parent_message_id,
+                assistant_message_id=payload.assistant_message_id,
+                source_message_id=payload.source_message_id,
+                message_token_limit=payload.message_token_limit,
+                user_id=x_user_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def event_stream():
+        with connect() as stream_conn:
+            for event, data in stream_run(stream_conn, run):
+                yield f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/wiki/search")

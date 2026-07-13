@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 from hashlib import sha256
 from html.parser import HTMLParser
+import json
+import re
 from typing import Any
 from urllib.error import HTTPError
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
-from .common import clean_text
+from .common import MetadataPage, absolute_links, clean_text
 
 
 class SigopsTocParser(HTMLParser):
@@ -132,6 +135,159 @@ class SigopsAcceptedPapersParser(HTMLParser):
         self._finish_current()
 
 
+def _normalize_title(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", clean_text(value).casefold()).strip()
+
+
+def _title_prefix(value: str) -> str:
+    return _normalize_title(clean_text(value).split(":", 1)[0])
+
+
+def _doi_from_acm_url(url: str) -> str:
+    match = re.search(r"10\.1145/\d+(?:\.\d+)+", url)
+    return match.group(0) if match else ""
+
+
+def _schedule_candidates(html: str, schedule_url: str) -> list[dict[str, str]]:
+    page = MetadataPage()
+    page.feed(html)
+    candidates: list[dict[str, str]] = []
+    for link, label in absolute_links(page, schedule_url):
+        title = clean_text(label)
+        parsed = urlparse(link)
+        doi = _doi_from_acm_url(link) if parsed.hostname == "dl.acm.org" else ""
+        if doi:
+            candidates.append(
+                {
+                    "title": title,
+                    "source_url": f"https://dl.acm.org/doi/{doi}",
+                    "pdf_url": f"https://dl.acm.org/doi/pdf/{doi}?download=true",
+                    "doi": doi,
+                }
+            )
+        elif parsed.path.lower().endswith(".pdf"):
+            candidates.append(
+                {
+                    "title": title,
+                    "source_url": link,
+                    "pdf_url": link,
+                    "doi": "",
+                }
+            )
+    return candidates
+
+
+def _match_candidate(title: str, candidates: list[dict[str, str]]) -> dict[str, str] | None:
+    normalized = _normalize_title(title)
+    exact = [item for item in candidates if _normalize_title(item["title"]) == normalized]
+    if len(exact) == 1:
+        return exact[0]
+
+    prefix = _title_prefix(title)
+    if len(prefix) >= 3:
+        prefix_matches = [item for item in candidates if _title_prefix(item["title"]) == prefix]
+        if len(prefix_matches) == 1:
+            return prefix_matches[0]
+
+    scored = [
+        (SequenceMatcher(None, normalized, _normalize_title(item["title"])).ratio(), item)
+        for item in candidates
+    ]
+    if not scored:
+        return None
+    score, candidate = max(scored, key=lambda pair: pair[0])
+    return candidate if score >= 0.82 else None
+
+
+def _crossref_candidate(title: str, year: int) -> dict[str, str] | None:
+    params = urlencode(
+        {
+            "query.title": title,
+            "filter": f"prefix:10.1145,from-pub-date:{year}-01-01,until-pub-date:{year}-12-31,type:proceedings-article",
+            "rows": 5,
+            "select": "DOI,title,container-title",
+        }
+    )
+    request = Request(
+        f"https://api.crossref.org/works?{params}",
+        headers={"User-Agent": "PaperWiki/0.2 (+SOSP DOI lookup)"},
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            items = json.load(response).get("message", {}).get("items", [])
+    except Exception:
+        return None
+
+    normalized = _normalize_title(title)
+    for item in items:
+        containers = item.get("container-title") or []
+        titles = item.get("title") or []
+        doi = clean_text(item.get("DOI") or "")
+        candidate_title = clean_text(titles[0] if titles else "")
+        if (
+            doi.startswith("10.1145/")
+            and any("Operating Systems Principles" in value for value in containers)
+            and SequenceMatcher(None, normalized, _normalize_title(candidate_title)).ratio() >= 0.9
+        ):
+            return {
+                "title": candidate_title,
+                "source_url": f"https://dl.acm.org/doi/{doi}",
+                "pdf_url": f"https://dl.acm.org/doi/pdf/{doi}?download=true",
+                "doi": doi,
+            }
+    return None
+
+
+def _fetch_crossref_candidates(year: int) -> list[dict[str, str]]:
+    params = urlencode(
+        {
+            "query.container-title": "Symposium on Operating Systems Principles",
+            "filter": f"prefix:10.1145,from-pub-date:{year}-01-01,until-pub-date:{year}-12-31,type:proceedings-article",
+            "rows": 200,
+            "select": "DOI,title,container-title",
+        }
+    )
+    request = Request(
+        f"https://api.crossref.org/works?{params}",
+        headers={"User-Agent": "PaperWiki/0.2 (+SOSP DOI lookup)"},
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            items = json.load(response).get("message", {}).get("items", [])
+    except Exception:
+        return []
+
+    candidates: list[dict[str, str]] = []
+    for item in items:
+        containers = item.get("container-title") or []
+        titles = item.get("title") or []
+        doi = clean_text(item.get("DOI") or "")
+        title = clean_text(titles[0] if titles else "")
+        if doi.startswith("10.1145/") and title and any(
+            "Operating Systems Principles" in value for value in containers
+        ):
+            candidates.append(
+                {
+                    "title": title,
+                    "source_url": f"https://dl.acm.org/doi/{doi}",
+                    "pdf_url": f"https://dl.acm.org/doi/pdf/{doi}?download=true",
+                    "doi": doi,
+                }
+            )
+    return candidates
+
+
+def _fetch_schedule_candidates(base_url: str) -> list[dict[str, str]]:
+    schedule_url = f"{base_url}/schedule.html"
+    request = Request(schedule_url, headers={"User-Agent": "PaperWiki/0.2 (+metadata import)"})
+    try:
+        with urlopen(request, timeout=15) as response:
+            html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+    except Exception:
+        return []
+    return _schedule_candidates(html, schedule_url)
+
+
 def fetch_sigops_papers(venue: str, year: int, max_results: int = 10, proceedings_url: str = "") -> list[dict[str, Any]]:
     """Import metadata linked by a SIGOPS proceedings page.
 
@@ -160,12 +316,23 @@ def fetch_sigops_papers(venue: str, year: int, max_results: int = 10, proceeding
     parser.feed(html)
     parser.close()
     source_items = accepted_parser.papers or parser.papers
+    schedule_candidates = _fetch_schedule_candidates(base_url)
+    crossref_candidates = _fetch_crossref_candidates(year) if venue_code == "sosp" else []
     papers: list[dict[str, Any]] = []
     for item in source_items[:max_results]:
         title = clean_text(item["title"])
-        detail_url = urljoin(url, item["url"]) if item["url"] else url
         if not title:
             continue
+        candidate = _match_candidate(title, crossref_candidates)
+        if candidate is None:
+            candidate = _match_candidate(title, schedule_candidates)
+        if candidate is None and venue_code == "sosp":
+            candidate = _crossref_candidate(title, year)
+        detail_url = (
+            candidate["source_url"]
+            if candidate
+            else urljoin(url, item["url"]) if item["url"] else url
+        )
         external_id = sha256(title.lower().encode("utf-8")).hexdigest()[:16]
         papers.append(
             {
@@ -180,9 +347,9 @@ def fetch_sigops_papers(venue: str, year: int, max_results: int = 10, proceeding
                 "primary_category": venue_code.upper(),
                 "published_at": f"{year}-01-01",
                 "updated_at": None,
-                "pdf_url": None,
+                "pdf_url": candidate["pdf_url"] if candidate else None,
                 "arxiv_url": None,
-                "doi": None,
+                "doi": candidate["doi"] if candidate and candidate["doi"] else None,
                 "processing_status": "pending",
             }
         )

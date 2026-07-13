@@ -49,6 +49,57 @@ export type Paper = {
   wiki?: WikiSection[];
   concepts?: Concept[];
   notes?: Note[];
+  document?: PaperDocument | null;
+  summaries?: PaperSummary[];
+};
+
+export type PaperDocument = {
+  parser_name: string;
+  parser_version?: string;
+  source_hash?: string;
+  content_markdown: string;
+  token_count: number;
+  status: "pending" | "processing" | "completed" | "failed";
+  error?: string;
+  parsed_at?: string;
+  updated_at?: string;
+};
+
+export type PaperSummary = {
+  id: number;
+  paper_id?: number;
+  content: string;
+  model: string;
+  prompt_version: string;
+  source_hash?: string;
+  is_active: boolean | number;
+  created_at: string;
+};
+
+export type ChatThread = {
+  id: string;
+  paper_id: number;
+  title: string;
+  active_leaf_id?: string;
+  message_token_limit: number;
+  archived: boolean | number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChatMessageRow = {
+  id: string;
+  parent_id?: string;
+  source_message_id?: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  status: "running" | "complete" | "failed";
+  created_at: string;
+};
+
+export type ChatMessageRepository = {
+  headId?: string;
+  messages: ChatMessageRow[];
 };
 
 export type Stats = {

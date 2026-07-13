@@ -16,6 +16,8 @@ import {
   ingestArxiv,
   ingestSource,
   processPaper,
+  parsePaperDocument,
+  generatePaperSummary,
   moveLibraryItem,
   recommendLibraryFolder,
   searchWiki,
@@ -198,6 +200,28 @@ export function useProcessPaperMutation() {
       queryClient.invalidateQueries({ queryKey: ["papers"] })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats })
       queryClient.invalidateQueries({ queryKey: ["graph"] })
+    },
+  })
+}
+
+export function useParsePaperDocumentMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: parsePaperDocument,
+    onSuccess: (document, paperId) => {
+      void document
+      queryClient.invalidateQueries({ queryKey: queryKeys.paper(paperId) })
+    },
+  })
+}
+
+export function useGeneratePaperSummaryMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: generatePaperSummary,
+    onSuccess: (summary, paperId) => {
+      void summary
+      queryClient.invalidateQueries({ queryKey: queryKeys.paper(paperId) })
     },
   })
 }
