@@ -16,8 +16,15 @@ SYSTEM_PROMPT = """你是单篇科研论文阅读助手。下面会提供论文�
 不要声称使用了外部搜索、知识库或未提供的论文。"""
 
 
-def create_thread(conn: sqlite3.Connection, paper_id: int, user_id: int = 1, title: str = "新对话") -> dict[str, Any]:
-    if conn.execute("SELECT 1 FROM papers WHERE id = ?", (paper_id,)).fetchone() is None:
+def create_thread(
+    conn: sqlite3.Connection,
+    paper_id: int | None,
+    user_id: int = 1,
+    title: str = "新对话",
+) -> dict[str, Any]:
+    if paper_id is not None and conn.execute(
+        "SELECT 1 FROM papers WHERE id = ?", (paper_id,)
+    ).fetchone() is None:
         raise ValueError("paper not found")
     thread_id = f"thread_{uuid4().hex}"
     conn.execute(
@@ -99,6 +106,16 @@ def _assert_parent(conn: sqlite3.Connection, thread_id: str, parent_id: str | No
         raise ValueError("parent message not found")
 
 
+def _assert_source_message(conn: sqlite3.Connection, thread_id: str, source_id: str | None) -> None:
+    if source_id is None:
+        return
+    if conn.execute(
+        "SELECT 1 FROM chat_messages WHERE id = ? AND thread_id = ?",
+        (source_id, thread_id),
+    ).fetchone() is None:
+        raise ValueError("source message not found")
+
+
 def prepare_run(
     conn: sqlite3.Connection,
     *,
@@ -114,56 +131,78 @@ def prepare_run(
     if thread is None:
         raise ValueError("thread not found")
 
-    input_message_id: str
-    if user_message is not None:
-        input_message_id = str(user_message["id"])
-        parent_id = user_message.get("parent_id")
-        _assert_parent(conn, thread_id, parent_id)
-        content = str(user_message.get("content", "")).strip()
-        if not content:
-            raise ValueError("message is empty")
+    savepoint = "prepare_chat_run"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        input_message_id: str
+        if user_message is not None:
+            input_message_id = str(user_message["id"])
+            parent_id = user_message.get("parent_id")
+            user_source_id = user_message.get("source_message_id")
+            _assert_parent(conn, thread_id, parent_id)
+            _assert_source_message(conn, thread_id, user_source_id)
+            content = str(user_message.get("content", "")).strip()
+            if not content:
+                raise ValueError("message is empty")
+            conn.execute(
+                """
+                INSERT INTO chat_messages
+                    (id, thread_id, parent_id, source_message_id, role, content, status, token_count, completed_at)
+                VALUES (?, ?, ?, ?, 'user', ?, 'complete', ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    input_message_id,
+                    thread_id,
+                    parent_id,
+                    user_source_id,
+                    content,
+                    estimate_tokens(content),
+                ),
+            )
+        else:
+            input_message_id = str(parent_message_id or "")
+            row = conn.execute(
+                "SELECT role FROM chat_messages WHERE id = ? AND thread_id = ?",
+                (input_message_id, thread_id),
+            ).fetchone()
+            if row is None or row["role"] != "user":
+                raise ValueError("regenerate parent must be a user message")
+
+        _assert_parent(conn, thread_id, input_message_id)
+        _assert_source_message(conn, thread_id, source_message_id)
         conn.execute(
             """
-            INSERT OR IGNORE INTO chat_messages
-                (id, thread_id, parent_id, source_message_id, role, content, status, token_count, completed_at)
-            VALUES (?, ?, ?, ?, 'user', ?, 'complete', ?, CURRENT_TIMESTAMP)
+            INSERT INTO chat_messages
+                (id, thread_id, parent_id, source_message_id, role, content, status)
+            VALUES (?, ?, ?, ?, 'assistant', '', 'running')
             """,
-            (input_message_id, thread_id, parent_id, user_message.get("source_message_id"), content, estimate_tokens(content)),
+            (assistant_message_id, thread_id, input_message_id, source_message_id),
         )
-    else:
-        input_message_id = str(parent_message_id or "")
-        row = conn.execute(
-            "SELECT role FROM chat_messages WHERE id = ? AND thread_id = ?",
-            (input_message_id, thread_id),
-        ).fetchone()
-        if row is None or row["role"] != "user":
-            raise ValueError("regenerate parent must be a user message")
-
-    _assert_parent(conn, thread_id, input_message_id)
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO chat_messages
-            (id, thread_id, parent_id, source_message_id, role, content, status)
-        VALUES (?, ?, ?, ?, 'assistant', '', 'running')
-        """,
-        (assistant_message_id, thread_id, input_message_id, source_message_id),
-    )
-    run_id = f"run_{uuid4().hex}"
-    settings = get_settings()
-    conn.execute(
-        """
-        INSERT INTO chat_runs (id, thread_id, input_message_id, output_message_id, model)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (run_id, thread_id, input_message_id, assistant_message_id, settings.llm_chat_model),
-    )
-    conn.execute(
-        """
-        UPDATE chat_threads SET active_leaf_id = ?, message_token_limit = ?,
-            updated_at = CURRENT_TIMESTAMP WHERE id = ?
-        """,
-        (assistant_message_id, message_token_limit, thread_id),
-    )
+        run_id = f"run_{uuid4().hex}"
+        settings = get_settings()
+        conn.execute(
+            """
+            INSERT INTO chat_runs (id, thread_id, input_message_id, output_message_id, model)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (run_id, thread_id, input_message_id, assistant_message_id, settings.llm_chat_model),
+        )
+        conn.execute(
+            """
+            UPDATE chat_threads SET active_leaf_id = ?, message_token_limit = ?,
+                updated_at = CURRENT_TIMESTAMP WHERE id = ?
+            """,
+            (assistant_message_id, message_token_limit, thread_id),
+        )
+    except sqlite3.IntegrityError as exc:
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
+        raise ValueError("message id already exists") from exc
+    except Exception:
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
+        raise
+    conn.execute(f"RELEASE {savepoint}")
     conn.commit()
     return {
         "run_id": run_id,
@@ -199,6 +238,8 @@ def _lineage(conn: sqlite3.Connection, thread_id: str, leaf_id: str) -> list[dic
 
 
 def build_model_messages(conn: sqlite3.Connection, run: dict[str, Any]) -> list[dict[str, str]]:
+    if run["paper_id"] is None:
+        raise ValueError("library chat is not implemented")
     document = conn.execute(
         """
         SELECT content_markdown, token_count, status FROM paper_documents WHERE paper_id = ?
@@ -248,53 +289,128 @@ def build_model_messages(conn: sqlite3.Connection, run: dict[str, Any]) -> list[
     return model_messages
 
 
+def _update_running_output(
+    conn: sqlite3.Connection,
+    run: dict[str, Any],
+    *,
+    content: str,
+) -> None:
+    cursor = conn.execute(
+        """
+        UPDATE chat_messages SET content = ?, token_count = ?
+        WHERE id = ? AND thread_id = ? AND status = 'running'
+          AND EXISTS (
+              SELECT 1 FROM chat_runs
+              WHERE id = ? AND thread_id = ? AND output_message_id = chat_messages.id
+                AND status = 'running'
+          )
+        """,
+        (
+            content,
+            estimate_tokens(content),
+            run["assistant_message_id"],
+            run["thread_id"],
+            run["run_id"],
+            run["thread_id"],
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise ValueError("run output message is not writable")
+
+
+def _fail_running_output(conn: sqlite3.Connection, run: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        UPDATE chat_messages SET status = 'failed'
+        WHERE id = ? AND thread_id = ? AND status = 'running'
+          AND EXISTS (
+              SELECT 1 FROM chat_runs
+              WHERE id = ? AND thread_id = ? AND output_message_id = chat_messages.id
+          )
+        """,
+        (
+            run["assistant_message_id"],
+            run["thread_id"],
+            run["run_id"],
+            run["thread_id"],
+        ),
+    )
+
+
 def stream_run(conn: sqlite3.Connection, run: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
-    messages = build_model_messages(conn, run)
     accumulated = ""
     completed = False
     try:
+        messages = build_model_messages(conn, run)
         yield "run.started", {"run_id": run["run_id"], "message_id": run["assistant_message_id"]}
         for delta in LLMClient().stream(messages):
             accumulated += delta
-            conn.execute(
-                "UPDATE chat_messages SET content = ?, token_count = ? WHERE id = ?",
-                (accumulated, estimate_tokens(accumulated), run["assistant_message_id"]),
-            )
+            _update_running_output(conn, run, content=accumulated)
             conn.commit()
             yield "text.delta", {"delta": delta}
-        conn.execute(
-            """
-            UPDATE chat_messages SET status = 'complete', completed_at = CURRENT_TIMESTAMP WHERE id = ?
-            """,
-            (run["assistant_message_id"],),
-        )
-        conn.execute(
-            "UPDATE chat_runs SET status = 'complete', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (run["run_id"],),
-        )
+        savepoint = "complete_chat_run"
+        conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            message_cursor = conn.execute(
+                """
+                UPDATE chat_messages SET status = 'complete', completed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND thread_id = ? AND status = 'running'
+                  AND EXISTS (
+                      SELECT 1 FROM chat_runs
+                      WHERE id = ? AND thread_id = ? AND output_message_id = chat_messages.id
+                        AND status = 'running'
+                  )
+                """,
+                (
+                    run["assistant_message_id"],
+                    run["thread_id"],
+                    run["run_id"],
+                    run["thread_id"],
+                ),
+            )
+            run_cursor = conn.execute(
+                """
+                UPDATE chat_runs SET status = 'complete', completed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND thread_id = ? AND output_message_id = ? AND status = 'running'
+                """,
+                (run["run_id"], run["thread_id"], run["assistant_message_id"]),
+            )
+            if message_cursor.rowcount != 1 or run_cursor.rowcount != 1:
+                raise ValueError("run output message is not writable")
+        except Exception:
+            conn.execute(f"ROLLBACK TO {savepoint}")
+            conn.execute(f"RELEASE {savepoint}")
+            raise
+        conn.execute(f"RELEASE {savepoint}")
         conn.commit()
         completed = True
         yield "message.completed", {"message_id": run["assistant_message_id"], "content": accumulated}
     except Exception as exc:
-        conn.execute("UPDATE chat_messages SET status = 'failed' WHERE id = ?", (run["assistant_message_id"],))
+        _fail_running_output(conn, run)
         conn.execute(
-            "UPDATE chat_runs SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (str(exc)[:1000], run["run_id"]),
+            """
+            UPDATE chat_runs SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND thread_id = ? AND output_message_id = ?
+            """,
+            (
+                str(exc)[:1000],
+                run["run_id"],
+                run["thread_id"],
+                run["assistant_message_id"],
+            ),
         )
         conn.commit()
         yield "run.failed", {"message": str(exc)}
     finally:
         if not completed:
-            conn.execute(
-                "UPDATE chat_messages SET status = CASE WHEN status = 'running' THEN 'failed' ELSE status END WHERE id = ?",
-                (run["assistant_message_id"],),
-            )
+            _fail_running_output(conn, run)
             conn.execute(
                 """
                 UPDATE chat_runs SET status = CASE WHEN status = 'running' THEN 'cancelled' ELSE status END,
-                    completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE id = ?
+                    completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+                WHERE id = ? AND thread_id = ? AND output_message_id = ?
                 """,
-                (run["run_id"],),
+                (run["run_id"], run["thread_id"], run["assistant_message_id"]),
             )
             conn.commit()
 

@@ -49,6 +49,16 @@ ARXIV_DEFAULT_CATEGORIES=cs.AI,cs.CL,cs.LG
 
 API Key 只从 `LLM_API_KEY` 环境变量读取。单篇论文 Chat 不使用 RAG：Docling 解析后的论文全文始终加入上下文，`LLM_CONTEXT_WINDOW` 只会裁剪当前分支的历史消息；若论文全文本身超过模型窗口，请改用更长上下文模型。
 
+## 数据库 schema
+
+当前 schema 不迁移旧版 `arxiv_id/file_path` 数据。启动时如果检测到旧版或不匹配的数据库，后端会明确拒绝启动；确认没有需要保留的数据后执行破坏性重建：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\reset_database.py --database backend\data\arxiv_wiki.sqlite3 --apply
+```
+
+该命令会删除指定数据库及其 WAL/SHM 文件，并创建空的当前版本 schema。
+
 ## 测试
 
 ```powershell

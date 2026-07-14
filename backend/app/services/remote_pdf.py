@@ -5,13 +5,13 @@ import threading
 from pathlib import Path
 from typing import BinaryIO
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from ..config import get_settings
 from ..database import get_paper_record, set_paper_asset_id
 from ..models import AssetInfo, PaperId
 from .asset_store import AssetNotFoundError, AssetStore, AssetStoreError, LocalAssetStore
+from .http_safety import UnsafeUrlError, open_trusted_url, validate_trusted_https_url
 
 
 REMOTE_PDF_TIMEOUT_SECONDS = 20
@@ -32,11 +32,10 @@ class RemotePdfError(ValueError):
 
 
 def _validate_pdf_url(url: str) -> str:
-    parsed = urlparse(url.strip())
-    host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https" or host not in ALLOWED_REMOTE_PDF_HOSTS:
-        raise RemotePdfError("PDF URL is not a trusted HTTPS source")
-    return parsed.geturl()
+    try:
+        return validate_trusted_https_url(url, ALLOWED_REMOTE_PDF_HOSTS)
+    except UnsafeUrlError as exc:
+        raise RemotePdfError(str(exc)) from exc
 
 
 def default_asset_store() -> LocalAssetStore:
@@ -85,10 +84,13 @@ class PaperPdfService:
                 },
             )
             try:
-                with urlopen(request, timeout=REMOTE_PDF_TIMEOUT_SECONDS) as response:
-                    _validate_pdf_url(response.geturl())
+                with open_trusted_url(
+                    request,
+                    allowed_hosts=ALLOWED_REMOTE_PDF_HOSTS,
+                    timeout=REMOTE_PDF_TIMEOUT_SECONDS,
+                ) as response:
                     asset = self.store.put_pdf(response)
-            except (HTTPError, URLError, TimeoutError, OSError, AssetStoreError) as exc:
+            except (HTTPError, URLError, TimeoutError, OSError, AssetStoreError, UnsafeUrlError) as exc:
                 raise RemotePdfError(f"remote PDF download failed: {exc}") from exc
 
             set_paper_asset_id(self.conn, paper_id, asset.id)

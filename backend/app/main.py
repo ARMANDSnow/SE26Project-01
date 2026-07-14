@@ -42,6 +42,7 @@ from .services.qa_agent import run_qa_agent
 from .services.search import build_graph, search_wiki
 from .services.library import recommend_folder
 from .services.remote_pdf import PaperPdfService, RemotePdfError, default_asset_store
+from .services.http_safety import UnsafeUrlError
 from .services.sources import fetch_arxiv_papers, fetch_sigops_papers, fetch_usenix_papers
 from .services.documents import parse_paper_document
 from .services.conversations import (
@@ -80,9 +81,9 @@ class IngestRequest(BaseModel):
 
 
 class SourceIngestRequest(IngestRequest):
-    venue: str = ""
+    venue: str = Field(default="", max_length=80)
     year: int = Field(default_factory=lambda: date.today().year, ge=2000, le=2100)
-    proceedings_url: str = ""
+    proceedings_url: str = Field(default="", max_length=2_048)
 
 
 class FavoriteRequest(BaseModel):
@@ -239,6 +240,8 @@ def ingest_source(source: str, payload: SourceIngestRequest) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="不支持的论文来源")
     except HTTPException:
         raise
+    except UnsafeUrlError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"{normalized_source} 抓取失败：{exc}") from exc
     return {
@@ -502,7 +505,8 @@ def start_chat_run(payload: ChatRunRequest, x_user_id: int = Header(default=1)) 
                 user_id=x_user_id,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            status = 409 if str(exc) == "message id already exists" else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     def event_stream() -> Iterator[str]:
         with connect() as stream_conn:

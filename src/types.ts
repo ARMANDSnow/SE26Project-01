@@ -93,7 +93,7 @@ export type PaperSummary = {
 
 export type ChatThread = {
   id: string;
-  paper_id: number;
+  paper_id: number | null;
   title: string;
   active_leaf_id?: string;
   message_token_limit: number;

@@ -7,10 +7,59 @@ from typing import Any
 
 from .config import get_settings
 from .models import AssetId, PaperCandidate, PaperId, PaperRecord, PaperSource
-from .services.text_utils import deterministic_embedding, title_hash
+from .services.text_utils import deterministic_embedding
 
 
 PAPER_CHUNKS_FTS_TABLE = "paper_chunks_fts"
+SCHEMA_VERSION = 2
+
+
+class IncompatibleSchemaError(RuntimeError):
+    pass
+
+
+def _schema_tables(conn: sqlite3.Connection) -> set[str]:
+    return {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    }
+
+
+def _schema_reset_command(conn: sqlite3.Connection) -> str:
+    row = conn.execute("PRAGMA database_list").fetchone()
+    path = str(row[2]) if row is not None and row[2] else "<database-path>"
+    return f'python scripts/reset_database.py --database "{path}" --apply'
+
+
+def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
+    tables = _schema_tables(conn)
+    if not tables:
+        return
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version != SCHEMA_VERSION:
+        raise IncompatibleSchemaError(
+            f"Database schema version {version} is incompatible with required version "
+            f"{SCHEMA_VERSION}. No data migration is provided; rebuild the database with: "
+            f"{_schema_reset_command(conn)}"
+        )
+
+    paper_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(papers)").fetchall()}
+    thread_columns = {
+        str(row[1]): int(row[3]) for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
+    }
+    required_paper_columns = {"source", "source_id", "asset_id", "processing_status"}
+    if not required_paper_columns.issubset(paper_columns) or "title_hash" in paper_columns:
+        raise IncompatibleSchemaError(
+            f"Database schema does not match version {SCHEMA_VERSION}; rebuild it with: "
+            f"{_schema_reset_command(conn)}"
+        )
+    if thread_columns.get("paper_id") != 0:
+        raise IncompatibleSchemaError(
+            f"Database chat schema does not match version {SCHEMA_VERSION}; rebuild it with: "
+            f"{_schema_reset_command(conn)}"
+        )
 
 
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
@@ -138,6 +187,7 @@ def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = No
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
+    _assert_schema_compatible(conn)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS papers (
@@ -155,7 +205,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
             primary_category TEXT NOT NULL,
             published_at TEXT NOT NULL,
             updated_at TEXT,
-            title_hash TEXT NOT NULL,
             processing_status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(source, source_id)
@@ -263,7 +312,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS chat_threads (
             id TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL DEFAULT 1,
-            paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+            paper_id INTEGER REFERENCES papers(id) ON DELETE CASCADE,
             title TEXT NOT NULL DEFAULT '新对话',
             active_leaf_id TEXT,
             message_token_limit INTEGER NOT NULL DEFAULT 12000,
@@ -288,8 +337,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS chat_runs (
             id TEXT PRIMARY KEY,
             thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
-            input_message_id TEXT REFERENCES chat_messages(id),
-            output_message_id TEXT REFERENCES chat_messages(id),
+            input_message_id TEXT NOT NULL REFERENCES chat_messages(id),
+            output_message_id TEXT NOT NULL UNIQUE REFERENCES chat_messages(id),
             status TEXT NOT NULL DEFAULT 'running',
             model TEXT,
             usage_json TEXT NOT NULL DEFAULT '{}',
@@ -329,7 +378,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_papers_category ON papers(primary_category);
         CREATE INDEX IF NOT EXISTS idx_papers_published ON papers(published_at);
         CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source);
-        CREATE INDEX IF NOT EXISTS idx_papers_title_hash ON papers(title_hash);
         CREATE INDEX IF NOT EXISTS idx_papers_asset ON papers(asset_id);
         CREATE INDEX IF NOT EXISTS idx_wiki_sections_section ON wiki_sections(section);
         CREATE INDEX IF NOT EXISTS idx_notes_paper ON notes(paper_id);
@@ -345,6 +393,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     init_paper_chunks_fts(conn)
     rebuild_paper_chunks_fts(conn)
     ensure_user_library(conn, 1)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
 
 
@@ -369,7 +418,6 @@ def row_to_paper_record(row: sqlite3.Row) -> PaperRecord:
         primary_category=str(row["primary_category"]),
         published_at=str(row["published_at"]),
         updated_at=str(row["updated_at"]) if row["updated_at"] is not None else None,
-        title_hash=str(row["title_hash"]),
         processing_status=str(row["processing_status"]),
         created_at=str(row["created_at"]),
     )
@@ -405,33 +453,20 @@ def row_to_paper(row: sqlite3.Row, is_favorite: bool | None = None) -> dict[str,
 
 
 def find_existing_paper_id(conn: sqlite3.Connection, paper: PaperCandidate) -> PaperId | None:
-    hash_value = title_hash(paper.title)
     row = conn.execute(
-        """
-        SELECT id FROM papers
-        WHERE (source = ? AND source_id = ?)
-           OR title_hash = ?
-        ORDER BY CASE WHEN source = ? AND source_id = ? THEN 0 ELSE 1 END
-        LIMIT 1
-        """,
-        (paper.source.value, paper.source_id, hash_value, paper.source.value, paper.source_id),
+        "SELECT id FROM papers WHERE source = ? AND source_id = ?",
+        (paper.source.value, paper.source_id),
     ).fetchone()
     return PaperId(int(row["id"])) if row is not None else None
 
 
 def upsert_paper(conn: sqlite3.Connection, paper: PaperCandidate, commit: bool = True) -> PaperId:
-    hash_value = title_hash(paper.title)
     existing_id = find_existing_paper_id(conn, paper)
     if existing_id is not None:
         identity_row = conn.execute(
-            "SELECT source, source_id, asset_id FROM papers WHERE id = ?",
+            "SELECT asset_id FROM papers WHERE id = ?",
             (int(existing_id),),
         ).fetchone()
-        same_source = (
-            identity_row is not None
-            and identity_row["source"] == paper.source.value
-            and identity_row["source_id"] == paper.source_id
-        )
         conn.execute(
             """
             UPDATE papers SET
@@ -442,12 +477,10 @@ def upsert_paper(conn: sqlite3.Connection, paper: PaperCandidate, commit: bool =
                 primary_category = ?,
                 published_at = ?,
                 updated_at = ?,
-                pdf_url = CASE WHEN ? THEN ? ELSE pdf_url END,
+                pdf_url = COALESCE(?, pdf_url),
                 source_url = COALESCE(?, source_url),
                 venue = COALESCE(?, venue),
-                asset_id = asset_id,
-                title_hash = ?,
-                processing_status = ?
+                asset_id = asset_id
             WHERE id = ?
             """,
             (
@@ -458,12 +491,9 @@ def upsert_paper(conn: sqlite3.Connection, paper: PaperCandidate, commit: bool =
                 paper.primary_category,
                 paper.published_at,
                 paper.updated_at,
-                1 if same_source else 0,
                 paper.pdf_url,
                 paper.source_url,
                 paper.venue,
-                hash_value,
-                paper.processing_status,
                 int(existing_id),
             ),
         )
@@ -478,9 +508,9 @@ def upsert_paper(conn: sqlite3.Connection, paper: PaperCandidate, commit: bool =
         INSERT INTO papers (
             source, source_id, source_url, venue, pdf_url, asset_id,
             title, authors_json, abstract, categories_json, primary_category,
-            published_at, updated_at, title_hash, processing_status
+            published_at, updated_at, processing_status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             paper.source.value,
@@ -496,7 +526,6 @@ def upsert_paper(conn: sqlite3.Connection, paper: PaperCandidate, commit: bool =
             paper.primary_category,
             paper.published_at,
             paper.updated_at,
-            hash_value,
             paper.processing_status,
         ),
     )
@@ -525,18 +554,30 @@ def set_paper_asset_id(
     if row is None:
         raise ValueError("paper not found")
     next_asset_id = str(asset_id) if asset_id else None
-    if row["asset_id"] != next_asset_id:
+    if row["asset_id"] == next_asset_id:
+        if commit:
+            conn.commit()
+        return
+
+    savepoint = "set_paper_asset_id"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
         conn.execute("DELETE FROM paper_documents WHERE paper_id = ?", (int(paper_id),))
         conn.execute("UPDATE summary_versions SET is_active = 0 WHERE paper_id = ?", (int(paper_id),))
         conn.execute("DELETE FROM wiki_sections WHERE paper_id = ?", (int(paper_id),))
         conn.execute("DELETE FROM paper_concepts WHERE paper_id = ?", (int(paper_id),))
         rebuild_concept_edges(conn)
-    cursor = conn.execute(
-        "UPDATE papers SET asset_id = ? WHERE id = ?",
-        (next_asset_id, int(paper_id)),
-    )
-    if cursor.rowcount == 0:
-        raise ValueError("paper not found")
+        cursor = conn.execute(
+            "UPDATE papers SET asset_id = ?, processing_status = 'pending' WHERE id = ?",
+            (next_asset_id, int(paper_id)),
+        )
+        if cursor.rowcount == 0:
+            raise ValueError("paper not found")
+    except Exception:
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
+        raise
+    conn.execute(f"RELEASE {savepoint}")
     if commit:
         conn.commit()
 

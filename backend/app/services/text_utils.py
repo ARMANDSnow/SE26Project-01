@@ -14,10 +14,6 @@ def normalize_text(value: str) -> str:
     return " ".join(value.strip().lower().split())
 
 
-def title_hash(title: str) -> str:
-    return hashlib.sha256(normalize_text(title).encode("utf-8")).hexdigest()
-
-
 def tokenize(text: str) -> list[str]:
     return TOKEN_RE.findall(normalize_text(text))
 

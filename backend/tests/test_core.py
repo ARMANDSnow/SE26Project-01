@@ -3,13 +3,27 @@ from __future__ import annotations
 import sqlite3
 from io import BytesIO
 from types import SimpleNamespace
+from urllib.request import Request
 
 import pytest
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
 from backend.app.config import get_settings
-from backend.app.database import add_note, connect, get_paper_detail, init_db, init_schema, list_paper_chunks, list_papers, set_favorite, set_paper_asset_id, upsert_paper
+from backend.app.database import (
+    SCHEMA_VERSION,
+    IncompatibleSchemaError,
+    add_note,
+    connect,
+    get_paper_detail,
+    init_db,
+    init_schema,
+    list_paper_chunks,
+    list_papers,
+    set_favorite,
+    set_paper_asset_id,
+    upsert_paper,
+)
 from backend.app.main import app
 from backend.app.models import AssetId, AssetInfo, PaperCandidate, PaperSource
 from backend.app.services.agents import SummaryAgent, process_paper
@@ -20,10 +34,18 @@ from backend.app.services.sources.sigops import (
     SigopsTocParser,
     _match_candidate,
     _schedule_candidates,
+    fetch_sigops_papers,
 )
+from backend.app.services.http_safety import UnsafeUrlError, _TrustedRedirectHandler
 from backend.app.services.sources.usenix import _detail_to_paper
 from backend.app.services.search import answer_question, build_graph, search_wiki
-from backend.app.services.conversations import build_model_messages, create_thread, get_message_repository, prepare_run
+from backend.app.services.conversations import (
+    build_model_messages,
+    create_thread,
+    get_message_repository,
+    prepare_run,
+    stream_run,
+)
 from backend.tests.fixtures import add_test_paper, populate_test_library
 
 
@@ -62,8 +84,27 @@ def test_papers_schema_uses_asset_id_without_legacy_columns():
     init_schema(conn)
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(papers)").fetchall()}
     assert {"source", "source_id", "source_url", "pdf_url", "venue", "asset_id"} <= columns
-    assert {"arxiv_id", "arxiv_url", "file_path", "doi", "reading_status", "is_favorite"}.isdisjoint(columns)
+    assert {
+        "arxiv_id",
+        "arxiv_url",
+        "file_path",
+        "doi",
+        "reading_status",
+        "is_favorite",
+        "title_hash",
+    }.isdisjoint(columns)
     assert conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assets'").fetchone() is None
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    thread_columns = {row["name"]: row["notnull"] for row in conn.execute("PRAGMA table_info(chat_threads)")}
+    assert thread_columns["paper_id"] == 0
+
+
+def test_init_schema_rejects_legacy_database_with_reset_command():
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE papers (id INTEGER PRIMARY KEY, arxiv_id TEXT NOT NULL)")
+
+    with pytest.raises(IncompatibleSchemaError, match="reset_database.py"):
+        init_schema(conn)
 
 
 def test_local_asset_store_deduplicates_pdf_content(tmp_path):
@@ -151,6 +192,7 @@ def test_chunks_and_derived_knowledge_are_invalidated_when_pdf_asset_changes():
     set_paper_asset_id(conn, paper_id, AssetId(f"sha256:{'c' * 64}"))
 
     assert list_paper_chunks(conn, paper_id) == ([], 0)
+    assert conn.execute("SELECT processing_status FROM papers WHERE id = ?", (paper_id,)).fetchone()[0] == "pending"
     assert conn.execute("SELECT 1 FROM paper_documents WHERE paper_id = ?", (paper_id,)).fetchone() is None
     assert conn.execute("SELECT 1 FROM wiki_sections WHERE paper_id = ?", (paper_id,)).fetchone() is None
     assert conn.execute("SELECT 1 FROM paper_concepts WHERE paper_id = ?", (paper_id,)).fetchone() is None
@@ -202,7 +244,7 @@ def test_graph_unknown_topic_returns_empty_result():
     assert build_graph(conn, topic="definitely-no-such-topic-xyz") == {"nodes": [], "links": []}
 
 
-def test_upsert_paper_deduplicates_same_title_different_source_id():
+def test_upsert_paper_keeps_same_title_source_records_independent():
     conn = memory_db()
     first_id = add_test_paper(conn, source_id="dedupe.00001", title="A Stable Duplicate Title")
     second_id = upsert_paper(
@@ -218,7 +260,63 @@ def test_upsert_paper_deduplicates_same_title_different_source_id():
             published_at="2026-07-09",
         ),
     )
-    assert int(second_id) == first_id
+    third_id = upsert_paper(
+        conn,
+        PaperCandidate(
+            source=PaperSource.USENIX,
+            source_id="osdi26:stable-title",
+            source_url="https://www.usenix.org/conference/osdi26/presentation/stable",
+            venue="OSDI 2026",
+            title="A Stable Duplicate Title",
+            authors=("Grace",),
+            abstract="A distinct conference source record.",
+            categories=("systems",),
+            primary_category="OSDI",
+            published_at="2026-07-10",
+        ),
+    )
+
+    assert len({first_id, int(second_id), int(third_id)}) == 3
+    rows = conn.execute(
+        "SELECT source, source_id, authors_json, venue FROM papers WHERE title = ? ORDER BY id",
+        ("A Stable Duplicate Title",),
+    ).fetchall()
+    assert [(row["source"], row["source_id"]) for row in rows] == [
+        ("arxiv", "dedupe.00001"),
+        ("arxiv", "dedupe.00002"),
+        ("usenix", "osdi26:stable-title"),
+    ]
+    assert rows[0]["authors_json"] != rows[2]["authors_json"]
+    assert rows[0]["venue"] is None
+    assert rows[2]["venue"] == "OSDI 2026"
+
+
+def test_metadata_refresh_preserves_processed_state_and_document():
+    conn = memory_db()
+    paper = conn.execute(
+        "SELECT id, source_id FROM papers WHERE processing_status = 'processed' ORDER BY id LIMIT 1"
+    ).fetchone()
+    paper_id = int(paper["id"])
+
+    refreshed_id = upsert_paper(
+        conn,
+        PaperCandidate(
+            source=PaperSource.ARXIV,
+            source_id=str(paper["source_id"]),
+            title="Refreshed title",
+            authors=("Updated Author",),
+            abstract="Updated metadata without a new asset.",
+            categories=("cs.CL",),
+            primary_category="cs.CL",
+            published_at="2025-01-01",
+        ),
+    )
+
+    assert int(refreshed_id) == paper_id
+    state = conn.execute("SELECT processing_status FROM papers WHERE id = ?", (paper_id,)).fetchone()
+    assert state["processing_status"] == "processed"
+    assert conn.execute("SELECT 1 FROM paper_documents WHERE paper_id = ?", (paper_id,)).fetchone() is not None
+    assert conn.execute("SELECT COUNT(*) FROM paper_chunks WHERE paper_id = ?", (paper_id,)).fetchone()[0] > 0
 
 
 def test_api_health_reports_llm_unavailable(api_client):
@@ -248,7 +346,7 @@ def test_api_chunks_returns_current_parsed_document_chunks(api_client):
     assert all(item["paper_id"] == paper_id for item in payload["items"])
 
 
-def test_api_ingest_reports_duplicate_count(api_client, monkeypatch):
+def test_api_ingest_does_not_deduplicate_matching_titles(api_client, monkeypatch):
     fetched = [
         PaperCandidate(
             source=PaperSource.ARXIV,
@@ -276,9 +374,9 @@ def test_api_ingest_reports_duplicate_count(api_client, monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["fetched_count"] == 2
-    assert data["duplicate_count"] == 1
-    assert data["count"] == 1
-    assert len(data["paper_ids"]) == 1
+    assert data["duplicate_count"] == 0
+    assert data["count"] == 2
+    assert len(data["paper_ids"]) == 2
 
 
 def test_sigops_toc_parser_reads_title_authors_and_abstract():
@@ -338,6 +436,39 @@ def test_sigops_schedule_maps_direct_and_acm_pdf_links():
     assert acm is not None
     assert acm["doi"] == "10.1145/3694715.3695951"
     assert acm["pdf_url"] == "https://dl.acm.org/doi/pdf/10.1145/3694715.3695951?download=true"
+
+
+def test_sigops_rejects_untrusted_proceedings_url_before_open(monkeypatch):
+    opened: list[str] = []
+
+    def fake_open(*args, **kwargs):
+        opened.append(str(args[0]))
+        raise AssertionError("untrusted URL must not be opened")
+
+    monkeypatch.setattr("backend.app.services.sources.sigops.open_trusted_url", fake_open)
+    with pytest.raises(UnsafeUrlError):
+        fetch_sigops_papers(
+            "sosp",
+            2026,
+            proceedings_url="http://127.0.0.1:8000/internal",
+        )
+    assert opened == []
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "http://127.0.0.1/internal",
+        "https://127.0.0.1/internal",
+        "https://www.usenix.org:8443/paper.pdf",
+        "https://www.usenix.org@127.0.0.1/paper.pdf",
+    ],
+)
+def test_trusted_redirect_handler_rejects_target_before_following(target):
+    handler = _TrustedRedirectHandler({"www.usenix.org"})
+    request = Request("https://www.usenix.org/start.pdf")
+    with pytest.raises(UnsafeUrlError):
+        handler.redirect_request(request, None, 302, "Found", {}, target)
 
 
 def test_usenix_detail_normalizes_citation_metadata():
@@ -485,7 +616,7 @@ def test_api_remote_pdf_downloads_once_and_serves_cache(api_client, monkeypatch)
         calls.append(True)
         return FakeResponse()
 
-    monkeypatch.setattr("backend.app.services.remote_pdf.urlopen", fake_urlopen)
+    monkeypatch.setattr("backend.app.services.remote_pdf.open_trusted_url", fake_urlopen)
     first = api_client.get(f"/api/papers/{paper_id}/pdf")
     second = api_client.get(f"/api/papers/{paper_id}/pdf")
     not_modified = api_client.get(
@@ -611,6 +742,63 @@ def test_chat_message_tree_keeps_regenerated_answers_as_siblings():
     parents = {row["id"]: row["parent_id"] for row in repository["messages"]}
     assert parents["a1"] == parents["a2"] == "u1"
     assert repository["headId"] == "a2"
+
+
+def test_chat_message_id_collision_does_not_create_run_or_overwrite_answer():
+    conn = memory_db()
+    paper_id = conn.execute("SELECT id FROM papers LIMIT 1").fetchone()["id"]
+    thread = create_thread(conn, paper_id)
+    prepare_run(
+        conn,
+        thread_id=thread["id"],
+        user_message={"id": "collision-u1", "parent_id": None, "content": "First question"},
+        parent_message_id=None,
+        assistant_message_id="collision-a1",
+        source_message_id=None,
+        message_token_limit=12000,
+    )
+    conn.execute(
+        "UPDATE chat_messages SET content = 'historical answer', status = 'complete' WHERE id = 'collision-a1'"
+    )
+    conn.commit()
+
+    with pytest.raises(ValueError, match="message id already exists"):
+        prepare_run(
+            conn,
+            thread_id=thread["id"],
+            user_message=None,
+            parent_message_id="collision-u1",
+            assistant_message_id="collision-a1",
+            source_message_id=None,
+            message_token_limit=12000,
+        )
+
+    answer = conn.execute(
+        "SELECT content, status FROM chat_messages WHERE id = 'collision-a1'"
+    ).fetchone()
+    assert dict(answer) == {"content": "historical answer", "status": "complete"}
+    assert conn.execute("SELECT COUNT(*) FROM chat_runs").fetchone()[0] == 1
+
+
+def test_nullable_paper_thread_is_reserved_for_future_library_chat():
+    conn = memory_db()
+    thread = create_thread(conn, None)
+    assert thread["paper_id"] is None
+    run = prepare_run(
+        conn,
+        thread_id=thread["id"],
+        user_message={"id": "library-u1", "parent_id": None, "content": "Search the library"},
+        parent_message_id=None,
+        assistant_message_id="library-a1",
+        source_message_id=None,
+        message_token_limit=12000,
+    )
+    with pytest.raises(ValueError, match="library chat is not implemented"):
+        build_model_messages(conn, run)
+    events = list(stream_run(conn, run))
+    assert events == [("run.failed", {"message": "library chat is not implemented"})]
+    assert conn.execute("SELECT status FROM chat_messages WHERE id = 'library-a1'").fetchone()[0] == "failed"
+    assert conn.execute("SELECT status FROM chat_runs WHERE id = ?", (run["run_id"],)).fetchone()[0] == "failed"
 
 
 def test_chat_context_always_contains_full_paper():

@@ -50,7 +50,6 @@ class PaperRecord:
     venue: str | None
     updated_at: str | None
     asset_id: AssetId | None
-    title_hash: str
     processing_status: str
     created_at: str
 

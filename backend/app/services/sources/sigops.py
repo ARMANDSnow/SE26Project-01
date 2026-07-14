@@ -11,7 +11,11 @@ from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from ...models import PaperCandidate, PaperSource
+from ..http_safety import UnsafeUrlError, open_trusted_url, validate_trusted_https_url
 from .common import MetadataPage, absolute_links, clean_text
+
+
+SIGOPS_PROCEEDINGS_HOSTS = {"sigops.org", "www.sigops.org"}
 
 
 class SigopsTocParser(HTMLParser):
@@ -282,7 +286,7 @@ def _fetch_schedule_candidates(base_url: str) -> list[dict[str, str]]:
     schedule_url = f"{base_url}/schedule.html"
     request = Request(schedule_url, headers={"User-Agent": "PaperWiki/0.2 (+metadata import)"})
     try:
-        with urlopen(request, timeout=15) as response:
+        with open_trusted_url(request, allowed_hosts=SIGOPS_PROCEEDINGS_HOSTS, timeout=15) as response:
             html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
     except Exception:
         return []
@@ -301,18 +305,23 @@ def fetch_sigops_papers(
     editions do not all share one stable URL pattern.
     """
     venue_code = venue.strip().lower() or "sosp"
-    base_url = f"https://sigops.org/s/conferences/{quote(venue_code)}/{year}"
-    url = proceedings_url.strip() or f"{base_url}/accepted.html"
+    if re.fullmatch(r"[a-z0-9-]{1,32}", venue_code) is None:
+        raise UnsafeUrlError("SIGOPS venue must contain only letters, numbers, or hyphens")
+    base_url = f"https://sigops.org/s/conferences/{quote(venue_code, safe='')}/{year}"
+    url = validate_trusted_https_url(
+        proceedings_url.strip() or f"{base_url}/accepted.html",
+        SIGOPS_PROCEEDINGS_HOSTS,
+    )
     request = Request(url, headers={"User-Agent": "PaperWiki/0.2 (+metadata import)"})
     try:
-        with urlopen(request, timeout=15) as response:
+        with open_trusted_url(request, allowed_hosts=SIGOPS_PROCEEDINGS_HOSTS, timeout=15) as response:
             html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
     except HTTPError as exc:
         if proceedings_url.strip() or exc.code != 404:
             raise
         url = f"{base_url}/toc.html"
         request = Request(url, headers={"User-Agent": "PaperWiki/0.2 (+metadata import)"})
-        with urlopen(request, timeout=15) as response:
+        with open_trusted_url(request, allowed_hosts=SIGOPS_PROCEEDINGS_HOSTS, timeout=15) as response:
             html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
 
     accepted_parser = SigopsAcceptedPapersParser()
