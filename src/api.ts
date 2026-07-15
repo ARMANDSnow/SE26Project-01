@@ -1,4 +1,4 @@
-import type { ChatMessageRepository, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, Stats, Subscription, WikiSearchResult } from "./types";
+import type { ChatMessageRepository, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, Stats, Subscription, User, WikiSearchResult } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -7,12 +7,38 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!(options?.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json")
   }
-  const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const response = await fetch(`${API_BASE}${path}`, { ...options, credentials: "include", headers });
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || `HTTP ${response.status}`);
   }
   return response.json() as Promise<T>;
+}
+
+export async function fetchCurrentUser(): Promise<User> {
+  return request<User>("/api/auth/me");
+}
+
+export async function login(username: string, password: string): Promise<User> {
+  return request<User>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function register(username: string, password: string): Promise<User> {
+  return request<User>("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function logout(): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/auth/logout`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
 export async function fetchStats(): Promise<Stats> {
@@ -64,6 +90,18 @@ export async function createPaperChatThread(paperId: number, title = "新对话"
   });
 }
 
+export async function fetchGeneralChatThreads(): Promise<ChatThread[]> {
+  const data = await request<{ items: ChatThread[] }>("/api/chat/threads")
+  return data.items
+}
+
+export async function createGeneralChatThread(title = "新对话"): Promise<ChatThread> {
+  return request<ChatThread>("/api/chat/threads", {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  })
+}
+
 export async function fetchChatMessages(threadId: string): Promise<ChatMessageRepository> {
   return request<ChatMessageRepository>(`/api/chat/threads/${threadId}/messages`);
 }
@@ -92,13 +130,27 @@ export async function ingestSource(
   });
 }
 
-export async function uploadPaper(file: File, details: { title?: string; authors?: string; year?: number } = {}): Promise<Paper> {
+export async function uploadPaper(
+  file: File,
+  details: { title?: string; authors?: string; year?: number; visibility?: "private" | "public" } = {},
+): Promise<Paper> {
   const body = new FormData()
   body.set("file", file)
   if (details.title) body.set("title", details.title)
   if (details.authors) body.set("authors", details.authors)
   if (details.year) body.set("year", String(details.year))
+  body.set("visibility", details.visibility ?? "private")
   return request<Paper>("/api/papers/upload", { method: "POST", body })
+}
+
+export async function updateUploadVisibility(
+  paperId: number,
+  visibility: "private" | "public",
+): Promise<Paper> {
+  return request<Paper>(`/api/papers/${paperId}/visibility`, {
+    method: "PATCH",
+    body: JSON.stringify({ visibility }),
+  })
 }
 
 export async function searchWiki(q: string): Promise<WikiSearchResult[]> {

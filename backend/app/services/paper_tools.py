@@ -4,6 +4,7 @@ import json
 import sqlite3
 from typing import Any
 
+from ..repositories.uploads import accessible_paper_condition
 from .search import extract_snippet, search_chunks
 
 
@@ -19,8 +20,14 @@ class ToolInputError(ValueError):
 class PaperToolbox:
     """Read-only, scoped tools for exploring the local paper repository."""
 
-    def __init__(self, conn: sqlite3.Connection, allowed_paper_ids: list[int] | None = None) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        allowed_paper_ids: list[int] | None = None,
+        user_id: int = 1,
+    ) -> None:
         self.conn = conn
+        self.user_id = user_id
         self.allowed_paper_ids = set(allowed_paper_ids) if allowed_paper_ids else None
         self.search_registry: dict[str, dict[str, Any]] = {}
         self.opened_registry: dict[str, dict[str, Any]] = {}
@@ -59,12 +66,15 @@ class PaperToolbox:
         if cleaned_category:
             clauses.append("primary_category = ?")
             params.append(cleaned_category)
+        access_condition, access_params = accessible_paper_condition("p", self.user_id)
+        clauses.append(access_condition)
+        params.extend(access_params)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self.conn.execute(
             f"""
             SELECT id, source, source_id, source_url, venue, title, authors_json,
                    abstract, primary_category, published_at, processing_status
-            FROM papers
+            FROM papers p
             {where}
             ORDER BY published_at DESC, id DESC
             """,
@@ -116,6 +126,7 @@ class PaperToolbox:
             cleaned_query,
             limit=bounded_limit,
             paper_ids=sorted(scope) if scope is not None else None,
+            user_id=self.user_id,
         )
         items = []
         for result in results:

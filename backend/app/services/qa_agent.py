@@ -33,9 +33,10 @@ def run_qa_agent(
     paper_ids: list[int] | None = None,
     mode: str = "agentic",
     client: ChatClient | None = None,
+    user_id: int = 1,
 ) -> dict[str, Any]:
     if mode == "classic":
-        result = answer_question(conn, question, paper_ids)
+        result = answer_question(conn, question, paper_ids, user_id=user_id)
         result["execution"] = {
             "mode": "classic",
             "status": "completed",
@@ -45,7 +46,7 @@ def run_qa_agent(
         }
         return result
     llm = client or LLMClient()
-    return _run_real_agent(conn, question, paper_ids, llm)
+    return _run_real_agent(conn, question, paper_ids, llm, user_id)
 
 
 def _run_real_agent(
@@ -53,8 +54,9 @@ def _run_real_agent(
     question: str,
     paper_ids: list[int] | None,
     client: ChatClient,
+    user_id: int,
 ) -> dict[str, Any]:
-    toolbox = PaperToolbox(conn, paper_ids)
+    toolbox = PaperToolbox(conn, paper_ids, user_id=user_id)
     scope_text = "全库" if not paper_ids else "仅限论文 ID：" + ", ".join(str(item) for item in paper_ids)
     messages: list[dict[str, Any]] = [
         {

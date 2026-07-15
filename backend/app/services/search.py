@@ -5,7 +5,8 @@ import re
 import sqlite3
 from typing import Any
 
-from ..database import paper_chunks_fts_ready
+from ..db.schema import paper_chunks_fts_ready
+from ..repositories.uploads import accessible_paper_condition
 from .llm import LLMClient
 from .text_utils import cosine_similarity, deterministic_embedding, keyword_score, normalize_text, tokenize
 
@@ -46,6 +47,7 @@ def _fts_candidate_ids(
     query: str,
     limit: int,
     paper_ids: list[int] | None,
+    user_id: int,
 ) -> list[int] | None:
     if not paper_chunks_fts_ready(conn):
         return None
@@ -57,6 +59,9 @@ def _fts_candidate_ids(
     if paper_ids:
         clauses.append("pc.paper_id IN ({})".format(",".join("?" for _ in paper_ids)))
         params.extend(paper_ids)
+    access_condition, access_params = accessible_paper_condition("p", user_id)
+    clauses.append(access_condition)
+    params.extend(access_params)
     params.append(max(limit * 16, 80))
     try:
         rows = conn.execute(
@@ -65,6 +70,7 @@ def _fts_candidate_ids(
             FROM paper_chunks_fts
             JOIN paper_chunks pc ON pc.id = paper_chunks_fts.rowid
             JOIN paper_documents d ON d.id = pc.document_id
+            JOIN papers p ON p.id = pc.paper_id
             WHERE {' AND '.join(clauses)}
               AND d.status = 'completed' AND d.source_hash = pc.source_hash
             ORDER BY bm25(paper_chunks_fts), pc.created_at DESC, pc.chunk_index
@@ -82,6 +88,7 @@ def _fetch_chunk_rows(
     *,
     paper_ids: list[int] | None = None,
     chunk_ids: list[int] | None = None,
+    user_id: int,
 ) -> list[sqlite3.Row]:
     clauses = ["d.status = 'completed'", "d.source_hash = pc.source_hash"]
     params: list[Any] = []
@@ -93,6 +100,9 @@ def _fetch_chunk_rows(
             return []
         clauses.append("pc.id IN ({})".format(",".join("?" for _ in chunk_ids)))
         params.extend(chunk_ids)
+    access_condition, access_params = accessible_paper_condition("p", user_id)
+    clauses.append(access_condition)
+    params.extend(access_params)
     return conn.execute(
         f"""
         SELECT pc.id, pc.paper_id, pc.source_hash, pc.chunk_index, pc.heading,
@@ -114,12 +124,20 @@ def search_chunks(
     query: str,
     limit: int = 8,
     paper_ids: list[int] | None = None,
+    user_id: int = 1,
 ) -> list[dict[str, Any]]:
     cleaned = query.strip()
-    candidate_ids = _fts_candidate_ids(conn, cleaned, limit, paper_ids) if cleaned else None
+    candidate_ids = (
+        _fts_candidate_ids(conn, cleaned, limit, paper_ids, user_id) if cleaned else None
+    )
     if candidate_ids == []:
         return []
-    rows = _fetch_chunk_rows(conn, paper_ids=paper_ids, chunk_ids=candidate_ids)
+    rows = _fetch_chunk_rows(
+        conn,
+        paper_ids=paper_ids,
+        chunk_ids=candidate_ids,
+        user_id=user_id,
+    )
     query_embedding = deterministic_embedding(cleaned)
     results: list[dict[str, Any]] = []
     for row in rows:
@@ -160,14 +178,18 @@ def _search_wiki_sections(
     query: str,
     limit: int,
     paper_ids: list[int] | None,
+    user_id: int,
 ) -> list[dict[str, Any]]:
+    access_condition, access_params = accessible_paper_condition("p", user_id)
     rows = conn.execute(
-        """
+        f"""
         SELECT ws.id, ws.paper_id, ws.section, ws.title AS section_title, ws.content,
                p.title AS paper_title, p.source, p.source_id, p.source_url, p.primary_category
         FROM wiki_sections ws JOIN papers p ON p.id = ws.paper_id
+        WHERE {access_condition}
         ORDER BY ws.updated_at DESC
-        """
+        """,
+        access_params,
     ).fetchall()
     allowed = set(paper_ids or [])
     results = []
@@ -202,17 +224,39 @@ def search_wiki(
     query: str,
     limit: int = 8,
     paper_ids: list[int] | None = None,
+    user_id: int = 1,
 ) -> list[dict[str, Any]]:
     combined = [
-        *search_chunks(conn, query, limit=limit, paper_ids=paper_ids),
-        *_search_wiki_sections(conn, query, limit=limit, paper_ids=paper_ids),
+        *search_chunks(conn, query, limit=limit, paper_ids=paper_ids, user_id=user_id),
+        *_search_wiki_sections(
+            conn,
+            query,
+            limit=limit,
+            paper_ids=paper_ids,
+            user_id=user_id,
+        ),
     ]
     combined.sort(key=lambda item: item["score"] + (0.04 if item["source"] == "chunk" else 0), reverse=True)
     return combined[:limit]
 
 
-def answer_question(conn: sqlite3.Connection, question: str, paper_ids: list[int] | None = None) -> dict[str, Any]:
-    evidence = [item for item in search_chunks(conn, question, limit=5, paper_ids=paper_ids) if item["score"] >= 0.08]
+def answer_question(
+    conn: sqlite3.Connection,
+    question: str,
+    paper_ids: list[int] | None = None,
+    user_id: int = 1,
+) -> dict[str, Any]:
+    evidence = [
+        item
+        for item in search_chunks(
+            conn,
+            question,
+            limit=5,
+            paper_ids=paper_ids,
+            user_id=user_id,
+        )
+        if item["score"] >= 0.08
+    ]
     if not evidence:
         return {
             "answer": "当前没有已解析且可核验的论文正文证据。请先解析相关论文。",
@@ -236,14 +280,23 @@ def answer_question(conn: sqlite3.Connection, question: str, paper_ids: list[int
     }
 
 
-def build_graph(conn: sqlite3.Connection, topic: str = "", limit: int = 42) -> dict[str, Any]:
+def build_graph(
+    conn: sqlite3.Connection,
+    topic: str = "",
+    limit: int = 42,
+    user_id: int = 1,
+) -> dict[str, Any]:
+    access_condition, access_params = accessible_paper_condition("p", user_id)
     concept_rows = conn.execute(
-        """
+        f"""
         SELECT c.id, c.name, c.description, COUNT(pc.paper_id) AS paper_count
-        FROM concepts c JOIN paper_concepts pc ON pc.concept_id = c.id
+        FROM concepts c
+        JOIN paper_concepts pc ON pc.concept_id = c.id
+        JOIN papers p ON p.id = pc.paper_id
+        WHERE {access_condition}
         GROUP BY c.id ORDER BY paper_count DESC, c.name LIMIT ?
         """,
-        (limit,),
+        (*access_params, limit),
     ).fetchall()
     topic_norm = topic.strip().lower()
     nodes = [
@@ -260,15 +313,16 @@ def build_graph(conn: sqlite3.Connection, topic: str = "", limit: int = 42) -> d
     visible_concepts = {int(node["id"].split("-")[1]) for node in nodes}
     if not visible_concepts:
         return {"nodes": [], "links": []}
-    placeholders = ",".join("?" for _ in visible_concepts)
+    visible_concept_ids = sorted(visible_concepts)
+    placeholders = ",".join("?" for _ in visible_concept_ids)
     paper_rows = conn.execute(
         f"""
         SELECT DISTINCT p.id, p.title, p.primary_category
         FROM papers p JOIN paper_concepts pc ON pc.paper_id = p.id
-        WHERE pc.concept_id IN ({placeholders})
+        WHERE pc.concept_id IN ({placeholders}) AND {access_condition}
         ORDER BY p.published_at DESC LIMIT 16
         """,
-        tuple(visible_concepts),
+        (*visible_concept_ids, *access_params),
     ).fetchall()
     nodes.extend(
         {
@@ -282,19 +336,34 @@ def build_graph(conn: sqlite3.Connection, topic: str = "", limit: int = 42) -> d
     )
     visible_papers = {int(node["id"].split("-")[1]) for node in nodes if node["type"] == "paper"}
     links = []
-    for row in conn.execute("SELECT source_concept_id, target_concept_id, relation, weight FROM concept_edges"):
-        if row["source_concept_id"] in visible_concepts and row["target_concept_id"] in visible_concepts:
-            links.append(
-                {
-                    "source": f"c-{row['source_concept_id']}",
-                    "target": f"c-{row['target_concept_id']}",
-                    "relation": row["relation"],
-                    "weight": row["weight"],
-                }
-            )
+    concept_edge_rows = conn.execute(
+        f"""
+        SELECT pc1.concept_id AS source_concept_id,
+               pc2.concept_id AS target_concept_id,
+               COUNT(DISTINCT pc1.paper_id) AS weight
+        FROM paper_concepts pc1
+        JOIN paper_concepts pc2
+          ON pc2.paper_id = pc1.paper_id AND pc2.concept_id > pc1.concept_id
+        JOIN papers p ON p.id = pc1.paper_id
+        WHERE pc1.concept_id IN ({placeholders})
+          AND pc2.concept_id IN ({placeholders})
+          AND {access_condition}
+        GROUP BY pc1.concept_id, pc2.concept_id
+        """,
+        (*visible_concept_ids, *visible_concept_ids, *access_params),
+    ).fetchall()
+    for row in concept_edge_rows:
+        links.append(
+            {
+                "source": f"c-{row['source_concept_id']}",
+                "target": f"c-{row['target_concept_id']}",
+                "relation": "共同出现在可访问论文中",
+                "weight": row["weight"],
+            }
+        )
     for row in conn.execute(
         f"SELECT paper_id, concept_id, relation, weight FROM paper_concepts WHERE concept_id IN ({placeholders})",
-        tuple(visible_concepts),
+        tuple(visible_concept_ids),
     ):
         if row["paper_id"] in visible_papers:
             links.append(

@@ -6,6 +6,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 from ..config import get_settings
+from ..repositories.uploads import paper_is_accessible
 from .documents import estimate_tokens
 from .llm import LLMClient
 
@@ -15,6 +16,11 @@ SYSTEM_PROMPT = """你是单篇科研论文阅读助手。下面会提供论文�
 回答使用中文，涉及实验结果或关键结论时标注对应章节或页码（如果正文中可识别）。
 不要声称使用了外部搜索、知识库或未提供的论文。"""
 
+GENERAL_SYSTEM_PROMPT = """你是严谨、清晰的通用研究助手。
+你只能使用当前对话中提供的信息和模型自身已有知识回答。
+当前对话没有接入论文库、用户资料、文件、联网搜索或其他工具；不要声称读取或调用了这些内容。
+默认使用中文回答；信息不足或不确定时应明确说明。"""
+
 
 def create_thread(
     conn: sqlite3.Connection,
@@ -22,9 +28,7 @@ def create_thread(
     user_id: int = 1,
     title: str = "新对话",
 ) -> dict[str, Any]:
-    if paper_id is not None and conn.execute(
-        "SELECT 1 FROM papers WHERE id = ?", (paper_id,)
-    ).fetchone() is None:
+    if paper_id is not None and not paper_is_accessible(conn, paper_id, user_id):
         raise ValueError("paper not found")
     thread_id = f"thread_{uuid4().hex}"
     conn.execute(
@@ -35,17 +39,24 @@ def create_thread(
     return get_thread(conn, thread_id, user_id) or {}
 
 
-def list_threads(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) -> list[dict[str, Any]]:
+def list_threads(conn: sqlite3.Connection, paper_id: int | None, user_id: int = 1) -> list[dict[str, Any]]:
+    scope_clause = "paper_id IS NULL" if paper_id is None else "paper_id = ?"
+    params: tuple[Any, ...] = (user_id,) if paper_id is None else (user_id, paper_id)
     rows = conn.execute(
-        """
+        f"""
         SELECT id, paper_id, title, active_leaf_id, message_token_limit, archived,
                created_at, updated_at
-        FROM chat_threads WHERE user_id = ? AND paper_id = ?
+        FROM chat_threads WHERE user_id = ? AND {scope_clause}
         ORDER BY archived, updated_at DESC
         """,
-        (user_id, paper_id),
+        params,
     ).fetchall()
-    return [dict(row) for row in rows]
+    return [
+        dict(row)
+        for row in rows
+        if row["paper_id"] is None
+        or paper_is_accessible(conn, int(row["paper_id"]), user_id)
+    ]
 
 
 def get_thread(conn: sqlite3.Connection, thread_id: str, user_id: int = 1) -> dict[str, Any] | None:
@@ -57,7 +68,13 @@ def get_thread(conn: sqlite3.Connection, thread_id: str, user_id: int = 1) -> di
         """,
         (thread_id, user_id),
     ).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    if row["paper_id"] is not None and not paper_is_accessible(
+        conn, int(row["paper_id"]), user_id
+    ):
+        return None
+    return dict(row)
 
 
 def update_thread_head(conn: sqlite3.Connection, thread_id: str, head_id: str | None, user_id: int = 1) -> dict[str, Any]:
@@ -125,11 +142,18 @@ def prepare_run(
     assistant_message_id: str,
     source_message_id: str | None,
     message_token_limit: int,
+    operation: str = "append",
     user_id: int = 1,
 ) -> dict[str, Any]:
     thread = get_thread(conn, thread_id, user_id)
     if thread is None:
         raise ValueError("thread not found")
+    if operation not in {"append", "edit", "regenerate"}:
+        raise ValueError("unsupported chat operation")
+    if operation == "regenerate" and user_message is not None:
+        raise ValueError("regenerate must reuse an existing user message")
+    if operation != "regenerate" and user_message is None:
+        raise ValueError(f"{operation} requires a user message")
 
     savepoint = "prepare_chat_run"
     conn.execute(f"SAVEPOINT {savepoint}")
@@ -211,6 +235,7 @@ def prepare_run(
         "input_message_id": input_message_id,
         "assistant_message_id": assistant_message_id,
         "message_token_limit": message_token_limit,
+        "operation": operation,
     }
 
 
@@ -238,8 +263,32 @@ def _lineage(conn: sqlite3.Connection, thread_id: str, leaf_id: str) -> list[dic
 
 
 def build_model_messages(conn: sqlite3.Connection, run: dict[str, Any]) -> list[dict[str, str]]:
+    settings = get_settings()
+    lineage = _lineage(conn, run["thread_id"], run["input_message_id"])
+    current = lineage[-1]
+
     if run["paper_id"] is None:
-        raise ValueError("library chat is not implemented")
+        immutable_tokens = (
+            estimate_tokens(GENERAL_SYSTEM_PROMPT)
+            + estimate_tokens(current["content"])
+            + settings.llm_max_output_tokens
+            + 512
+        )
+        if immutable_tokens >= settings.llm_context_window:
+            raise ValueError(
+                f"message exceeds model context: required={immutable_tokens}, context={settings.llm_context_window}"
+            )
+        history_budget = min(run["message_token_limit"], settings.llm_context_window - immutable_tokens)
+        selected = _select_history(lineage[:-1], history_budget)
+        model_messages = [{"role": "system", "content": GENERAL_SYSTEM_PROMPT}]
+        model_messages.extend(
+            {"role": item["role"], "content": item["content"]}
+            for item in selected
+            if item["role"] in {"user", "assistant"}
+        )
+        model_messages.append({"role": "user", "content": current["content"]})
+        return model_messages
+
     document = conn.execute(
         """
         SELECT content_markdown, token_count, status FROM paper_documents WHERE paper_id = ?
@@ -249,10 +298,10 @@ def build_model_messages(conn: sqlite3.Connection, run: dict[str, Any]) -> list[
     if document is None or document["status"] != "completed" or not document["content_markdown"]:
         raise ValueError("paper document is not parsed")
 
-    settings = get_settings()
     immutable_tokens = (
         estimate_tokens(SYSTEM_PROMPT)
         + int(document["token_count"])
+        + estimate_tokens(current["content"])
         + settings.llm_max_output_tokens
         + 1024
     )
@@ -261,18 +310,7 @@ def build_model_messages(conn: sqlite3.Connection, run: dict[str, Any]) -> list[
             f"paper exceeds model context: paper={document['token_count']}, context={settings.llm_context_window}"
         )
     history_budget = min(run["message_token_limit"], settings.llm_context_window - immutable_tokens)
-    lineage = _lineage(conn, run["thread_id"], run["input_message_id"])
-    current = lineage[-1]
-    older = lineage[:-1]
-    selected: list[dict[str, Any]] = []
-    used = 0
-    for message in reversed(older):
-        cost = estimate_tokens(message["content"]) + 8
-        if used + cost > history_budget:
-            break
-        selected.append(message)
-        used += cost
-    selected.reverse()
+    selected = _select_history(lineage[:-1], history_budget)
 
     paper_prompt = (
         "以下是当前论文的完整解析正文。正文开始：\n\n"
@@ -287,6 +325,19 @@ def build_model_messages(conn: sqlite3.Connection, run: dict[str, Any]) -> list[
     model_messages.extend({"role": item["role"], "content": item["content"]} for item in selected if item["role"] in {"user", "assistant"})
     model_messages.append({"role": "user", "content": current["content"]})
     return model_messages
+
+
+def _select_history(messages: list[dict[str, Any]], token_budget: int) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    used = 0
+    for message in reversed(messages):
+        cost = estimate_tokens(message["content"]) + 8
+        if used + cost > token_budget:
+            break
+        selected.append(message)
+        used += cost
+    selected.reverse()
+    return selected
 
 
 def _update_running_output(
@@ -415,7 +466,13 @@ def stream_run(conn: sqlite3.Connection, run: dict[str, Any]) -> Iterator[tuple[
             conn.commit()
 
 
-def create_summary(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any]:
+def create_summary(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    user_id: int = 1,
+) -> dict[str, Any]:
+    if not paper_is_accessible(conn, paper_id, user_id):
+        raise ValueError("paper not found")
     row = conn.execute(
         """
         SELECT p.title, d.content_markdown, d.source_hash, d.status

@@ -24,6 +24,7 @@ import {
   searchWiki,
   toggleFavorite,
   uploadPaper,
+  fetchCurrentUser,
 } from "@/api"
 
 export type PaperFilters = {
@@ -44,6 +45,7 @@ export type RouteHandle = {
 }
 
 export const queryKeys = {
+  currentUser: ["current-user"] as const,
   stats: ["stats"] as const,
   papers: (filters: PaperFilters = {}) => ["papers", filters] as const,
   paper: (id: number) => ["paper", id] as const,
@@ -55,6 +57,16 @@ export const queryKeys = {
   subscriptions: ["subscriptions"] as const,
   libraryFolders: ["library-folders"] as const,
   libraryItems: (folderId?: number) => ["library-items", folderId ?? "all"] as const,
+}
+
+export function useCurrentUserQuery() {
+  return useQuery({
+    queryKey: queryKeys.currentUser,
+    queryFn: fetchCurrentUser,
+    retry: false,
+    staleTime: 60_000,
+    refetchOnWindowFocus: true,
+  })
 }
 
 export function useStatsQuery() {
@@ -175,8 +187,13 @@ export function useIngestSourceMutation() {
 export function useUploadPaperMutation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ file, title, authors, year }: { file: File; title?: string; authors?: string; year?: number }) =>
-      uploadPaper(file, { title, authors, year }),
+    mutationFn: ({ file, title, authors, year, visibility }: {
+      file: File
+      title?: string
+      authors?: string
+      year?: number
+      visibility?: "private" | "public"
+    }) => uploadPaper(file, { title, authors, year, visibility }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["papers"] })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats })

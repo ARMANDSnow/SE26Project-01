@@ -11,6 +11,13 @@ class Settings:
     def __init__(self) -> None:
         self.database_path = Path(os.getenv("DATABASE_PATH", DATA_DIR / "arxiv_wiki.sqlite3"))
         self.upload_dir = Path(os.getenv("UPLOAD_DIR", DATA_DIR / "uploads"))
+        self.session_cookie_name = os.getenv("SESSION_COOKIE_NAME", "paperwiki_session").strip()
+        self.session_ttl_seconds = int(os.getenv("SESSION_TTL_SECONDS", "604800"))
+        self.session_cookie_secure = os.getenv("SESSION_COOKIE_SECURE", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         self.llm_base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
         self.llm_api_key = os.getenv("LLM_API_KEY", "").strip()
         self.llm_chat_model = os.getenv("LLM_CHAT_MODEL", "deepseek-v4-flash")

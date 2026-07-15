@@ -1,12 +1,12 @@
 import {
-  BarChart3,
   BookMarked,
   Brain,
   Library,
   Menu,
   MessageSquareText,
-  Network,
+  LogOut,
 } from "lucide-react"
+import { useQueryClient } from "@tanstack/react-query"
 import type { ComponentType, SVGProps } from "react"
 import { Link, NavLink, Outlet, useLocation } from "react-router"
 import { ThemeToggle } from "@/components/app/theme-toggle"
@@ -28,6 +28,8 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { cn } from "@/lib/utils"
+import { logout } from "@/api"
+import { queryKeys, useCurrentUserQuery } from "@/lib/query-hooks"
 
 type NavItem = {
   path: string
@@ -37,12 +39,9 @@ type NavItem = {
 }
 
 const navItems: NavItem[] = [
-  { path: "/", label: "仪表盘", description: "全局概览", icon: BarChart3 },
+  { path: "/", label: "Chat", description: "通用对话", icon: MessageSquareText },
   { path: "/papers", label: "论文库", description: "检索与同步", icon: Library },
   { path: "/library", label: "我的资料库", description: "收藏与目录", icon: BookMarked },
-  { path: "/qa", label: "智能问答", description: "带出处回答", icon: MessageSquareText },
-  { path: "/graph", label: "知识图谱", description: "概念网络", icon: Network },
-  { path: "/learning", label: "学习管理", description: "历史与笔记", icon: BookMarked },
 ]
 
 function BrandLink() {
@@ -56,7 +55,7 @@ function BrandLink() {
       </span>
       <span className="min-w-0">
         <span className="block truncate text-sm font-semibold text-sidebar-foreground">PaperWiki</span>
-        <span className="block truncate text-xs text-sidebar-foreground/60">arXiv 论文学习工具</span>
+        <span className="block truncate text-xs text-sidebar-foreground/60">开放研究工作台</span>
       </span>
     </Link>
   )
@@ -94,6 +93,17 @@ function NavigationMenu() {
 }
 
 export function AppShell() {
+  const queryClient = useQueryClient()
+  const userQuery = useCurrentUserQuery()
+
+  const signOut = async () => {
+    await logout()
+    queryClient.removeQueries({
+      predicate: (query) => query.queryKey[0] !== queryKeys.currentUser[0],
+    })
+    queryClient.setQueryData(queryKeys.currentUser, null)
+  }
+
   return (
     <SidebarProvider>
       <a
@@ -116,9 +126,15 @@ export function AppShell() {
           </SidebarGroup>
         </SidebarContent>
         <SidebarFooter className="p-3">
+          <div className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2">
+            <span className="truncate text-sm font-medium">{userQuery.data?.username}</span>
+            <Button variant="ghost" size="icon" aria-label="退出登录" onClick={signOut}>
+              <LogOut className="size-4" />
+            </Button>
+          </div>
           <div className="rounded-lg border bg-sidebar-accent/40 p-3 text-xs leading-5 text-sidebar-foreground/70">
-            <span className="font-semibold text-sidebar-foreground">Agent 流水线</span>
-            <p className="mt-1">Fetcher / Reader / Summary / Validator / QA</p>
+            <span className="font-semibold text-sidebar-foreground">当前阶段</span>
+            <p className="mt-1">通用对话仅使用当前会话历史，尚未接入论文与 Agent 工具。</p>
           </div>
         </SidebarFooter>
       </Sidebar>
@@ -130,8 +146,8 @@ export function AppShell() {
               <Menu className="size-4" />
             </SidebarTrigger>
             <div>
-              <p className="text-sm font-semibold text-foreground">科研论文知识工作台</p>
-              <p className="text-xs text-muted-foreground">检索、阅读、问答和学习资产管理</p>
+              <p className="text-sm font-semibold text-foreground">PaperWiki Chat</p>
+              <p className="text-xs text-muted-foreground">从对话开始你的研究</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -142,7 +158,7 @@ export function AppShell() {
           </div>
         </header>
 
-        <main id="main-content" className="min-w-0 flex-1 px-4 py-5 lg:px-6 lg:py-6">
+        <main id="main-content" className="min-w-0 flex-1 px-3 py-3 lg:px-5 lg:py-4">
           <div className="mx-auto grid w-full max-w-[1480px] gap-5">
             <Outlet />
           </div>

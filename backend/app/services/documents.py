@@ -5,7 +5,8 @@ import json
 import sqlite3
 from typing import Any
 
-from ..database import get_paper_record, replace_paper_chunks
+from ..repositories.papers import get_paper_record, replace_paper_chunks
+from ..repositories.uploads import paper_is_accessible
 from .fulltext import chunk_markdown
 from .remote_pdf import ensure_local_pdf
 
@@ -19,7 +20,13 @@ def estimate_tokens(text: str) -> int:
     return max(1, (ascii_count + 3) // 4 + non_ascii_count)
 
 
-def parse_paper_document(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any]:
+def parse_paper_document(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    user_id: int = 1,
+) -> dict[str, Any]:
+    if not paper_is_accessible(conn, paper_id, user_id):
+        raise ValueError("paper not found")
     paper = get_paper_record(conn, paper_id)
     if paper is None:
         raise ValueError("paper not found")
