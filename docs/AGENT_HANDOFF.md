@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- 当前分支：`codex/refactor-backend-layers`；本地 `codex/develop` 已 fast-forward 包含 iter07，iter08 与 iter09 在当前分支尚未 commit 或 merge。
+- 当前分支：`codex/develop`；iter07、iter08 与 iter09 均已通过 fast-forward 纳入本地 develop，iter08+iter09 主提交为 `2cfca57`。
 - iter08 已建立 `api -> services -> repositories -> db` 外层分层；`main.py` 只负责生命周期、中间件、内存 SessionStore 和 Router 挂载。
 - iter09 已加入用户名/密码认证：Argon2id 哈希、内存 Session、HttpOnly SameSite=Lax Cookie，以及注册、登录、登出和当前用户 API。
 - 业务 Router 统一通过 `CurrentUser` 解析身份，不再信任 `X-User-ID`；除 health/auth 入口外，35 个业务 API method/path 全部要求登录。
@@ -61,5 +61,5 @@ git diff --check -- . ':!UIPrototype/**'
 
 - iter08：`docs/iterations/iteration_iter08_backend-layer-refactor.md`。
 - iter09：`docs/iterations/iteration_iter09_session-user-isolation.md`。
-- 功能分支：`codex/refactor-backend-layers`；基线：已包含 iter07 的本地 `codex/develop`。
-- iter08 与 iter09 尚未 commit/push/merge；用户希望之后一起合入。提交前检查暂存范围，推送前先 fetch/rebase 并保留远端用户改动。
+- `codex/refactor-backend-layers` 已以 `--ff-only` 合入本地 `codex/develop`；合入时两个分支均指向 `2cfca57`。
+- 尚未 push；推送前先 fetch/rebase 并保留远端用户改动。
