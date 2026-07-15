@@ -1,6 +1,6 @@
 # arXiv 智能论文阅读工具
 
-面向科研论文学习场景的课程演示版 MVP。系统支持 arXiv 论文抓取、结构化 Wiki 沉淀、概念图谱、带出处问答，以及收藏、笔记、阅读历史等学习管理能力。
+面向科研论文学习场景的课程演示版 MVP。当前前端以 Chat 为入口，保留论文库、我的资料库和单篇论文阅读工作台；图谱、学习管理和旧版跨论文问答的一层页面已下线，但相关后端能力仍保留供后续 Agent 化改造使用。
 
 ## 技术栈
 
@@ -47,7 +47,7 @@ LLM_MAX_OUTPUT_TOKENS=4096
 ARXIV_DEFAULT_CATEGORIES=cs.AI,cs.CL,cs.LG
 ```
 
-API Key 只从 `LLM_API_KEY` 环境变量读取。单篇论文 Chat 不使用 RAG：Docling 解析后的论文全文始终加入上下文，`LLM_CONTEXT_WINDOW` 只会裁剪当前分支的历史消息；若论文全文本身超过模型窗口，请改用更长上下文模型。
+API Key 只从 `LLM_API_KEY` 环境变量读取。主页通用 Chat 只发送系统提示和当前对话分支的历史，不读取论文、资料库、文件、联网搜索或 Agent 工具。单篇论文 Chat 不使用 RAG：Docling 解析后的论文全文始终加入上下文，`LLM_CONTEXT_WINDOW` 只会裁剪当前分支的历史消息；若论文全文本身超过模型窗口，请改用更长上下文模型。
 
 ## 数据库 schema
 
@@ -67,14 +67,22 @@ API Key 只从 `LLM_API_KEY` 环境变量读取。单篇论文 Chat 不使用 RA
 npm run build
 ```
 
+已配置真实 DeepSeek Key 时，可显式运行一次最小付费 Chat smoke：
+
+```powershell
+$env:RUN_REAL_LLM_TESTS="true"
+.\.venv\Scripts\python.exe scripts\real_chat_smoke.py
+```
+
 ## MVP 覆盖
 
 - 论文自动抓取与管理：arXiv、USENIX、SIGOPS 与本地上传，按 `source + source_id` 去重
 - 内容寻址存储：PDF 按 SHA-256 去重缓存，Docling 解析结果与源文件 hash 绑定
 - 论文结构化解析：从已解析正文生成 summary、concepts、methods、experiments Wiki 内容
 - 论文 Wiki 与检索：标题、作者、关键词、类别、概念标签和 Wiki 检索
-- 智能问答：Agent 通过 FTS5 与语义重排搜索当前正文 Chunk，只允许引用已打开证据
+- 主页通用 Chat：真实模型多轮对话，只携带当前消息树分支，支持服务端持久化、编辑、重新生成、分支切换和显式 Fork
 - 单篇阅读工作台：PDF/解析文本/概要/笔记与 Chat 并排，支持消息编辑、重新生成、分支和服务端历史
+- 后端跨论文问答：Agent 通过 FTS5 与语义重排搜索当前正文 Chunk，只允许引用已打开证据；当前无独立前端入口
 - 学习管理：收藏、笔记、评论、阅读历史、关注主题和对比阅读
 - 多 Agent：ReaderAgent、SummaryAgent、ValidatorAgent、QAAgent；默认为真实 agentic 模式，可显式选择 classic 单轮模式
 - 进阶预留：研究脉络、订阅推荐、概念知识图谱

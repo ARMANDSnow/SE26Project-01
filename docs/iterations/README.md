@@ -7,6 +7,7 @@ Agent 续写入口：
 
 | Iteration | Title | Status | Notes |
 | --- | --- | --- | --- |
+| [iter07](iteration_iter07_general-chat-foundation.md) | 通用持久化 Chat 基础 | Complete | 通用线程、真实模型多轮对话、assistant-ui 首页与显式 Fork；59 tests 与真实 DeepSeek smoke 通过。 |
 | [iter06](iteration_iter06_pr-review-hardening.md) | PR 评审阻断问题修复 | Complete | 修复 SSRF、schema 重建门禁、严格来源身份、状态一致性和消息 ID 冲突；56 tests 与 100 并发 smoke 通过。 |
 | [iter05](iteration_iter05_agent-storage-integration.md) | Agent 与新存储架构合并 | Complete | 以内容寻址 PDF/Docling 文档为唯一正文源，适配 Chunk、FTS5 与真实 Agent；47 tests 与 100 并发 smoke 通过。 |
 | [iter04](iteration_iter04_agentic-cross-paper-qa.md) | Agent 驱动的跨论文知识库探索 | Complete | 只读论文库工具、多轮 tool calling、引用白名单、真实模型可观测性、可靠性修复与 gpt-5.5-medium 真实 smoke 已完成。 |

@@ -144,7 +144,7 @@ class ChatUserMessage(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     parent_id: str | None = None
     source_message_id: str | None = None
-    content: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=20_000)
 
 
 class ChatRunRequest(BaseModel):
@@ -457,6 +457,21 @@ def add_paper_chat_thread(
             raise HTTPException(status_code=404, detail="论文不存在") from exc
 
 
+@app.get("/api/chat/threads")
+def general_chat_threads(x_user_id: int = Header(default=1)) -> dict[str, Any]:
+    with connect() as conn:
+        return {"items": list_threads(conn, None, x_user_id)}
+
+
+@app.post("/api/chat/threads")
+def add_general_chat_thread(
+    payload: ThreadCreateRequest,
+    x_user_id: int = Header(default=1),
+) -> dict[str, Any]:
+    with connect() as conn:
+        return create_thread(conn, None, x_user_id, payload.title)
+
+
 @app.get("/api/chat/threads/{thread_id}")
 def chat_thread(thread_id: str, x_user_id: int = Header(default=1)) -> dict[str, Any]:
     with connect() as conn:
@@ -502,6 +517,7 @@ def start_chat_run(payload: ChatRunRequest, x_user_id: int = Header(default=1)) 
                 assistant_message_id=payload.assistant_message_id,
                 source_message_id=payload.source_message_id,
                 message_token_limit=payload.message_token_limit,
+                operation=payload.operation,
                 user_id=x_user_id,
             )
         except ValueError as exc:

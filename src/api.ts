@@ -64,6 +64,18 @@ export async function createPaperChatThread(paperId: number, title = "新对话"
   });
 }
 
+export async function fetchGeneralChatThreads(): Promise<ChatThread[]> {
+  const data = await request<{ items: ChatThread[] }>("/api/chat/threads")
+  return data.items
+}
+
+export async function createGeneralChatThread(title = "新对话"): Promise<ChatThread> {
+  return request<ChatThread>("/api/chat/threads", {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  })
+}
+
 export async function fetchChatMessages(threadId: string): Promise<ChatMessageRepository> {
   return request<ChatMessageRepository>(`/api/chat/threads/${threadId}/messages`);
 }

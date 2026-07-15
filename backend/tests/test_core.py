@@ -43,6 +43,7 @@ from backend.app.services.conversations import (
     build_model_messages,
     create_thread,
     get_message_repository,
+    list_threads,
     prepare_run,
     stream_run,
 )
@@ -736,6 +737,7 @@ def test_chat_message_tree_keeps_regenerated_answers_as_siblings():
         assistant_message_id="a2",
         source_message_id="a1",
         message_token_limit=12000,
+        operation="regenerate",
     )
     assert first["input_message_id"] == second["input_message_id"] == "u1"
     repository = get_message_repository(conn, thread["id"])
@@ -771,6 +773,7 @@ def test_chat_message_id_collision_does_not_create_run_or_overwrite_answer():
             assistant_message_id="collision-a1",
             source_message_id=None,
             message_token_limit=12000,
+            operation="regenerate",
         )
 
     answer = conn.execute(
@@ -780,25 +783,98 @@ def test_chat_message_id_collision_does_not_create_run_or_overwrite_answer():
     assert conn.execute("SELECT COUNT(*) FROM chat_runs").fetchone()[0] == 1
 
 
-def test_nullable_paper_thread_is_reserved_for_future_library_chat():
+def test_general_chat_uses_only_conversation_lineage():
     conn = memory_db()
     thread = create_thread(conn, None)
     assert thread["paper_id"] is None
-    run = prepare_run(
+    first = prepare_run(
         conn,
         thread_id=thread["id"],
-        user_message={"id": "library-u1", "parent_id": None, "content": "Search the library"},
+        user_message={"id": "general-u1", "parent_id": None, "content": "Remember ALPHA_SENTINEL"},
         parent_message_id=None,
-        assistant_message_id="library-a1",
+        assistant_message_id="general-a1",
         source_message_id=None,
         message_token_limit=12000,
     )
-    with pytest.raises(ValueError, match="library chat is not implemented"):
-        build_model_messages(conn, run)
-    events = list(stream_run(conn, run))
-    assert events == [("run.failed", {"message": "library chat is not implemented"})]
-    assert conn.execute("SELECT status FROM chat_messages WHERE id = 'library-a1'").fetchone()[0] == "failed"
-    assert conn.execute("SELECT status FROM chat_runs WHERE id = ?", (run["run_id"],)).fetchone()[0] == "failed"
+    conn.execute(
+        "UPDATE chat_messages SET content = 'Acknowledged ALPHA_SENTINEL', status = 'complete' WHERE id = ?",
+        (first["assistant_message_id"],),
+    )
+    second = prepare_run(
+        conn,
+        thread_id=thread["id"],
+        user_message={"id": "general-u2", "parent_id": "general-a1", "content": "What did I ask you to remember?"},
+        parent_message_id=None,
+        assistant_message_id="general-a2",
+        source_message_id=None,
+        message_token_limit=12000,
+    )
+    messages = build_model_messages(conn, second)
+    assert [message["role"] for message in messages] == ["system", "user", "assistant", "user"]
+    assert "ALPHA_SENTINEL" in messages[1]["content"]
+    assert "论文完整解析正文" not in "\n".join(message["content"] for message in messages)
+    assert list_threads(conn, None)[0]["id"] == thread["id"]
+
+
+def test_chat_operation_contract_rejects_mismatched_payloads():
+    conn = memory_db()
+    thread = create_thread(conn, None)
+    with pytest.raises(ValueError, match="regenerate must reuse"):
+        prepare_run(
+            conn,
+            thread_id=thread["id"],
+            user_message={"id": "u1", "parent_id": None, "content": "Hello"},
+            parent_message_id=None,
+            assistant_message_id="a1",
+            source_message_id=None,
+            message_token_limit=12000,
+            operation="regenerate",
+        )
+    assert conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0] == 0
+
+
+def test_api_creates_and_lists_general_chat_threads(api_client):
+    created = api_client.post("/api/chat/threads", json={})
+    assert created.status_code == 200
+    assert created.json()["paper_id"] is None
+    listed = api_client.get("/api/chat/threads")
+    assert listed.status_code == 200
+    assert [item["id"] for item in listed.json()["items"]] == [created.json()["id"]]
+
+
+def test_api_streams_and_persists_general_chat(api_client, monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    get_settings.cache_clear()
+    captured: list[list[dict[str, str]]] = []
+
+    def fake_stream(_self, messages):
+        captured.append(messages)
+        yield "你好"
+        yield "，世界"
+
+    monkeypatch.setattr("backend.app.services.conversations.LLMClient.stream", fake_stream)
+    thread = api_client.post("/api/chat/threads", json={}).json()
+    response = api_client.post(
+        "/api/chat/runs",
+        json={
+            "thread_id": thread["id"],
+            "operation": "append",
+            "user_message": {"id": "general-api-u1", "content": "请打招呼"},
+            "assistant_message_id": "general-api-a1",
+        },
+    )
+    assert response.status_code == 200
+    assert "message.completed" in response.text
+    assert captured[0][-1] == {"role": "user", "content": "请打招呼"}
+    assert "METHOD_SENTINEL" not in "\n".join(message["content"] for message in captured[0])
+
+    repository = api_client.get(f"/api/chat/threads/{thread['id']}/messages").json()
+    assert repository["headId"] == "general-api-a1"
+    assert [(item["role"], item["content"]) for item in repository["messages"]] == [
+        ("user", "请打招呼"),
+        ("assistant", "你好，世界"),
+    ]
+    get_settings.cache_clear()
 
 
 def test_chat_context_always_contains_full_paper():
