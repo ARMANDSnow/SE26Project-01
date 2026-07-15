@@ -11,15 +11,9 @@ import sys
 
 REQUESTS = [
     {"method": "GET", "path": "/api/papers?limit=20"},
-    {"method": "GET", "path": "/api/papers/1/chunks?limit=5"},
     {"method": "GET", "path": "/api/wiki/search?q=RAG&limit=8"},
     {"method": "GET", "path": "/api/history?limit=20"},
     {"method": "GET", "path": "/api/graph?topic=RAG&limit=42"},
-    {
-        "method": "POST",
-        "path": "/api/qa",
-        "body": {"question": "RAG 如何保证答案有出处？", "paper_ids": []},
-    },
 ]
 
 

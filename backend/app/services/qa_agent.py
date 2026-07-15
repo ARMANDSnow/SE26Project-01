@@ -45,66 +45,7 @@ def run_qa_agent(
         }
         return result
     llm = client or LLMClient()
-    if isinstance(llm, LLMClient) and llm.settings.should_use_mock_llm:
-        return _run_mock_agent(conn, question, paper_ids)
     return _run_real_agent(conn, question, paper_ids, llm)
-
-
-def _run_mock_agent(conn: sqlite3.Connection, question: str, paper_ids: list[int] | None) -> dict[str, Any]:
-    toolbox = PaperToolbox(conn, paper_ids)
-    steps: list[dict[str, Any]] = []
-    search_result = toolbox.search_text(question, limit=10)
-    steps.append(_step(1, "search_text", search_result["count"], note="本地确定性检索"))
-    selected = []
-    seen_papers: set[int] = set()
-    for item in search_result["items"]:
-        paper_id = int(item["paper_id"])
-        if paper_id in seen_papers and len(seen_papers) < 3:
-            continue
-        selected.append(item)
-        seen_papers.add(paper_id)
-        if len(selected) >= 3:
-            break
-    for item in selected:
-        opened = toolbox.open_evidence(item["ref_id"])
-        steps.append(
-            _step(
-                len(steps) + 1,
-                "open_evidence",
-                1,
-                evidence_ids=[opened["evidence_id"]],
-                note=opened["paper_title"],
-            )
-        )
-    citations = toolbox.citations()
-    if not citations:
-        answer = "当前知识库中没有足够证据回答这个问题。建议先抓取或处理更多相关论文。"
-        confidence = 0.18
-        stop_reason = "no_evidence"
-    else:
-        bullets = [
-            f"[{item['evidence_id']}]《{item['paper_title']}》的 {item['section_title']}：{extract_snippet(item['content'], 220)}"
-            for item in citations
-        ]
-        answer = "Agent 已搜索本地论文库并逐条打开证据：\n\n" + "\n".join(
-            f"{index + 1}. {bullet}" for index, bullet in enumerate(bullets)
-        )
-        answer += "\n\n以上结论只引用本次实际打开的论文片段。"
-        confidence = round(min(0.92, 0.5 + sum(float(item["score"]) for item in citations) / max(1, len(citations)) / 2), 2)
-        stop_reason = "evidence_opened"
-    return {
-        "answer": answer,
-        "citations": citations,
-        "confidence": confidence,
-        "agent_trace": ["QAAgent", "PaperRepositoryTools", "EvidenceAllowlist", "MockAnswerSynthesizer"],
-        "execution": {
-            "mode": "agentic_mock",
-            "status": "completed",
-            "stop_reason": stop_reason,
-            "tool_call_count": len(steps),
-            "steps": steps,
-        },
-    }
 
 
 def _run_real_agent(
@@ -140,7 +81,13 @@ def _run_real_agent(
         if time.monotonic() >= deadline:
             stop_reason = "deadline_exceeded"
             break
-        message = client.chat(messages, tools=PAPER_TOOL_SCHEMAS, tool_choice="auto")
+        message = _chat_before_deadline(
+            client,
+            messages,
+            deadline,
+            tools=PAPER_TOOL_SCHEMAS,
+            tool_choice="auto",
+        )
         messages.append(message)
         tool_calls = message.get("tool_calls") or []
         if not isinstance(tool_calls, list):
@@ -168,7 +115,10 @@ def _run_real_agent(
                             ),
                         }
                     )
-                    final_message = client.chat(messages)
+                    if time.monotonic() >= deadline:
+                        stop_reason = "deadline_exceeded"
+                        break
+                    final_message = _chat_before_deadline(client, messages, deadline)
                     final_content = str(final_message.get("content") or "").strip()
                     stop_reason = "evidence_recovery_final"
             break
@@ -237,7 +187,7 @@ def _run_real_agent(
                 "content": "工具预算已结束。请立即只用已打开的 E 编号按规定 JSON schema 收尾，不再调用工具。",
             }
         )
-        final_message = client.chat(messages)
+        final_message = _chat_before_deadline(client, messages, deadline)
         final_content = str(final_message.get("content") or "").strip()
         stop_reason = "budget_forced_final"
 
@@ -255,7 +205,7 @@ def _run_real_agent(
     citations = toolbox.citations(requested_ids) if valid_final else []
     if valid_final and citations:
         answer = answer_candidate
-        confidence = _safe_confidence(payload.get("confidence"))
+        confidence = _safe_confidence(payload.get("confidence") if payload else None)
         status = "completed"
     elif toolbox.opened_registry:
         citations = toolbox.citations()
@@ -285,6 +235,27 @@ def _run_real_agent(
             "steps": steps,
         },
     }
+
+
+def _chat_before_deadline(
+    client: ChatClient,
+    messages: list[dict[str, Any]],
+    deadline: float,
+    *,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | None = None,
+) -> dict[str, Any]:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise LLMProviderError("agent_deadline_exceeded")
+    if isinstance(client, LLMClient):
+        return client.chat(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            timeout_seconds=max(1.0, remaining),
+        )
+    return client.chat(messages, tools=tools, tool_choice=tool_choice)
 
 
 def _recover_metadata_candidates(

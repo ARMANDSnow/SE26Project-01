@@ -10,25 +10,18 @@ DATA_DIR = BASE_DIR / "data"
 class Settings:
     def __init__(self) -> None:
         self.database_path = Path(os.getenv("DATABASE_PATH", DATA_DIR / "arxiv_wiki.sqlite3"))
-        self.llm_base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-        self.llm_api_key = os.getenv("LLM_API_KEY", "")
-        self.llm_chat_model = os.getenv("LLM_CHAT_MODEL", "gpt-4o-mini")
-        self.llm_embed_model = os.getenv("LLM_EMBED_MODEL", "text-embedding-3-small")
-        self.enable_mock_llm = os.getenv("ENABLE_MOCK_LLM", "true").lower() != "false"
-        fulltext_fetch = os.getenv("ENABLE_FULLTEXT_FETCH", "auto").lower()
-        self.enable_fulltext_fetch = None if fulltext_fetch == "auto" else fulltext_fetch in {"1", "true", "yes"}
+        self.upload_dir = Path(os.getenv("UPLOAD_DIR", DATA_DIR / "uploads"))
+        self.llm_base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
+        self.llm_api_key = os.getenv("LLM_API_KEY", "").strip()
+        self.llm_chat_model = os.getenv("LLM_CHAT_MODEL", "deepseek-v4-flash")
+        self.llm_context_window = int(os.getenv("LLM_CONTEXT_WINDOW", "131072"))
+        self.llm_max_output_tokens = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "4096"))
         categories = os.getenv("ARXIV_DEFAULT_CATEGORIES", "cs.AI,cs.CL,cs.LG")
         self.default_categories = [item.strip() for item in categories.split(",") if item.strip()]
 
     @property
-    def should_use_mock_llm(self) -> bool:
-        return self.enable_mock_llm or not self.llm_api_key
-
-    @property
-    def should_fetch_fulltext(self) -> bool:
-        if self.enable_fulltext_fetch is not None:
-            return self.enable_fulltext_fetch
-        return not self.should_use_mock_llm
+    def llm_available(self) -> bool:
+        return bool(self.llm_api_key)
 
 
 @lru_cache

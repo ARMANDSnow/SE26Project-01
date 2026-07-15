@@ -10,7 +10,7 @@
 
 - 前端：Vite + React + TypeScript
 - 后端：FastAPI + SQLite
-- 智能能力：OpenAI 兼容接口；默认 `ENABLE_MOCK_LLM=true`，无需 API key 可离线演示
+- 智能能力：OpenAI 兼容接口；默认 DeepSeek V4 Flash，未配置 API key 时明确失败
 
 ## 进入仓库必读顺序
 
@@ -77,8 +77,8 @@ git diff --check
 ## 工程守则
 
 - 不提交真实 API key、`.env`、本地数据库、构建产物、缓存目录。
-- 默认 mock LLM 路径必须可用；真实 LLM 路径必须有明确失败处理。
-- 前端默认不得静默回退 mock；只有 `VITE_USE_MOCK=true` 才允许内置样例数据。
+- 本仓库不提供 mock LLM 或内置样例数据路径；未配置真实 LLM 时必须明确失败。
+- API Key 只从环境变量读取，不提交密钥文件或 `.env`。
 - API 契约变更必须同步 `src/types.ts`、`src/api.ts`、React Query hooks 和后端测试。
 - SQLite 写路径要考虑事务、外键和并发锁。
 - UI 改动遵循现有 shadcn/ui + Tailwind 风格，不引入新的视觉体系。

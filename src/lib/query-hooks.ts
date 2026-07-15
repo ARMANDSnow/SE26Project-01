@@ -5,15 +5,25 @@ import {
   askQuestion,
   fetchGraph,
   fetchHistory,
-  fetchPaperChunks,
+  fetchLibraryFolders,
+  fetchLibraryItems,
   fetchPaperDetail,
+  fetchPaperChunks,
   fetchPapers,
   fetchStats,
   fetchSubscriptions,
+  createLibraryFolder,
+  deleteLibraryFolder,
   ingestArxiv,
+  ingestSource,
   processPaper,
+  parsePaperDocument,
+  generatePaperSummary,
+  moveLibraryItem,
+  recommendLibraryFolder,
   searchWiki,
   toggleFavorite,
+  uploadPaper,
 } from "@/api"
 
 export type PaperFilters = {
@@ -37,12 +47,14 @@ export const queryKeys = {
   stats: ["stats"] as const,
   papers: (filters: PaperFilters = {}) => ["papers", filters] as const,
   paper: (id: number) => ["paper", id] as const,
-  paperChunks: (id: number) => ["paper", id, "chunks"] as const,
+  paperChunks: (id: number) => ["paper-chunks", id] as const,
   wikiSearch: (q: string) => ["wiki-search", q] as const,
   qa: ["qa"] as const,
   graph: (filters: GraphFilters = {}) => ["graph", filters] as const,
   history: ["history"] as const,
   subscriptions: ["subscriptions"] as const,
+  libraryFolders: ["library-folders"] as const,
+  libraryItems: (folderId?: number) => ["library-items", folderId ?? "all"] as const,
 }
 
 export function useStatsQuery() {
@@ -67,7 +79,7 @@ export function usePaperQuery(id: number) {
 export function usePaperChunksQuery(id: number) {
   return useQuery({
     queryKey: queryKeys.paperChunks(id),
-    queryFn: () => fetchPaperChunks(id, 6, 0),
+    queryFn: () => fetchPaperChunks(id),
     enabled: Number.isFinite(id) && id > 0,
   })
 }
@@ -95,6 +107,14 @@ export function useSubscriptionsQuery() {
   return useQuery({ queryKey: queryKeys.subscriptions, queryFn: fetchSubscriptions })
 }
 
+export function useLibraryFoldersQuery() {
+  return useQuery({ queryKey: queryKeys.libraryFolders, queryFn: fetchLibraryFolders })
+}
+
+export function useLibraryItemsQuery(folderId?: number) {
+  return useQuery({ queryKey: queryKeys.libraryItems(folderId), queryFn: () => fetchLibraryItems(folderId) })
+}
+
 export function useIngestArxivMutation() {
   const queryClient = useQueryClient()
 
@@ -104,6 +124,62 @@ export function useIngestArxivMutation() {
       queryClient.invalidateQueries({ queryKey: ["papers"] })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats })
       queryClient.invalidateQueries({ queryKey: ["graph"] })
+    },
+  })
+}
+
+
+export function useCreateLibraryFolderMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: createLibraryFolder,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.libraryFolders }),
+  })
+}
+
+export function useDeleteLibraryFolderMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: deleteLibraryFolder,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.libraryFolders }),
+  })
+}
+
+export function useMoveLibraryItemMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ itemId, folderId }: { itemId: number; folderId: number }) => moveLibraryItem(itemId, folderId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["library-items"] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.libraryFolders })
+    },
+  })
+}
+
+export function useRecommendLibraryFolderMutation() {
+  return useMutation({ mutationFn: recommendLibraryFolder })
+}
+
+export function useIngestSourceMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ source, ...payload }: { source: "usenix" | "sigops"; venue: string; year: number; max_results: number }) =>
+      ingestSource(source, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["papers"] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats })
+    },
+  })
+}
+
+export function useUploadPaperMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ file, title, authors, year }: { file: File; title?: string; authors?: string; year?: number }) =>
+      uploadPaper(file, { title, authors, year }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["papers"] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.stats })
     },
   })
 }
@@ -118,6 +194,8 @@ export function useFavoriteMutation() {
       queryClient.invalidateQueries({ queryKey: ["papers"] })
       queryClient.invalidateQueries({ queryKey: queryKeys.paper(paper.id) })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats })
+      queryClient.invalidateQueries({ queryKey: ["library-items"] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.libraryFolders })
     },
   })
 }
@@ -129,10 +207,32 @@ export function useProcessPaperMutation() {
     mutationFn: processPaper,
     onSuccess: (paper) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.paper(paper.id) })
-      queryClient.invalidateQueries({ queryKey: queryKeys.paperChunks(paper.id) })
       queryClient.invalidateQueries({ queryKey: ["papers"] })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats })
       queryClient.invalidateQueries({ queryKey: ["graph"] })
+    },
+  })
+}
+
+export function useParsePaperDocumentMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: parsePaperDocument,
+    onSuccess: (document, paperId) => {
+      void document
+      queryClient.invalidateQueries({ queryKey: queryKeys.paper(paperId) })
+      queryClient.invalidateQueries({ queryKey: queryKeys.paperChunks(paperId) })
+    },
+  })
+}
+
+export function useGeneratePaperSummaryMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: generatePaperSummary,
+    onSuccess: (summary, paperId) => {
+      void summary
+      queryClient.invalidateQueries({ queryKey: queryKeys.paper(paperId) })
     },
   })
 }
@@ -165,7 +265,7 @@ export function useAddSubscriptionMutation() {
 export function useAskQuestionMutation() {
   return useMutation({
     mutationKey: queryKeys.qa,
-    mutationFn: ({ question, paperIds = [] }: { question: string; paperIds?: number[] }) =>
-      askQuestion(question, paperIds),
+    mutationFn: ({ question, paperIds = [], mode = "agentic" }: { question: string; paperIds?: number[]; mode?: "agentic" | "classic" }) =>
+      askQuestion(question, paperIds, mode),
   })
 }

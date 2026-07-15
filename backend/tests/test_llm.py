@@ -1,6 +1,6 @@
 import json
-from urllib.error import HTTPError
 
+import httpx
 import pytest
 
 from backend.app.config import get_settings
@@ -8,35 +8,35 @@ from backend.app.services import llm as llm_module
 from backend.app.services.llm import LLMClient, LLMProviderError
 
 
-class FakeResponse:
-    def __init__(self, payload):
-        self.payload = payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def read(self):
-        return json.dumps(self.payload).encode("utf-8")
-
-
 def configure_real_client(monkeypatch):
-    monkeypatch.setenv("ENABLE_MOCK_LLM", "false")
     monkeypatch.setenv("LLM_API_KEY", "unit-test-placeholder")
     monkeypatch.setenv("LLM_BASE_URL", "https://provider.invalid/v1")
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "1200")
     get_settings.cache_clear()
+
+
+def install_transport(monkeypatch, handler):
+    real_client = httpx.Client
+
+    def client_factory(*, timeout, follow_redirects):
+        return real_client(
+            transport=httpx.MockTransport(handler),
+            timeout=timeout,
+            follow_redirects=follow_redirects,
+        )
+
+    monkeypatch.setattr(llm_module.httpx, "Client", client_factory)
 
 
 def test_llm_chat_sends_tools_and_parses_tool_calls(monkeypatch):
     configure_real_client(monkeypatch)
     captured = {}
 
-    def fake_urlopen(request, timeout):
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
-        return FakeResponse(
-            {
+    def handler(request):
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
                 "choices": [
                     {
                         "message": {
@@ -52,10 +52,10 @@ def test_llm_chat_sends_tools_and_parses_tool_calls(monkeypatch):
                         }
                     }
                 ]
-            }
+            },
         )
 
-    monkeypatch.setattr(llm_module, "_open_request", fake_urlopen)
+    install_transport(monkeypatch, handler)
     tools = [{"type": "function", "function": {"name": "search_text", "parameters": {"type": "object"}}}]
     message = LLMClient().chat([{"role": "user", "content": "search"}], tools=tools)
 
@@ -69,11 +69,8 @@ def test_llm_chat_sends_tools_and_parses_tool_calls(monkeypatch):
 def test_llm_provider_error_is_sanitized(monkeypatch):
     configure_real_client(monkeypatch)
     monkeypatch.setattr(llm_module.time, "sleep", lambda _: None)
+    install_transport(monkeypatch, lambda request: httpx.Response(429, text="secret provider response"))
 
-    def failed_urlopen(request, timeout):
-        raise HTTPError(request.full_url, 429, "secret provider response", {}, None)
-
-    monkeypatch.setattr(llm_module, "_open_request", failed_urlopen)
     with pytest.raises(LLMProviderError) as exc_info:
         LLMClient().chat([{"role": "user", "content": "search"}])
 
@@ -87,16 +84,14 @@ def test_llm_retries_transient_connection_error(monkeypatch):
     monkeypatch.setattr(llm_module.time, "sleep", lambda _: None)
     attempts = 0
 
-    def flaky_urlopen(request, timeout):
+    def handler(request):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            from urllib.error import URLError
+            raise httpx.ConnectError("temporary", request=request)
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "OK"}}]})
 
-            raise URLError("temporary")
-        return FakeResponse({"choices": [{"message": {"role": "assistant", "content": "OK"}}]})
-
-    monkeypatch.setattr(llm_module, "_open_request", flaky_urlopen)
+    install_transport(monkeypatch, handler)
     message = LLMClient().chat([{"role": "user", "content": "test"}])
 
     assert attempts == 2
@@ -104,43 +99,24 @@ def test_llm_retries_transient_connection_error(monkeypatch):
     get_settings.cache_clear()
 
 
-def test_gpt5_chat_uses_compatible_payload_and_sdk_headers(monkeypatch):
+def test_gpt5_chat_uses_compatible_payload_without_spoofed_sdk_headers(monkeypatch):
     configure_real_client(monkeypatch)
     monkeypatch.setenv("LLM_CHAT_MODEL", "gpt-5.5-medium")
     get_settings.cache_clear()
     captured = {}
 
-    def fake_urlopen(request, timeout):
-        captured["payload"] = json.loads(request.data.decode("utf-8"))
-        captured["headers"] = dict(request.header_items())
-        return FakeResponse({"choices": [{"message": {"role": "assistant", "content": "OK"}}]})
+    def handler(request):
+        captured["payload"] = json.loads(request.content)
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "OK"}}]})
 
-    monkeypatch.setattr(llm_module, "_open_request", fake_urlopen)
+    install_transport(monkeypatch, handler)
     message = LLMClient().chat([{"role": "user", "content": "test"}])
 
     assert message["content"] == "OK"
     assert captured["payload"]["max_completion_tokens"] == 1_200
     assert "max_tokens" not in captured["payload"]
     assert "temperature" not in captured["payload"]
-    assert captured["headers"]["User-agent"].startswith("OpenAI/Python")
-    assert captured["headers"]["Accept"] == "application/json"
+    assert captured["headers"]["accept"] == "application/json"
+    assert captured["headers"]["authorization"] == "Bearer unit-test-placeholder"
     get_settings.cache_clear()
-
-
-def test_llm_redirect_handler_never_forwards_request_headers():
-    handler = llm_module._NoRedirectHandler()
-    original = llm_module.Request(
-        "https://provider.invalid/v1/chat/completions",
-        headers={"Authorization": "Bearer unit-test-placeholder"},
-    )
-
-    redirected = handler.redirect_request(
-        original,
-        None,
-        302,
-        "Found",
-        {"Location": "https://redirect-target.invalid/collect"},
-        "https://redirect-target.invalid/collect",
-    )
-
-    assert redirected is None

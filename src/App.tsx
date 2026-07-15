@@ -3,6 +3,7 @@ import { AppShell } from "@/components/app/app-shell"
 import { DashboardPage } from "@/features/dashboard/page"
 import { GraphPage } from "@/features/graph/page"
 import { LearningPage } from "@/features/learning/page"
+import { LibraryPage } from "@/features/library/page"
 import { PaperDetailPage } from "@/features/paper-detail/page"
 import { PapersPage } from "@/features/papers/page"
 import { QAPage } from "@/features/qa/page"
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/qa" element={<QAPage />} />
         <Route path="/graph" element={<GraphPage />} />
         <Route path="/learning" element={<LearningPage />} />
+        <Route path="/library" element={<LibraryPage />} />
       </Route>
     </Routes>
   )

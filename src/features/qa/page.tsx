@@ -1,5 +1,5 @@
 import { Brain, CheckCircle2, FileSearch, Loader2, MessageSquareText, Search, Send } from "lucide-react"
-import { FormEvent, useEffect, useMemo, useState } from "react"
+import { FormEvent, useMemo, useState } from "react"
 import { Link } from "react-router"
 import { PageHeader } from "@/components/common/page-header"
 import { LoadingState } from "@/components/common/loading-state"
@@ -29,7 +29,6 @@ const toolLabels: Record<string, string> = {
 
 const executionLabels: Record<string, string> = {
   agentic_real: "真实模型自主探索",
-  agentic_mock: "离线 Agent 演示",
   classic: "单轮快速问答",
 }
 
@@ -65,12 +64,6 @@ export function QAPage() {
     setSubmittedQuestion(question.trim())
     await askMutation.mutateAsync({ question: question.trim() })
   }
-
-  useEffect(() => {
-    askMutation.mutate({ question: submittedQuestion })
-    // Run once with the default question.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   const evidence = useMemo(() => {
     if (askMutation.isPending) return []

@@ -6,10 +6,60 @@ import sqlite3
 from typing import Any
 
 from .config import get_settings
-from .services.text_utils import deterministic_embedding, title_hash
+from .models import AssetId, PaperCandidate, PaperId, PaperRecord, PaperSource
+from .services.text_utils import deterministic_embedding
 
 
 PAPER_CHUNKS_FTS_TABLE = "paper_chunks_fts"
+SCHEMA_VERSION = 2
+
+
+class IncompatibleSchemaError(RuntimeError):
+    pass
+
+
+def _schema_tables(conn: sqlite3.Connection) -> set[str]:
+    return {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    }
+
+
+def _schema_reset_command(conn: sqlite3.Connection) -> str:
+    row = conn.execute("PRAGMA database_list").fetchone()
+    path = str(row[2]) if row is not None and row[2] else "<database-path>"
+    return f'python scripts/reset_database.py --database "{path}" --apply'
+
+
+def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
+    tables = _schema_tables(conn)
+    if not tables:
+        return
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version != SCHEMA_VERSION:
+        raise IncompatibleSchemaError(
+            f"Database schema version {version} is incompatible with required version "
+            f"{SCHEMA_VERSION}. No data migration is provided; rebuild the database with: "
+            f"{_schema_reset_command(conn)}"
+        )
+
+    paper_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(papers)").fetchall()}
+    thread_columns = {
+        str(row[1]): int(row[3]) for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
+    }
+    required_paper_columns = {"source", "source_id", "asset_id", "processing_status"}
+    if not required_paper_columns.issubset(paper_columns) or "title_hash" in paper_columns:
+        raise IncompatibleSchemaError(
+            f"Database schema does not match version {SCHEMA_VERSION}; rebuild it with: "
+            f"{_schema_reset_command(conn)}"
+        )
+    if thread_columns.get("paper_id") != 0:
+        raise IncompatibleSchemaError(
+            f"Database chat schema does not match version {SCHEMA_VERSION}; rebuild it with: "
+            f"{_schema_reset_command(conn)}"
+        )
 
 
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
@@ -24,12 +74,130 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
     return conn
 
 
+def supports_fts5(conn: sqlite3.Connection) -> bool:
+    try:
+        conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp._fts5_probe USING fts5(value)")
+        conn.execute("DROP TABLE IF EXISTS temp._fts5_probe")
+    except sqlite3.Error:
+        return False
+    return True
+
+
+def init_paper_chunks_fts(conn: sqlite3.Connection) -> bool:
+    if not supports_fts5(conn):
+        return False
+    try:
+        existing = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (PAPER_CHUNKS_FTS_TABLE,),
+        ).fetchone()
+        existing_sql = str(existing["sql"] or "").lower() if existing else ""
+        if existing and ("source_hash" not in existing_sql or "trigram" not in existing_sql):
+            conn.execute("DROP TRIGGER IF EXISTS trg_paper_chunks_delete_fts")
+            conn.execute("DROP TABLE IF EXISTS paper_chunks_fts")
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS paper_chunks_fts USING fts5(
+                chunk_id UNINDEXED,
+                paper_id UNINDEXED,
+                source_hash UNINDEXED,
+                chunk_index UNINDEXED,
+                heading,
+                content,
+                paper_title,
+                tokenize='trigram'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_paper_chunks_delete_fts
+            AFTER DELETE ON paper_chunks
+            BEGIN
+                DELETE FROM paper_chunks_fts WHERE rowid = OLD.id;
+            END
+            """
+        )
+    except sqlite3.Error:
+        return False
+    return True
+
+
+def paper_chunks_fts_ready(conn: sqlite3.Connection) -> bool:
+    try:
+        conn.execute("SELECT rowid FROM paper_chunks_fts LIMIT 0")
+    except sqlite3.Error:
+        return False
+    return True
+
+
+def _insert_paper_chunk_fts_row(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO paper_chunks_fts(
+            rowid, chunk_id, paper_id, source_hash, chunk_index, heading, content, paper_title
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            row["id"],
+            row["id"],
+            row["paper_id"],
+            row["source_hash"],
+            row["chunk_index"],
+            row["heading"],
+            row["content"],
+            row["paper_title"],
+        ),
+    )
+
+
+def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = None) -> bool:
+    if not paper_chunks_fts_ready(conn):
+        return False
+    savepoint = "paper_chunks_fts_rebuild"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        if paper_id is None:
+            conn.execute("DELETE FROM paper_chunks_fts")
+            rows = conn.execute(
+                """
+                SELECT pc.*, p.title AS paper_title
+                FROM paper_chunks pc JOIN papers p ON p.id = pc.paper_id
+                ORDER BY pc.id
+                """
+            ).fetchall()
+        else:
+            conn.execute("DELETE FROM paper_chunks_fts WHERE paper_id = ?", (paper_id,))
+            rows = conn.execute(
+                """
+                SELECT pc.*, p.title AS paper_title
+                FROM paper_chunks pc JOIN papers p ON p.id = pc.paper_id
+                WHERE pc.paper_id = ? ORDER BY pc.id
+                """,
+                (paper_id,),
+            ).fetchall()
+        for row in rows:
+            _insert_paper_chunk_fts_row(conn, row)
+    except sqlite3.Error:
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
+        return False
+    conn.execute(f"RELEASE {savepoint}")
+    return True
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
+    _assert_schema_compatible(conn)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS papers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            arxiv_id TEXT UNIQUE NOT NULL,
+            source TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            source_url TEXT,
+            venue TEXT,
+            pdf_url TEXT,
+            asset_id TEXT,
             title TEXT NOT NULL,
             authors_json TEXT NOT NULL,
             abstract TEXT NOT NULL,
@@ -37,14 +205,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
             primary_category TEXT NOT NULL,
             published_at TEXT NOT NULL,
             updated_at TEXT,
-            pdf_url TEXT,
-            arxiv_url TEXT,
-            doi TEXT,
-            title_hash TEXT UNIQUE NOT NULL,
             processing_status TEXT NOT NULL DEFAULT 'pending',
-            reading_status TEXT NOT NULL DEFAULT 'unread',
-            is_favorite INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source, source_id)
         );
 
         CREATE TABLE IF NOT EXISTS wiki_sections (
@@ -56,22 +219,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
             embedding_json TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(paper_id, section)
-        );
-
-        CREATE TABLE IF NOT EXISTS paper_chunks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
-            source_type TEXT NOT NULL,
-            source_url TEXT,
-            chunk_index INTEGER NOT NULL,
-            heading TEXT NOT NULL,
-            content TEXT NOT NULL,
-            char_start INTEGER NOT NULL,
-            char_end INTEGER NOT NULL,
-            token_count INTEGER NOT NULL,
-            embedding_json TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(paper_id, chunk_index)
         );
 
         CREATE TABLE IF NOT EXISTS concepts (
@@ -120,246 +267,238 @@ def init_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS paper_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_id INTEGER NOT NULL UNIQUE REFERENCES papers(id) ON DELETE CASCADE,
+            parser_name TEXT NOT NULL DEFAULT 'docling',
+            parser_version TEXT,
+            source_hash TEXT,
+            content_markdown TEXT NOT NULL DEFAULT '',
+            structure_json TEXT NOT NULL DEFAULT '{}',
+            token_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error TEXT,
+            parsed_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS paper_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+            document_id INTEGER NOT NULL REFERENCES paper_documents(id) ON DELETE CASCADE,
+            source_hash TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            heading TEXT NOT NULL,
+            content TEXT NOT NULL,
+            char_start INTEGER NOT NULL,
+            char_end INTEGER NOT NULL,
+            token_count INTEGER NOT NULL,
+            embedding_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(paper_id, source_hash, chunk_index)
+        );
+
+        CREATE TABLE IF NOT EXISTS summary_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+            content TEXT NOT NULL,
+            model TEXT NOT NULL,
+            prompt_version TEXT NOT NULL DEFAULT 'paper-summary-v1',
+            source_hash TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_threads (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            paper_id INTEGER REFERENCES papers(id) ON DELETE CASCADE,
+            title TEXT NOT NULL DEFAULT '新对话',
+            active_leaf_id TEXT,
+            message_token_limit INTEGER NOT NULL DEFAULT 12000,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            parent_id TEXT REFERENCES chat_messages(id),
+            source_message_id TEXT REFERENCES chat_messages(id),
+            role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
+            content TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'complete',
+            token_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_runs (
+            id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            input_message_id TEXT NOT NULL REFERENCES chat_messages(id),
+            output_message_id TEXT NOT NULL UNIQUE REFERENCES chat_messages(id),
+            status TEXT NOT NULL DEFAULT 'running',
+            model TEXT,
+            usage_json TEXT NOT NULL DEFAULT '{}',
+            error TEXT,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS library_folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            parent_id INTEGER REFERENCES library_folders(id) ON DELETE RESTRICT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            is_system INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, parent_id, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS library_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+            folder_id INTEGER NOT NULL REFERENCES library_folders(id) ON DELETE RESTRICT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, paper_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_papers_category ON papers(primary_category);
         CREATE INDEX IF NOT EXISTS idx_papers_published ON papers(published_at);
+        CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source);
+        CREATE INDEX IF NOT EXISTS idx_papers_asset ON papers(asset_id);
         CREATE INDEX IF NOT EXISTS idx_wiki_sections_section ON wiki_sections(section);
-        CREATE INDEX IF NOT EXISTS idx_paper_chunks_paper ON paper_chunks(paper_id, chunk_index);
-        CREATE INDEX IF NOT EXISTS idx_paper_chunks_source ON paper_chunks(source_type);
         CREATE INDEX IF NOT EXISTS idx_notes_paper ON notes(paper_id);
+        CREATE INDEX IF NOT EXISTS idx_summary_versions_paper ON summary_versions(paper_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_paper_chunks_paper ON paper_chunks(paper_id, source_hash, chunk_index);
+        CREATE INDEX IF NOT EXISTS idx_chat_threads_paper ON chat_threads(user_id, paper_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_library_folders_user ON library_folders(user_id, parent_id);
+        CREATE INDEX IF NOT EXISTS idx_library_items_folder ON library_items(user_id, folder_id);
         """
     )
-    if supports_fts5(conn):
-        init_paper_chunks_fts(conn)
-        rebuild_paper_chunks_fts(conn)
+    init_paper_chunks_fts(conn)
+    rebuild_paper_chunks_fts(conn)
+    ensure_user_library(conn, 1)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
-
-
-def supports_fts5(conn: sqlite3.Connection) -> bool:
-    try:
-        conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp._fts5_probe USING fts5(value)")
-        conn.execute("DROP TABLE IF EXISTS temp._fts5_probe")
-    except sqlite3.Error:
-        return False
-    return True
-
-
-def init_paper_chunks_fts(conn: sqlite3.Connection) -> bool:
-    try:
-        row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE name = ?",
-            (PAPER_CHUNKS_FTS_TABLE,),
-        ).fetchone()
-        if row is not None and "tokenize='trigram'" not in str(row["sql"] or "").lower():
-            disable_paper_chunks_fts(conn)
-        conn.execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS paper_chunks_fts USING fts5(
-                chunk_id UNINDEXED,
-                paper_id UNINDEXED,
-                chunk_index UNINDEXED,
-                heading,
-                content,
-                paper_title,
-                tokenize='trigram'
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TRIGGER IF NOT EXISTS trg_paper_chunks_delete_fts
-            AFTER DELETE ON paper_chunks
-            BEGIN
-                DELETE FROM paper_chunks_fts WHERE rowid = OLD.id;
-            END
-            """
-        )
-    except sqlite3.Error:
-        return False
-    return True
-
-
-def paper_chunks_fts_ready(conn: sqlite3.Connection) -> bool:
-    try:
-        conn.execute("SELECT rowid FROM paper_chunks_fts LIMIT 0")
-    except sqlite3.Error:
-        return False
-    return True
-
-
-def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = None) -> bool:
-    if not paper_chunks_fts_ready(conn):
-        return False
-    savepoint = "paper_chunks_fts_rebuild"
-    conn.execute(f"SAVEPOINT {savepoint}")
-    try:
-        if paper_id is None:
-            conn.execute("DELETE FROM paper_chunks_fts")
-            rows = conn.execute(
-                """
-                SELECT pc.id, pc.paper_id, pc.chunk_index, pc.heading, pc.content, p.title AS paper_title
-                FROM paper_chunks pc
-                JOIN papers p ON p.id = pc.paper_id
-                ORDER BY pc.id
-                """
-            ).fetchall()
-        else:
-            conn.execute("DELETE FROM paper_chunks_fts WHERE paper_id = ?", (paper_id,))
-            rows = conn.execute(
-                """
-                SELECT pc.id, pc.paper_id, pc.chunk_index, pc.heading, pc.content, p.title AS paper_title
-                FROM paper_chunks pc
-                JOIN papers p ON p.id = pc.paper_id
-                WHERE pc.paper_id = ?
-                ORDER BY pc.id
-                """,
-                (paper_id,),
-            ).fetchall()
-        for row in rows:
-            insert_paper_chunk_fts_row(conn, row)
-    except sqlite3.Error:
-        conn.execute(f"ROLLBACK TO {savepoint}")
-        conn.execute(f"RELEASE {savepoint}")
-        return False
-    conn.execute(f"RELEASE {savepoint}")
-    return True
-
-
-def insert_paper_chunk_fts_row(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -> None:
-    conn.execute(
-        """
-        INSERT INTO paper_chunks_fts (
-            rowid, chunk_id, paper_id, chunk_index, heading, content, paper_title
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            int(row["id"]),
-            int(row["id"]),
-            int(row["paper_id"]),
-            int(row["chunk_index"]),
-            str(row["heading"] or ""),
-            str(row["content"] or ""),
-            str(row["paper_title"] or ""),
-        ),
-    )
-
-
-def delete_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int) -> None:
-    if paper_chunks_fts_ready(conn):
-        conn.execute("DELETE FROM paper_chunks_fts WHERE paper_id = ?", (paper_id,))
-
-
-def disable_paper_chunks_fts(conn: sqlite3.Connection) -> None:
-    try:
-        conn.execute("DROP TRIGGER IF EXISTS trg_paper_chunks_delete_fts")
-        conn.execute("DROP TABLE IF EXISTS paper_chunks_fts")
-    except sqlite3.Error:
-        pass
 
 
 def init_db(path: Path | str | None = None) -> None:
     with connect(path) as conn:
         init_schema(conn)
-        from .seed_data import seed_database
-
-        seed_database(conn)
 
 
-def row_to_paper(row: sqlite3.Row) -> dict[str, Any]:
+def row_to_paper_record(row: sqlite3.Row) -> PaperRecord:
+    return PaperRecord(
+        id=PaperId(int(row["id"])),
+        source=PaperSource(str(row["source"])),
+        source_id=str(row["source_id"]),
+        source_url=str(row["source_url"]) if row["source_url"] is not None else None,
+        venue=str(row["venue"]) if row["venue"] is not None else None,
+        pdf_url=str(row["pdf_url"]) if row["pdf_url"] is not None else None,
+        asset_id=AssetId(str(row["asset_id"])) if row["asset_id"] is not None else None,
+        title=str(row["title"]),
+        authors=tuple(json.loads(str(row["authors_json"]))),
+        abstract=str(row["abstract"]),
+        categories=tuple(json.loads(str(row["categories_json"]))),
+        primary_category=str(row["primary_category"]),
+        published_at=str(row["published_at"]),
+        updated_at=str(row["updated_at"]) if row["updated_at"] is not None else None,
+        processing_status=str(row["processing_status"]),
+        created_at=str(row["created_at"]),
+    )
+
+
+def row_to_paper(row: sqlite3.Row, is_favorite: bool | None = None) -> dict[str, Any]:
+    paper = row_to_paper_record(row)
+    pdf_available = paper.asset_id is not None or paper.pdf_url is not None
+    pdf_base_url = f"/api/papers/{int(paper.id)}/pdf"
     return {
-        "id": row["id"],
-        "arxiv_id": row["arxiv_id"],
-        "title": row["title"],
-        "authors": json.loads(row["authors_json"]),
-        "abstract": row["abstract"],
-        "categories": json.loads(row["categories_json"]),
-        "primary_category": row["primary_category"],
-        "published_at": row["published_at"],
-        "updated_at": row["updated_at"],
-        "pdf_url": row["pdf_url"],
-        "arxiv_url": row["arxiv_url"],
-        "doi": row["doi"],
-        "processing_status": row["processing_status"],
-        "reading_status": row["reading_status"],
-        "is_favorite": bool(row["is_favorite"]),
-        "created_at": row["created_at"],
+        "id": int(paper.id),
+        "source": paper.source.value,
+        "source_id": paper.source_id,
+        "source_url": paper.source_url,
+        "venue": paper.venue,
+        "title": paper.title,
+        "authors": list(paper.authors),
+        "abstract": paper.abstract,
+        "categories": list(paper.categories),
+        "primary_category": paper.primary_category,
+        "published_at": paper.published_at,
+        "updated_at": paper.updated_at,
+        "pdf": {
+            "available": pdf_available,
+            "cached": paper.asset_id is not None,
+            "view_url": pdf_base_url if pdf_available else None,
+            "download_url": f"{pdf_base_url}/download" if pdf_available else None,
+        },
+        "processing_status": paper.processing_status,
+        "is_favorite": bool(is_favorite),
+        "created_at": paper.created_at,
     }
 
 
-def paper_exists(conn: sqlite3.Connection, paper_id: int) -> bool:
-    row = conn.execute("SELECT 1 FROM papers WHERE id = ?", (paper_id,)).fetchone()
-    return row is not None
-
-
-def find_existing_paper_id(conn: sqlite3.Connection, paper: dict[str, Any]) -> int | None:
-    hash_value = paper.get("title_hash") or title_hash(paper["title"])
+def find_existing_paper_id(conn: sqlite3.Connection, paper: PaperCandidate) -> PaperId | None:
     row = conn.execute(
-        """
-        SELECT id FROM papers
-        WHERE arxiv_id = ? OR title_hash = ?
-        ORDER BY CASE WHEN arxiv_id = ? THEN 0 ELSE 1 END
-        LIMIT 1
-        """,
-        (paper["arxiv_id"], hash_value, paper["arxiv_id"]),
+        "SELECT id FROM papers WHERE source = ? AND source_id = ?",
+        (paper.source.value, paper.source_id),
     ).fetchone()
-    return int(row["id"]) if row is not None else None
+    return PaperId(int(row["id"])) if row is not None else None
 
 
-def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool = True) -> int:
-    authors = paper.get("authors", [])
-    categories = paper.get("categories", [])
-    primary_category = paper.get("primary_category") or (categories[0] if categories else "cs.AI")
-    hash_value = paper.get("title_hash") or title_hash(paper["title"])
+def upsert_paper(conn: sqlite3.Connection, paper: PaperCandidate, commit: bool = True) -> PaperId:
     existing_id = find_existing_paper_id(conn, paper)
     if existing_id is not None:
         identity_row = conn.execute(
-            "SELECT arxiv_id FROM papers WHERE id = ?",
-            (existing_id,),
+            "SELECT asset_id FROM papers WHERE id = ?",
+            (int(existing_id),),
         ).fetchone()
-        same_arxiv_id = identity_row is not None and identity_row["arxiv_id"] == paper["arxiv_id"]
         conn.execute(
             """
             UPDATE papers SET
                 title = ?,
-                title_hash = CASE
-                    WHEN NOT EXISTS (
-                        SELECT 1 FROM papers AS other
-                        WHERE other.title_hash = ? AND other.id != ?
-                    )
-                    THEN ?
-                    ELSE title_hash
-                END,
                 authors_json = ?,
                 abstract = ?,
                 categories_json = ?,
                 primary_category = ?,
                 published_at = ?,
                 updated_at = ?,
-                pdf_url = CASE WHEN ? THEN ? ELSE pdf_url END,
-                arxiv_url = CASE WHEN ? THEN ? ELSE arxiv_url END,
-                doi = COALESCE(?, doi)
+                pdf_url = COALESCE(?, pdf_url),
+                source_url = COALESCE(?, source_url),
+                venue = COALESCE(?, venue),
+                asset_id = asset_id
             WHERE id = ?
             """,
             (
-                paper["title"],
-                hash_value,
-                existing_id,
-                hash_value,
-                json.dumps(authors, ensure_ascii=False),
-                paper["abstract"],
-                json.dumps(categories, ensure_ascii=False),
-                primary_category,
-                paper["published_at"],
-                paper.get("updated_at"),
-                1 if same_arxiv_id else 0,
-                paper.get("pdf_url"),
-                1 if same_arxiv_id else 0,
-                paper.get("arxiv_url"),
-                paper.get("doi"),
-                existing_id,
+                paper.title,
+                json.dumps(paper.authors, ensure_ascii=False),
+                paper.abstract,
+                json.dumps(paper.categories, ensure_ascii=False),
+                paper.primary_category,
+                paper.published_at,
+                paper.updated_at,
+                paper.pdf_url,
+                paper.source_url,
+                paper.venue,
+                int(existing_id),
             ),
         )
-        rebuild_paper_chunks_fts(conn, existing_id)
+        if paper.asset_id and identity_row is not None and identity_row["asset_id"] != str(paper.asset_id):
+            set_paper_asset_id(conn, existing_id, paper.asset_id, commit=False)
         if commit:
             conn.commit()
         return existing_id
@@ -367,55 +506,167 @@ def upsert_paper(conn: sqlite3.Connection, paper: dict[str, Any], commit: bool =
     conn.execute(
         """
         INSERT INTO papers (
-            arxiv_id, title, authors_json, abstract, categories_json, primary_category,
-            published_at, updated_at, pdf_url, arxiv_url, doi, title_hash,
-            processing_status, reading_status, is_favorite
+            source, source_id, source_url, venue, pdf_url, asset_id,
+            title, authors_json, abstract, categories_json, primary_category,
+            published_at, updated_at, processing_status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(arxiv_id) DO UPDATE SET
-            title = excluded.title,
-            authors_json = excluded.authors_json,
-            abstract = excluded.abstract,
-            categories_json = excluded.categories_json,
-            primary_category = excluded.primary_category,
-            published_at = excluded.published_at,
-            updated_at = excluded.updated_at,
-            pdf_url = excluded.pdf_url,
-            arxiv_url = excluded.arxiv_url,
-            doi = excluded.doi,
-            title_hash = CASE
-                WHEN NOT EXISTS (
-                    SELECT 1 FROM papers AS other
-                    WHERE other.title_hash = excluded.title_hash AND other.id != papers.id
-                )
-                THEN excluded.title_hash
-                ELSE papers.title_hash
-            END
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            paper["arxiv_id"],
-            paper["title"],
-            json.dumps(authors, ensure_ascii=False),
-            paper["abstract"],
-            json.dumps(categories, ensure_ascii=False),
-            primary_category,
-            paper["published_at"],
-            paper.get("updated_at"),
-            paper.get("pdf_url"),
-            paper.get("arxiv_url"),
-            paper.get("doi"),
-            hash_value,
-            paper.get("processing_status", "pending"),
-            paper.get("reading_status", "unread"),
-            1 if paper.get("is_favorite") else 0,
+            paper.source.value,
+            paper.source_id,
+            paper.source_url,
+            paper.venue,
+            paper.pdf_url,
+            str(paper.asset_id) if paper.asset_id else None,
+            paper.title,
+            json.dumps(paper.authors, ensure_ascii=False),
+            paper.abstract,
+            json.dumps(paper.categories, ensure_ascii=False),
+            paper.primary_category,
+            paper.published_at,
+            paper.updated_at,
+            paper.processing_status,
         ),
     )
-    row = conn.execute("SELECT id FROM papers WHERE arxiv_id = ?", (paper["arxiv_id"],)).fetchone()
-    if row is not None:
-        rebuild_paper_chunks_fts(conn, int(row["id"]))
+    row = conn.execute(
+        "SELECT id FROM papers WHERE source = ? AND source_id = ?",
+        (paper.source.value, paper.source_id),
+    ).fetchone()
     if commit:
         conn.commit()
-    return int(row["id"])
+    return PaperId(int(row["id"]))
+
+
+def get_paper_record(conn: sqlite3.Connection, paper_id: PaperId | int) -> PaperRecord | None:
+    row = conn.execute("SELECT * FROM papers WHERE id = ?", (int(paper_id),)).fetchone()
+    return row_to_paper_record(row) if row is not None else None
+
+
+def set_paper_asset_id(
+    conn: sqlite3.Connection,
+    paper_id: PaperId | int,
+    asset_id: AssetId | None,
+    *,
+    commit: bool = True,
+) -> None:
+    row = conn.execute("SELECT asset_id FROM papers WHERE id = ?", (int(paper_id),)).fetchone()
+    if row is None:
+        raise ValueError("paper not found")
+    next_asset_id = str(asset_id) if asset_id else None
+    if row["asset_id"] == next_asset_id:
+        if commit:
+            conn.commit()
+        return
+
+    savepoint = "set_paper_asset_id"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        conn.execute("DELETE FROM paper_documents WHERE paper_id = ?", (int(paper_id),))
+        conn.execute("UPDATE summary_versions SET is_active = 0 WHERE paper_id = ?", (int(paper_id),))
+        conn.execute("DELETE FROM wiki_sections WHERE paper_id = ?", (int(paper_id),))
+        conn.execute("DELETE FROM paper_concepts WHERE paper_id = ?", (int(paper_id),))
+        rebuild_concept_edges(conn)
+        cursor = conn.execute(
+            "UPDATE papers SET asset_id = ?, processing_status = 'pending' WHERE id = ?",
+            (next_asset_id, int(paper_id)),
+        )
+        if cursor.rowcount == 0:
+            raise ValueError("paper not found")
+    except Exception:
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
+        raise
+    conn.execute(f"RELEASE {savepoint}")
+    if commit:
+        conn.commit()
+
+
+def paper_exists(conn: sqlite3.Connection, paper_id: int) -> bool:
+    return conn.execute("SELECT 1 FROM papers WHERE id = ?", (paper_id,)).fetchone() is not None
+
+
+def replace_paper_chunks(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    source_hash: str,
+    chunks: list[dict[str, Any]],
+    *,
+    commit: bool = True,
+) -> None:
+    document = conn.execute(
+        "SELECT id, status, source_hash FROM paper_documents WHERE paper_id = ?",
+        (paper_id,),
+    ).fetchone()
+    if document is None or document["status"] != "completed" or document["source_hash"] != source_hash:
+        raise ValueError("paper document is not current")
+    savepoint = "replace_paper_chunks"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        conn.execute("DELETE FROM paper_chunks WHERE paper_id = ?", (paper_id,))
+        for chunk in chunks:
+            content = str(chunk["content"]).strip()
+            if not content:
+                continue
+            conn.execute(
+                """
+                INSERT INTO paper_chunks(
+                    paper_id, document_id, source_hash, chunk_index, heading, content,
+                    char_start, char_end, token_count, embedding_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    paper_id,
+                    int(document["id"]),
+                    source_hash,
+                    int(chunk["chunk_index"]),
+                    str(chunk.get("heading") or f"Document #{int(chunk['chunk_index']) + 1}"),
+                    content,
+                    int(chunk["char_start"]),
+                    int(chunk["char_end"]),
+                    int(chunk["token_count"]),
+                    json.dumps(deterministic_embedding(content), ensure_ascii=False),
+                ),
+            )
+    except sqlite3.Error:
+        conn.execute(f"ROLLBACK TO {savepoint}")
+        conn.execute(f"RELEASE {savepoint}")
+        raise
+    conn.execute(f"RELEASE {savepoint}")
+    rebuild_paper_chunks_fts(conn, paper_id)
+    if commit:
+        conn.commit()
+
+
+def list_paper_chunks(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    current = conn.execute(
+        "SELECT source_hash FROM paper_documents WHERE paper_id = ? AND status = 'completed'",
+        (paper_id,),
+    ).fetchone()
+    if current is None or not current["source_hash"]:
+        return [], 0
+    params = (paper_id, current["source_hash"])
+    total = conn.execute(
+        "SELECT COUNT(*) AS count FROM paper_chunks WHERE paper_id = ? AND source_hash = ?",
+        params,
+    ).fetchone()["count"]
+    rows = conn.execute(
+        """
+        SELECT id, paper_id, source_hash, chunk_index, heading, content,
+               char_start, char_end, token_count, created_at
+        FROM paper_chunks
+        WHERE paper_id = ? AND source_hash = ?
+        ORDER BY chunk_index LIMIT ? OFFSET ?
+        """,
+        (*params, limit, offset),
+    ).fetchall()
+    return [dict(row) for row in rows], int(total)
 
 
 def replace_wiki_sections(
@@ -446,123 +697,11 @@ def replace_wiki_sections(
                 section,
                 labels.get(section, f"{section}.md"),
                 content,
-                json.dumps(deterministic_embedding(content)),
+                "[]",
             ),
         )
     if commit:
         conn.commit()
-
-
-def replace_paper_chunks(
-    conn: sqlite3.Connection,
-    paper_id: int,
-    chunks: list[dict[str, Any]],
-    commit: bool = True,
-) -> None:
-    savepoint = "replace_paper_chunks"
-    fts_ready = paper_chunks_fts_ready(conn)
-    conn.execute(f"SAVEPOINT {savepoint}")
-    try:
-        _replace_paper_chunks(conn, paper_id, chunks, sync_fts=fts_ready)
-    except sqlite3.IntegrityError:
-        conn.execute(f"ROLLBACK TO {savepoint}")
-        conn.execute(f"RELEASE {savepoint}")
-        raise
-    except sqlite3.Error:
-        conn.execute(f"ROLLBACK TO {savepoint}")
-        conn.execute(f"RELEASE {savepoint}")
-        if not fts_ready:
-            raise
-        disable_paper_chunks_fts(conn)
-        conn.execute(f"SAVEPOINT {savepoint}")
-        try:
-            _replace_paper_chunks(conn, paper_id, chunks, sync_fts=False)
-        except sqlite3.Error:
-            conn.execute(f"ROLLBACK TO {savepoint}")
-            conn.execute(f"RELEASE {savepoint}")
-            raise
-        else:
-            conn.execute(f"RELEASE {savepoint}")
-    else:
-        conn.execute(f"RELEASE {savepoint}")
-    if commit:
-        conn.commit()
-
-
-def _replace_paper_chunks(
-    conn: sqlite3.Connection,
-    paper_id: int,
-    chunks: list[dict[str, Any]],
-    sync_fts: bool,
-) -> None:
-    paper_row = conn.execute("SELECT title FROM papers WHERE id = ?", (paper_id,)).fetchone()
-    paper_title = paper_row["title"] if paper_row is not None else ""
-    if sync_fts:
-        delete_paper_chunks_fts(conn, paper_id)
-    conn.execute("DELETE FROM paper_chunks WHERE paper_id = ?", (paper_id,))
-    for index, chunk in enumerate(chunks):
-        content = str(chunk.get("content", "")).strip()
-        if not content:
-            continue
-        chunk_index = int(chunk.get("chunk_index", index))
-        cursor = conn.execute(
-            """
-            INSERT INTO paper_chunks (
-                paper_id, source_type, source_url, chunk_index, heading, content,
-                char_start, char_end, token_count, embedding_json
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                paper_id,
-                str(chunk.get("source_type", "metadata")),
-                chunk.get("source_url") or "",
-                chunk_index,
-                str(chunk.get("heading", f"Chunk {chunk_index + 1}")),
-                content,
-                int(chunk.get("char_start", 0)),
-                int(chunk.get("char_end", len(content))),
-                int(chunk.get("token_count", 0)),
-                json.dumps(deterministic_embedding(content)),
-            ),
-        )
-        if sync_fts:
-            chunk_id = int(cursor.lastrowid)
-            insert_paper_chunk_fts_row(
-                conn,
-                {
-                    "id": chunk_id,
-                    "paper_id": paper_id,
-                    "chunk_index": chunk_index,
-                    "heading": str(chunk.get("heading", f"Chunk {chunk_index + 1}")),
-                    "content": content,
-                    "paper_title": paper_title,
-                },
-            )
-
-
-def list_paper_chunks(
-    conn: sqlite3.Connection,
-    paper_id: int,
-    limit: int = 20,
-    offset: int = 0,
-) -> tuple[list[dict[str, Any]], int]:
-    total = conn.execute(
-        "SELECT COUNT(*) AS count FROM paper_chunks WHERE paper_id = ?",
-        (paper_id,),
-    ).fetchone()["count"]
-    rows = conn.execute(
-        """
-        SELECT id, paper_id, source_type, source_url, chunk_index, heading, content,
-               char_start, char_end, token_count, created_at
-        FROM paper_chunks
-        WHERE paper_id = ?
-        ORDER BY chunk_index
-        LIMIT ? OFFSET ?
-        """,
-        (paper_id, limit, offset),
-    ).fetchall()
-    return [dict(row) for row in rows], int(total)
 
 
 def attach_concepts(
@@ -582,7 +721,7 @@ def attach_concepts(
             VALUES (?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET description = excluded.description
             """,
-            (name, description, json.dumps(deterministic_embedding(name + " " + description))),
+            (name, description, "[]"),
         )
         concept_row = conn.execute("SELECT id FROM concepts WHERE name = ?", (name,)).fetchone()
         conn.execute(
@@ -621,7 +760,7 @@ def rebuild_concept_edges(conn: sqlite3.Connection) -> None:
             for target_id in concept_ids[index + 1 :]:
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO concept_edges (
+                    INSERT OR IGNORE INTO concept_edges(
                         source_concept_id, target_concept_id, relation, weight
                     ) VALUES (?, ?, ?, ?)
                     """,
@@ -638,14 +777,20 @@ def list_papers(
     favorite: bool | None = None,
     limit: int = 50,
     offset: int = 0,
+    user_id: int = 1,
 ) -> list[dict[str, Any]]:
+    ensure_user_library(conn, user_id)
+    saved_ids = {
+        int(row["paper_id"])
+        for row in conn.execute("SELECT paper_id FROM library_items WHERE user_id = ?", (user_id,)).fetchall()
+    }
     rows = conn.execute("SELECT * FROM papers ORDER BY published_at DESC").fetchall()
     query = q.strip().lower()
     author_query = author.strip().lower()
     concept_query = concept.strip().lower()
     results: list[dict[str, Any]] = []
     for row in rows:
-        paper = row_to_paper(row)
+        paper = row_to_paper(row, int(row["id"]) in saved_ids)
         haystack = " ".join(
             [paper["title"], paper["abstract"], " ".join(paper["authors"]), " ".join(paper["categories"])]
         ).lower()
@@ -672,11 +817,15 @@ def list_papers(
     return results[offset : offset + limit]
 
 
-def get_paper_detail(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any] | None:
+def get_paper_detail(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM papers WHERE id = ?", (paper_id,)).fetchone()
     if row is None:
         return None
-    paper = row_to_paper(row)
+    saved = conn.execute(
+        "SELECT 1 FROM library_items WHERE user_id = ? AND paper_id = ?",
+        (user_id, paper_id),
+    ).fetchone() is not None
+    paper = row_to_paper(row, saved)
     sections = conn.execute(
         "SELECT section, title, content, updated_at FROM wiki_sections WHERE paper_id = ? ORDER BY id",
         (paper_id,),
@@ -695,31 +844,228 @@ def get_paper_detail(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any] 
         "SELECT id, note, comment, created_at, updated_at FROM notes WHERE paper_id = ? ORDER BY created_at DESC",
         (paper_id,),
     ).fetchall()
-    chunk_count = conn.execute(
-        "SELECT COUNT(*) AS count FROM paper_chunks WHERE paper_id = ?",
+    document = conn.execute(
+        """
+        SELECT parser_name, parser_version, source_hash, content_markdown, token_count,
+               status, error, parsed_at, updated_at
+        FROM paper_documents WHERE paper_id = ?
+        """,
         (paper_id,),
-    ).fetchone()["count"]
+    ).fetchone()
+    summaries = conn.execute(
+        """
+        SELECT id, content, model, prompt_version, source_hash, is_active, created_at
+        FROM summary_versions WHERE paper_id = ? ORDER BY created_at DESC, id DESC
+        """,
+        (paper_id,),
+    ).fetchall()
     paper["wiki"] = [dict(item) for item in sections]
     paper["concepts"] = [dict(item) for item in concepts]
     paper["notes"] = [dict(item) for item in notes]
-    paper["chunk_count"] = int(chunk_count)
+    paper["document"] = dict(document) if document else None
+    paper["summaries"] = [dict(item) for item in summaries]
     return paper
 
 
-def set_favorite(conn: sqlite3.Connection, paper_id: int, favorite: bool) -> dict[str, Any]:
-    cursor = conn.execute("UPDATE papers SET is_favorite = ? WHERE id = ?", (1 if favorite else 0, paper_id))
-    if cursor.rowcount == 0:
+def set_favorite(conn: sqlite3.Connection, paper_id: int, favorite: bool, user_id: int = 1) -> dict[str, Any]:
+    if conn.execute("SELECT 1 FROM papers WHERE id = ?", (paper_id,)).fetchone() is None:
         conn.rollback()
         raise ValueError("paper not found")
+    folders = ensure_user_library(conn, user_id)
+    if favorite:
+        conn.execute(
+            "INSERT OR IGNORE INTO library_items (user_id, paper_id, folder_id) VALUES (?, ?, ?)",
+            (user_id, paper_id, folders["inbox_id"]),
+        )
+    else:
+        conn.execute("DELETE FROM library_items WHERE user_id = ? AND paper_id = ?", (user_id, paper_id))
     conn.execute(
         "INSERT INTO reading_history (paper_id, action) VALUES (?, ?)",
         (paper_id, "收藏" if favorite else "取消收藏"),
     )
     conn.commit()
-    detail = get_paper_detail(conn, paper_id)
+    detail = get_paper_detail(conn, paper_id, user_id=user_id)
     if detail is None:
         raise ValueError("paper not found")
     return detail
+
+
+def ensure_user_library(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
+    conn.execute("INSERT OR IGNORE INTO users (id, name) VALUES (?, ?)", (user_id, f"用户 {user_id}"))
+    root = conn.execute(
+        "SELECT id FROM library_folders WHERE user_id = ? AND parent_id IS NULL AND is_system = 1",
+        (user_id,),
+    ).fetchone()
+    if root is None:
+        cursor = conn.execute(
+            "INSERT INTO library_folders (user_id, parent_id, name, description, is_system) VALUES (?, NULL, ?, ?, 1)",
+            (user_id, "我的资料库", "个人论文资料库根目录"),
+        )
+        if cursor.lastrowid is None:
+            raise RuntimeError("failed to create root library folder")
+        root_id = int(cursor.lastrowid)
+    else:
+        root_id = int(root["id"])
+    inbox = conn.execute(
+        "SELECT id FROM library_folders WHERE user_id = ? AND parent_id = ? AND is_system = 1",
+        (user_id, root_id),
+    ).fetchone()
+    if inbox is None:
+        cursor = conn.execute(
+            "INSERT INTO library_folders (user_id, parent_id, name, description, is_system) VALUES (?, ?, ?, ?, 1)",
+            (user_id, root_id, "待整理", "新收藏的论文默认放在这里"),
+        )
+        if cursor.lastrowid is None:
+            raise RuntimeError("failed to create inbox library folder")
+        inbox_id = int(cursor.lastrowid)
+    else:
+        inbox_id = int(inbox["id"])
+    return {"root_id": root_id, "inbox_id": inbox_id}
+
+
+def list_library_folders(conn: sqlite3.Connection, user_id: int = 1) -> list[dict[str, Any]]:
+    defaults = ensure_user_library(conn, user_id)
+    rows = conn.execute(
+        """
+        SELECT f.*, COUNT(i.id) AS item_count
+        FROM library_folders f
+        LEFT JOIN library_items i ON i.folder_id = f.id AND i.user_id = f.user_id
+        WHERE f.user_id = ?
+        GROUP BY f.id
+        ORDER BY f.is_system DESC, lower(f.name), f.id
+        """,
+        (user_id,),
+    ).fetchall()
+    by_id = {int(row["id"]): row for row in rows}
+
+    def path_for(folder_id: int) -> str:
+        names: list[str] = []
+        current = by_id.get(folder_id)
+        seen: set[int] = set()
+        while current is not None and int(current["id"]) not in seen:
+            seen.add(int(current["id"]))
+            names.append(str(current["name"]))
+            current = by_id.get(int(current["parent_id"])) if current["parent_id"] is not None else None
+        return " / ".join(reversed(names))
+
+    payload = [
+        {
+            "id": int(row["id"]),
+            "parent_id": int(row["parent_id"]) if row["parent_id"] is not None else None,
+            "name": row["name"],
+            "description": row["description"],
+            "is_system": bool(row["is_system"]),
+            "item_count": int(row["item_count"]),
+            "path": path_for(int(row["id"])),
+            "is_root": int(row["id"]) == defaults["root_id"],
+        }
+        for row in rows
+    ]
+    children: dict[int | None, list[dict[str, Any]]] = {}
+    for folder in payload:
+        children.setdefault(folder["parent_id"], []).append(folder)
+    for entries in children.values():
+        entries.sort(key=lambda folder: (not folder["is_system"], folder["name"].casefold(), folder["id"]))
+    ordered: list[dict[str, Any]] = []
+
+    def visit(parent_id: int | None) -> None:
+        for folder in children.get(parent_id, []):
+            ordered.append(folder)
+            visit(folder["id"])
+
+    visit(None)
+    return ordered
+
+
+def create_library_folder(
+    conn: sqlite3.Connection,
+    name: str,
+    parent_id: int | None = None,
+    description: str = "",
+    user_id: int = 1,
+) -> dict[str, Any]:
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("folder name is required")
+    defaults = ensure_user_library(conn, user_id)
+    target_parent = parent_id or defaults["root_id"]
+    parent = conn.execute(
+        "SELECT id FROM library_folders WHERE id = ? AND user_id = ?",
+        (target_parent, user_id),
+    ).fetchone()
+    if parent is None:
+        raise ValueError("folder not found")
+    try:
+        cursor = conn.execute(
+            "INSERT INTO library_folders (user_id, parent_id, name, description) VALUES (?, ?, ?, ?)",
+            (user_id, target_parent, clean_name, description.strip()),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        raise ValueError("folder already exists") from exc
+    return next(folder for folder in list_library_folders(conn, user_id) if folder["id"] == cursor.lastrowid)
+
+
+def delete_library_folder(conn: sqlite3.Connection, folder_id: int, user_id: int = 1) -> None:
+    folder = conn.execute(
+        "SELECT is_system FROM library_folders WHERE id = ? AND user_id = ?",
+        (folder_id, user_id),
+    ).fetchone()
+    if folder is None:
+        raise ValueError("folder not found")
+    if folder["is_system"]:
+        raise ValueError("system folder cannot be deleted")
+    has_content = conn.execute(
+        "SELECT 1 FROM library_items WHERE folder_id = ? UNION SELECT 1 FROM library_folders WHERE parent_id = ? LIMIT 1",
+        (folder_id, folder_id),
+    ).fetchone()
+    if has_content is not None:
+        raise ValueError("folder is not empty")
+    conn.execute("DELETE FROM library_folders WHERE id = ? AND user_id = ?", (folder_id, user_id))
+    conn.commit()
+
+
+def list_library_items(conn: sqlite3.Connection, folder_id: int | None = None, user_id: int = 1) -> list[dict[str, Any]]:
+    ensure_user_library(conn, user_id)
+    params: list[Any] = [user_id]
+    where = "i.user_id = ?"
+    if folder_id is not None:
+        where += " AND i.folder_id = ?"
+        params.append(folder_id)
+    rows = conn.execute(
+        f"""
+        SELECT i.id AS library_item_id, i.folder_id, i.created_at AS saved_at, p.*
+        FROM library_items i JOIN papers p ON p.id = i.paper_id
+        WHERE {where}
+        ORDER BY i.updated_at DESC, i.id DESC
+        """,
+        params,
+    ).fetchall()
+    items = []
+    for row in rows:
+        paper = row_to_paper(row, True)
+        paper.update({"library_item_id": int(row["library_item_id"]), "folder_id": int(row["folder_id"]), "saved_at": row["saved_at"]})
+        items.append(paper)
+    return items
+
+
+def move_library_item(conn: sqlite3.Connection, item_id: int, folder_id: int, user_id: int = 1) -> dict[str, Any]:
+    folder = conn.execute(
+        "SELECT id FROM library_folders WHERE id = ? AND user_id = ?",
+        (folder_id, user_id),
+    ).fetchone()
+    if folder is None:
+        raise ValueError("folder not found")
+    cursor = conn.execute(
+        "UPDATE library_items SET folder_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+        (folder_id, item_id, user_id),
+    )
+    if cursor.rowcount == 0:
+        conn.rollback()
+        raise ValueError("library item not found")
+    conn.commit()
+    return next(item for item in list_library_items(conn, user_id=user_id) if item["library_item_id"] == item_id)
 
 
 def add_note(conn: sqlite3.Connection, paper_id: int, note: str, comment: str = "") -> dict[str, Any]:
@@ -727,7 +1073,6 @@ def add_note(conn: sqlite3.Connection, paper_id: int, note: str, comment: str = 
         "INSERT INTO notes (paper_id, note, comment) VALUES (?, ?, ?)",
         (paper_id, note, comment),
     )
-    conn.execute("UPDATE papers SET reading_status = 'reading' WHERE id = ?", (paper_id,))
     conn.execute("INSERT INTO reading_history (paper_id, action) VALUES (?, ?)", (paper_id, "新增笔记"))
     conn.commit()
     row = conn.execute(

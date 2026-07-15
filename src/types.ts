@@ -24,11 +24,53 @@ export type Note = {
   updated_at?: string;
 };
 
+export type PaperPdf = {
+  available: boolean;
+  cached: boolean;
+  view_url: string | null;
+  download_url: string | null;
+};
+
+export type Paper = {
+  id: number;
+  source?: "arxiv" | "usenix" | "sigops" | "upload" | string;
+  source_id: string;
+  source_url?: string;
+  venue?: string;
+  pdf: PaperPdf;
+  title: string;
+  authors: string[];
+  abstract: string;
+  categories: string[];
+  primary_category: string;
+  published_at: string;
+  updated_at?: string;
+  processing_status: "pending" | "processed" | "failed";
+  is_favorite: boolean;
+  created_at?: string;
+  wiki?: WikiSection[];
+  concepts?: Concept[];
+  notes?: Note[];
+  document?: PaperDocument | null;
+  summaries?: PaperSummary[];
+};
+
+export type PaperDocument = {
+  parser_name: string;
+  parser_version?: string;
+  source_hash?: string;
+  content_markdown: string;
+  token_count: number;
+  status: "pending" | "processing" | "completed" | "failed";
+  error?: string;
+  parsed_at?: string;
+  updated_at?: string;
+};
+
 export type PaperChunk = {
   id: number;
   paper_id: number;
-  source_type: "html" | "pdf" | "metadata" | string;
-  source_url?: string;
+  source_hash: string;
   chunk_index: number;
   heading: string;
   content: string;
@@ -38,27 +80,41 @@ export type PaperChunk = {
   created_at: string;
 };
 
-export type Paper = {
+export type PaperSummary = {
   id: number;
-  arxiv_id: string;
+  paper_id?: number;
+  content: string;
+  model: string;
+  prompt_version: string;
+  source_hash?: string;
+  is_active: boolean | number;
+  created_at: string;
+};
+
+export type ChatThread = {
+  id: string;
+  paper_id: number | null;
   title: string;
-  authors: string[];
-  abstract: string;
-  categories: string[];
-  primary_category: string;
-  published_at: string;
-  updated_at?: string;
-  pdf_url?: string;
-  arxiv_url?: string;
-  doi?: string;
-  processing_status: "pending" | "processed" | "failed";
-  reading_status: "unread" | "reading" | "done";
-  is_favorite: boolean;
-  created_at?: string;
-  wiki?: WikiSection[];
-  concepts?: Concept[];
-  notes?: Note[];
-  chunk_count?: number;
+  active_leaf_id?: string;
+  message_token_limit: number;
+  archived: boolean | number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChatMessageRow = {
+  id: string;
+  parent_id?: string;
+  source_message_id?: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  status: "running" | "complete" | "failed";
+  created_at: string;
+};
+
+export type ChatMessageRepository = {
+  headId?: string;
+  messages: ChatMessageRow[];
 };
 
 export type Stats = {
@@ -85,23 +141,23 @@ export type Subscription = {
 
 export type WikiSearchResult = {
   id: number;
-  evidence_id?: string;
-  chunk_id?: number;
   paper_id: number;
   paper_title: string;
-  arxiv_id: string;
-  arxiv_url?: string;
-  pdf_url?: string;
+  source: string;
+  source_id: string;
+  source_url?: string;
   primary_category: string;
   section: string;
   section_title: string;
   content: string;
   score: number;
-  source?: "chunk" | "wiki" | string;
-  source_type?: "html" | "pdf" | "metadata" | string;
-  source_url?: string;
+  evidence_id?: string;
+  chunk_id?: number;
   chunk_index?: number;
-  heading?: string;
+  paper_source?: string;
+  source_type?: string;
+  pdf_view_url?: string;
+  source_hash?: string;
   char_start?: number;
   char_end?: number;
   token_count?: number;
@@ -117,7 +173,7 @@ export type QaExecutionStep = {
 };
 
 export type QaExecution = {
-  mode: "agentic_real" | "agentic_mock" | "classic" | string;
+  mode: "agentic_real" | "classic" | string;
   status: "completed" | "fallback" | "failed" | string;
   stop_reason: string;
   tool_call_count: number;
@@ -160,4 +216,28 @@ export type HistoryItem = {
   paper_id: number;
   title: string;
   primary_category: string;
+};
+
+export type LibraryFolder = {
+  id: number;
+  parent_id?: number;
+  name: string;
+  description: string;
+  is_system: boolean;
+  is_root: boolean;
+  item_count: number;
+  path: string;
+};
+
+export type LibraryItem = Paper & {
+  library_item_id: number;
+  folder_id: number;
+  saved_at: string;
+};
+
+export type FolderRecommendation = {
+  folder_id: number;
+  folder_name: string;
+  folder_path: string;
+  reason: string;
 };

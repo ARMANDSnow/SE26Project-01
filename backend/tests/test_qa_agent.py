@@ -2,9 +2,9 @@ import json
 import sqlite3
 
 from backend.app.database import init_schema
-from backend.app.seed_data import seed_database
 from backend.app.services.paper_tools import PaperToolbox, ToolInputError
 from backend.app.services.qa_agent import run_qa_agent
+from backend.tests.fixtures import populate_test_library
 
 
 def seeded_db():
@@ -12,7 +12,7 @@ def seeded_db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     init_schema(conn)
-    seed_database(conn)
+    populate_test_library(conn)
     return conn
 
 
@@ -81,16 +81,6 @@ def test_real_agent_state_machine_opens_cross_paper_evidence_and_filters_citatio
     assert [item["evidence_id"] for item in result["citations"]] == ["E1", "E2"]
 
 
-def test_mock_agent_runs_search_open_answer_without_network():
-    conn = seeded_db()
-    result = run_qa_agent(conn, "RAG Evidence Grounding")
-
-    assert result["execution"]["mode"] == "agentic_mock"
-    assert result["execution"]["tool_call_count"] >= 2
-    assert len({item["paper_id"] for item in result["citations"]}) >= 2
-    assert all(item.get("evidence_id", "").startswith("E") for item in result["citations"])
-
-
 def test_toolbox_rejects_out_of_scope_and_unsearched_evidence():
     conn = seeded_db()
     paper_ids = [row["id"] for row in conn.execute("SELECT id FROM papers ORDER BY id LIMIT 2").fetchall()]
@@ -146,7 +136,7 @@ class MetadataOnlyThenFinalLLM:
                         "type": "function",
                         "function": {
                             "name": "search_metadata",
-                            "arguments": json.dumps({"query": "大语言模型检索增强", "limit": 20}, ensure_ascii=False),
+                            "arguments": json.dumps({"query": "", "limit": 20}, ensure_ascii=False),
                         },
                     }
                 ],

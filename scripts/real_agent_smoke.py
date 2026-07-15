@@ -10,9 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend.app.config import get_settings
 from backend.app.database import init_schema, upsert_paper
 from backend.app.services.agents import process_paper
-from backend.app.services.arxiv_client import fetch_arxiv_papers
 from backend.app.services.llm import LLMProviderError
 from backend.app.services.qa_agent import run_qa_agent
+from backend.app.services.sources import fetch_arxiv_papers
 
 
 def main() -> int:
@@ -21,8 +21,8 @@ def main() -> int:
         return 0
     get_settings.cache_clear()
     settings = get_settings()
-    if settings.should_use_mock_llm:
-        print("FAIL: real-model smoke requires ENABLE_MOCK_LLM=false and a non-empty LLM_API_KEY.")
+    if not settings.llm_available:
+        print("FAIL: real-model smoke requires a non-empty LLM_API_KEY.")
         return 2
 
     conn = sqlite3.connect(":memory:")
@@ -43,15 +43,12 @@ def main() -> int:
         if any(item.get("status") != "processed" for item in process_results):
             print("FAIL: at least one real-model paper processing request failed.")
             return 4
-        sources = {
-            row["source_type"]
-            for row in conn.execute(
-                "SELECT DISTINCT source_type FROM paper_chunks WHERE paper_id IN (?, ?)",
-                tuple(paper_ids),
-            ).fetchall()
-        }
-        if not sources.intersection({"html", "pdf"}):
-            print("FAIL: full-text fetch fell back to metadata for both papers.")
+        chunk_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM paper_chunks WHERE paper_id IN (?, ?)",
+            tuple(paper_ids),
+        ).fetchone()["count"]
+        if int(chunk_count) == 0:
+            print("FAIL: Docling did not produce any current-document chunks.")
             return 5
         titles = [paper["title"] for paper in papers[:2]]
         question = (
@@ -80,7 +77,7 @@ def main() -> int:
         print(
             "PASS: real agent smoke completed "
             f"(tool_calls={execution['tool_call_count']}, cited_papers={len(cited_papers)}, "
-            f"sources={','.join(sorted(sources))})."
+            f"chunks={chunk_count})."
         )
         return 0
     except LLMProviderError as exc:

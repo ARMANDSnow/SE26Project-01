@@ -4,7 +4,7 @@ import json
 import sqlite3
 from typing import Any
 
-from .search import extract_snippet, search_wiki
+from .search import extract_snippet, search_chunks
 
 
 MAX_SEARCH_LIMIT = 12
@@ -62,7 +62,8 @@ class PaperToolbox:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self.conn.execute(
             f"""
-            SELECT id, title, authors_json, abstract, primary_category, published_at, processing_status
+            SELECT id, source, source_id, source_url, venue, title, authors_json,
+                   abstract, primary_category, published_at, processing_status
             FROM papers
             {where}
             ORDER BY published_at DESC, id DESC
@@ -79,6 +80,10 @@ class PaperToolbox:
             items.append(
                 {
                     "paper_id": int(row["id"]),
+                    "source": row["source"],
+                    "source_id": row["source_id"],
+                    "source_url": row["source_url"],
+                    "venue": row["venue"],
                     "title": row["title"],
                     "authors": authors,
                     "abstract_snippet": str(row["abstract"])[:500],
@@ -106,7 +111,7 @@ class PaperToolbox:
         if scope is not None and not scope:
             return {"items": [], "count": 0}
         bounded_limit = _bounded_int(limit, 1, MAX_SEARCH_LIMIT, "limit")
-        results = search_wiki(
+        results = search_chunks(
             self.conn,
             cleaned_query,
             limit=bounded_limit,
@@ -122,7 +127,7 @@ class PaperToolbox:
                     "paper_id": int(result["paper_id"]),
                     "paper_title": result["paper_title"],
                     "section_title": result["section_title"],
-                    "source": result.get("source", "wiki"),
+                    "source": "chunk",
                     "score": result["score"],
                     "snippet": extract_snippet(result["content"], 420),
                 }
@@ -201,7 +206,7 @@ PAPER_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "search_text",
-            "description": "在论文正文 chunk 和 Wiki 中搜索文本，返回可继续打开的 ref_id。",
+            "description": "在当前已解析论文正文 chunk 中搜索文本，返回可继续打开的 ref_id。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -234,8 +239,7 @@ PAPER_TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 
 def _ref_id(result: dict[str, Any]) -> str:
-    source = "chunk" if result.get("source") == "chunk" else "wiki"
-    return f"{source}:{int(result['id'])}"
+    return f"chunk:{int(result['id'])}"
 
 
 def _opened_tool_result(item: dict[str, Any], ref_id: str, evidence_id: str) -> dict[str, Any]:
@@ -245,8 +249,15 @@ def _opened_tool_result(item: dict[str, Any], ref_id: str, evidence_id: str) -> 
         "paper_id": item["paper_id"],
         "paper_title": item["paper_title"],
         "section_title": item["section_title"],
-        "source": item.get("source", "wiki"),
-        "source_url": item.get("source_url") or item.get("arxiv_url"),
+        "source": "chunk",
+        "paper_source": item.get("paper_source"),
+        "source_id": item.get("source_id"),
+        "source_url": item.get("source_url"),
+        "pdf_view_url": item.get("pdf_view_url"),
+        "source_hash": item.get("source_hash"),
+        "chunk_index": item.get("chunk_index"),
+        "char_start": item.get("char_start"),
+        "char_end": item.get("char_end"),
         "content": item["content"],
     }
 

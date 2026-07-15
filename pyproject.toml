@@ -1,0 +1,19 @@
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+files = [
+    "backend/app/models.py",
+    "backend/app/database.py",
+    "backend/app/services/asset_store.py",
+    "backend/app/services/documents.py",
+    "backend/app/services/pdf_import.py",
+    "backend/app/services/remote_pdf.py",
+    "backend/app/services/sources/arxiv.py",
+    "backend/app/services/sources/sigops.py",
+    "backend/app/services/sources/usenix.py",
+]
+
+[[tool.mypy.overrides]]
+module = ["pypdf.*"]
+ignore_missing_imports = true

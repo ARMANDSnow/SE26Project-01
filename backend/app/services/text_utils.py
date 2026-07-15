@@ -14,20 +14,13 @@ def normalize_text(value: str) -> str:
     return " ".join(value.strip().lower().split())
 
 
-def title_hash(title: str) -> str:
-    return hashlib.sha256(normalize_text(title).encode("utf-8")).hexdigest()
-
-
 def tokenize(text: str) -> list[str]:
     return TOKEN_RE.findall(normalize_text(text))
 
 
 def deterministic_embedding(text: str, dimensions: int = 96) -> list[float]:
     vector = [0.0] * dimensions
-    tokens = tokenize(text)
-    if not tokens:
-        tokens = ["empty"]
-    counts = Counter(tokens)
+    counts = Counter(tokenize(text) or ["empty"])
     for token, count in counts.items():
         digest = hashlib.sha256(token.encode("utf-8")).digest()
         index = int.from_bytes(digest[:4], "big") % dimensions

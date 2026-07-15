@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { ProcessingBadge, ReadingBadge } from "@/components/common/status-badge"
+import { ProcessingBadge } from "@/components/common/status-badge"
 import { cn } from "@/lib/utils"
 import type { Paper } from "@/types"
 
@@ -45,7 +45,7 @@ export function PaperTable({ papers, onFavorite, favoriteBusy = false }: PaperTa
                     {paper.title}
                   </Link>
                   <p className="line-clamp-1 text-xs text-muted-foreground">
-                    {paper.authors.slice(0, 4).join("、")} · {paper.arxiv_id}
+                    {paper.authors.slice(0, 4).join("、")} · {paper.venue ?? paper.source ?? "arXiv"} · {paper.source_id}
                   </p>
                 </div>
               </TableCell>
@@ -57,7 +57,6 @@ export function PaperTable({ papers, onFavorite, favoriteBusy = false }: PaperTa
               <TableCell>
                 <div className="flex flex-wrap gap-1">
                   <ProcessingBadge status={paper.processing_status} />
-                  <ReadingBadge status={paper.reading_status} />
                 </div>
               </TableCell>
               <TableCell className="text-muted-foreground">{paper.published_at}</TableCell>
