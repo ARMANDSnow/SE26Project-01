@@ -1,4 +1,4 @@
-import type { ChatMessageRepository, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, Stats, Subscription, WikiSearchResult } from "./types";
+import type { ChatMessageRepository, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, Stats, Subscription, User, WikiSearchResult } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -7,12 +7,38 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!(options?.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json")
   }
-  const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const response = await fetch(`${API_BASE}${path}`, { ...options, credentials: "include", headers });
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || `HTTP ${response.status}`);
   }
   return response.json() as Promise<T>;
+}
+
+export async function fetchCurrentUser(): Promise<User> {
+  return request<User>("/api/auth/me");
+}
+
+export async function login(username: string, password: string): Promise<User> {
+  return request<User>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function register(username: string, password: string): Promise<User> {
+  return request<User>("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function logout(): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/auth/logout`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
 export async function fetchStats(): Promise<Stats> {

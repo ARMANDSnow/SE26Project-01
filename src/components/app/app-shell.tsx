@@ -4,7 +4,9 @@ import {
   Library,
   Menu,
   MessageSquareText,
+  LogOut,
 } from "lucide-react"
+import { useQueryClient } from "@tanstack/react-query"
 import type { ComponentType, SVGProps } from "react"
 import { Link, NavLink, Outlet, useLocation } from "react-router"
 import { ThemeToggle } from "@/components/app/theme-toggle"
@@ -26,6 +28,8 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { cn } from "@/lib/utils"
+import { logout } from "@/api"
+import { queryKeys, useCurrentUserQuery } from "@/lib/query-hooks"
 
 type NavItem = {
   path: string
@@ -89,6 +93,17 @@ function NavigationMenu() {
 }
 
 export function AppShell() {
+  const queryClient = useQueryClient()
+  const userQuery = useCurrentUserQuery()
+
+  const signOut = async () => {
+    await logout()
+    queryClient.removeQueries({
+      predicate: (query) => query.queryKey[0] !== queryKeys.currentUser[0],
+    })
+    queryClient.setQueryData(queryKeys.currentUser, null)
+  }
+
   return (
     <SidebarProvider>
       <a
@@ -111,6 +126,12 @@ export function AppShell() {
           </SidebarGroup>
         </SidebarContent>
         <SidebarFooter className="p-3">
+          <div className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2">
+            <span className="truncate text-sm font-medium">{userQuery.data?.username}</span>
+            <Button variant="ghost" size="icon" aria-label="退出登录" onClick={signOut}>
+              <LogOut className="size-4" />
+            </Button>
+          </div>
           <div className="rounded-lg border bg-sidebar-accent/40 p-3 text-xs leading-5 text-sidebar-foreground/70">
             <span className="font-semibold text-sidebar-foreground">当前阶段</span>
             <p className="mt-1">通用对话仅使用当前会话历史，尚未接入论文与 Agent 工具。</p>

@@ -7,6 +7,11 @@ export type WikiSection = {
   updated_at?: string;
 };
 
+export type User = {
+  id: number;
+  username: string;
+};
+
 export type Concept = {
   id: number;
   name: string;

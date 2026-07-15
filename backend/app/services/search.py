@@ -5,7 +5,7 @@ import re
 import sqlite3
 from typing import Any
 
-from ..database import paper_chunks_fts_ready
+from ..db.schema import paper_chunks_fts_ready
 from .llm import LLMClient
 from .text_utils import cosine_similarity, deterministic_embedding, keyword_score, normalize_text, tokenize
 

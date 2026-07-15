@@ -45,13 +45,18 @@ LLM_API_KEY=your_api_key
 LLM_CONTEXT_WINDOW=131072
 LLM_MAX_OUTPUT_TOKENS=4096
 ARXIV_DEFAULT_CATEGORIES=cs.AI,cs.CL,cs.LG
+SESSION_COOKIE_NAME=paperwiki_session
+SESSION_TTL_SECONDS=604800
+SESSION_COOKIE_SECURE=false
 ```
 
-API Key 只从 `LLM_API_KEY` 环境变量读取。主页通用 Chat 只发送系统提示和当前对话分支的历史，不读取论文、资料库、文件、联网搜索或 Agent 工具。单篇论文 Chat 不使用 RAG：Docling 解析后的论文全文始终加入上下文，`LLM_CONTEXT_WINDOW` 只会裁剪当前分支的历史消息；若论文全文本身超过模型窗口，请改用更长上下文模型。
+API Key 只从 `LLM_API_KEY` 环境变量读取。登录 Session 默认保存在当前后端进程内存中，有效期为 7 天；进程重启会要求重新登录，多 worker/多实例部署前应将 `SessionStore` 替换为 Redis。生产 HTTPS 环境应设置 `SESSION_COOKIE_SECURE=true`。
+
+主页通用 Chat 只发送系统提示和当前对话分支的历史，不读取论文、资料库、文件、联网搜索或 Agent 工具。单篇论文 Chat 不使用 RAG：Docling 解析后的论文全文始终加入上下文，`LLM_CONTEXT_WINDOW` 只会裁剪当前分支的历史消息；若论文全文本身超过模型窗口，请改用更长上下文模型。
 
 ## 数据库 schema
 
-当前 schema 不迁移旧版 `arxiv_id/file_path` 数据。启动时如果检测到旧版或不匹配的数据库，后端会明确拒绝启动；确认没有需要保留的数据后执行破坏性重建：
+当前 schema version 3 会在启动时自动把 version 2 的资料库、笔记、历史和订阅迁移到用户归属模型。v2 占位用户没有密码，迁移后会作为禁用的 legacy 账户保留数据。更早的 `arxiv_id/file_path` schema 不提供迁移；检测到不匹配数据库时后端会明确拒绝启动，确认没有需要保留的数据后执行破坏性重建：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\reset_database.py --database backend\data\arxiv_wiki.sqlite3 --apply
@@ -73,6 +78,10 @@ npm run build
 $env:RUN_REAL_LLM_TESTS="true"
 .\.venv\Scripts\python.exe scripts\real_chat_smoke.py
 ```
+
+## 后端结构
+
+FastAPI 后端按 `api -> services -> repositories -> db` 分层；认证依赖从内存 Session 解析当前用户，业务层不信任客户端用户 ID。`main.py` 仅负责应用装配。详细职责、事务边界和兼容策略见 [`backend/app/ARCHITECTURE.md`](backend/app/ARCHITECTURE.md)。
 
 ## MVP 覆盖
 

@@ -8,7 +8,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 from ..config import get_settings
-from ..database import get_paper_record, set_paper_asset_id
+from ..repositories.papers import get_paper_record, set_paper_asset_id
 from ..models import AssetInfo, PaperId
 from .asset_store import AssetNotFoundError, AssetStore, AssetStoreError, LocalAssetStore
 from .http_safety import UnsafeUrlError, open_trusted_url, validate_trusted_https_url

@@ -78,6 +78,7 @@ async function* streamChat(
   const previous = regenerate ? undefined : messages[messages.length - 2]
   const response = await fetch(`${API_BASE}/api/chat/runs`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     signal: options.abortSignal,
     body: JSON.stringify({

@@ -7,6 +7,8 @@ Agent 续写入口：
 
 | Iteration | Title | Status | Notes |
 | --- | --- | --- | --- |
+| [iter09](iteration_iter09_session-user-isolation.md) | Session 登录与跨用户数据隔离 | Complete | 内存 SessionStore、Argon2 登录、CurrentUser、schema v3 migration 与跨用户隔离；67 tests、strict mypy 和前端 build 通过。 |
+| [iter08](iteration_iter08_backend-layer-refactor.md) | 后端分层与迁移基础重构 | Complete | Router/Service/Repository/db 分层、兼容 facade 与 migration runner；61 tests、strict mypy 和前端 build 通过。 |
 | [iter07](iteration_iter07_general-chat-foundation.md) | 通用持久化 Chat 基础 | Complete | 通用线程、真实模型多轮对话、assistant-ui 首页与显式 Fork；59 tests 与真实 DeepSeek smoke 通过。 |
 | [iter06](iteration_iter06_pr-review-hardening.md) | PR 评审阻断问题修复 | Complete | 修复 SSRF、schema 重建门禁、严格来源身份、状态一致性和消息 ID 冲突；56 tests 与 100 并发 smoke 通过。 |
 | [iter05](iteration_iter05_agent-storage-integration.md) | Agent 与新存储架构合并 | Complete | 以内容寻址 PDF/Docling 文档为唯一正文源，适配 Chunk、FTS5 与真实 Agent；47 tests 与 100 并发 smoke 通过。 |

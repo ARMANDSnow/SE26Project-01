@@ -5,7 +5,7 @@ import re
 import sqlite3
 from typing import Any
 
-from ..database import attach_concepts, get_paper_detail, get_paper_record, replace_wiki_sections
+from ..repositories.papers import attach_concepts, get_paper_detail, get_paper_record, replace_wiki_sections
 from .documents import get_paper_document, parse_paper_document
 from .llm import LLMClient, LLMConfigurationError, LLMServiceError
 
@@ -116,7 +116,7 @@ def _safe_weight(value: Any) -> float:
         return 1.0
 
 
-def process_paper(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any]:
+def process_paper(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) -> dict[str, Any]:
     paper = get_paper_detail(conn, paper_id)
     if paper is None:
         raise ValueError("paper not found")
@@ -149,7 +149,10 @@ def process_paper(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any]:
     replace_wiki_sections(conn, paper_id, sections, commit=False)
     attach_concepts(conn, paper_id, concepts, commit=False)
     conn.execute("UPDATE papers SET processing_status = 'processed' WHERE id = ?", (paper_id,))
-    conn.execute("INSERT INTO reading_history (paper_id, action) VALUES (?, ?)", (paper_id, "完成结构化解析"))
+    conn.execute(
+        "INSERT INTO reading_history (user_id, paper_id, action) VALUES (?, ?, ?)",
+        (user_id, paper_id, "完成结构化解析"),
+    )
     conn.commit()
     return {
         "status": "processed",

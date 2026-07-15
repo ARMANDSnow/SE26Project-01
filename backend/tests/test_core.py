@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
+from backend.app.auth.session import MemorySessionStore
 from backend.app.config import get_settings
 from backend.app.database import (
     SCHEMA_VERSION,
@@ -24,6 +25,7 @@ from backend.app.database import (
     set_paper_asset_id,
     upsert_paper,
 )
+from backend.app.db.migrations import Migration, MigrationError, V3_MIGRATION, apply_migrations
 from backend.app.main import app
 from backend.app.models import AssetId, AssetInfo, PaperCandidate, PaperSource
 from backend.app.services.agents import SummaryAgent, process_paper
@@ -55,8 +57,87 @@ def memory_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     init_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO users(id, name, username, password_hash, is_active)
+        VALUES (1, 'Test User', 'test_user', '!unit-test-only', 1)
+        """
+    )
     populate_test_library(conn)
     return conn
+
+
+def test_migration_runner_applies_contiguous_versions() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("PRAGMA user_version = 1")
+
+    applied = apply_migrations(
+        conn,
+        [Migration(version=2, name="create probe", apply=lambda db: db.execute("CREATE TABLE probe(id INTEGER)"))],
+        target_version=2,
+    )
+
+    assert applied == [2]
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'probe'").fetchone() is not None
+
+
+def test_migration_runner_rejects_incomplete_chain() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("PRAGMA user_version = 1")
+
+    with pytest.raises(MigrationError, match="incomplete"):
+        apply_migrations(conn, [], target_version=2)
+
+
+def test_memory_session_store_expires_and_deletes_sessions(monkeypatch):
+    now = 1_000.0
+    monkeypatch.setattr("backend.app.auth.session.time.time", lambda: now)
+    store = MemorySessionStore(ttl_seconds=10)
+    session_id = store.create(7)
+    assert store.get(session_id).user_id == 7
+
+    now = 1_011.0
+    assert store.get(session_id) is None
+    store.delete(session_id)
+
+
+def test_v2_private_data_migrates_to_disabled_legacy_user() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(
+        "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    )
+    conn.execute("CREATE TABLE papers(id INTEGER PRIMARY KEY)")
+    conn.execute(
+        "CREATE TABLE notes(id INTEGER PRIMARY KEY, paper_id INTEGER NOT NULL REFERENCES papers(id), note TEXT NOT NULL, comment TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    )
+    conn.execute(
+        "CREATE TABLE reading_history(id INTEGER PRIMARY KEY, paper_id INTEGER NOT NULL REFERENCES papers(id), action TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    )
+    conn.execute(
+        "CREATE TABLE subscriptions(id INTEGER PRIMARY KEY, topic TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    )
+    conn.execute("INSERT INTO users(id, name) VALUES (1, 'Legacy')")
+    conn.execute("INSERT INTO papers(id) VALUES (10)")
+    conn.execute("INSERT INTO notes(id, paper_id, note) VALUES (20, 10, 'legacy note')")
+    conn.execute("INSERT INTO reading_history(id, paper_id, action) VALUES (30, 10, 'read')")
+    conn.execute("INSERT INTO subscriptions(id, topic) VALUES (40, 'RAG')")
+    conn.execute("PRAGMA user_version = 2")
+
+    assert apply_migrations(conn, [V3_MIGRATION], target_version=3) == [3]
+    legacy = conn.execute(
+        "SELECT username, password_hash, is_active FROM users WHERE id = 1"
+    ).fetchone()
+    assert dict(legacy) == {
+        "username": "legacy_1",
+        "password_hash": "!legacy-account-has-no-password",
+        "is_active": 0,
+    }
+    assert conn.execute("SELECT user_id FROM notes WHERE id = 20").fetchone()[0] == 1
+    assert conn.execute("SELECT user_id FROM reading_history WHERE id = 30").fetchone()[0] == 1
+    assert conn.execute("SELECT user_id FROM subscriptions WHERE id = 40").fetchone()[0] == 1
 
 
 @pytest.fixture()
@@ -66,6 +147,11 @@ def api_client(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "")
     get_settings.cache_clear()
     with TestClient(app) as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "test_user", "password": "test-password"},
+        )
+        assert registered.status_code == 201
         with connect() as conn:
             populate_test_library(conn)
         yield client
@@ -77,6 +163,65 @@ def test_init_db_does_not_create_demo_papers(tmp_path):
     init_db(path)
     conn = sqlite3.connect(path)
     assert conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 0
+
+
+def test_business_api_requires_session_but_health_is_public(api_client):
+    logged_out = api_client.post("/api/auth/logout")
+    assert logged_out.status_code == 200
+    assert api_client.get("/api/health").status_code == 200
+    assert api_client.get("/api/papers").status_code == 401
+    assert api_client.get("/api/stats").status_code == 401
+
+
+def test_registration_hashes_password_and_login_rotates_session(api_client):
+    api_client.post("/api/auth/logout")
+    registered = api_client.post(
+        "/api/auth/register",
+        json={"username": "secure_user", "password": "correct-horse-battery"},
+    )
+    assert registered.status_code == 201
+    first_session = api_client.cookies.get("paperwiki_session")
+    assert first_session
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE username = 'secure_user'"
+        ).fetchone()
+    assert row["password_hash"].startswith("$argon2id$")
+    assert "correct-horse-battery" not in row["password_hash"]
+
+    logged_in = api_client.post(
+        "/api/auth/login",
+        json={"username": "secure_user", "password": "correct-horse-battery"},
+    )
+    assert logged_in.status_code == 200
+    second_session = api_client.cookies.get("paperwiki_session")
+    assert second_session and second_session != first_session
+    assert api_client.get("/api/auth/me").json()["username"] == "secure_user"
+    failed_login = api_client.post(
+        "/api/auth/login",
+        json={"username": "secure_user", "password": "wrong-password"},
+    )
+    assert failed_login.status_code == 401
+    assert api_client.get("/api/auth/me").json()["username"] == "secure_user"
+    old_session_response = api_client.get(
+        "/api/auth/me",
+        headers={"Cookie": f"paperwiki_session={first_session}"},
+    )
+    assert old_session_response.status_code == 401
+
+
+def test_login_rejects_wrong_password_without_leaking_account_state(api_client):
+    api_client.post("/api/auth/logout")
+    missing = api_client.post(
+        "/api/auth/login",
+        json={"username": "missing_user", "password": "wrong-password"},
+    )
+    wrong = api_client.post(
+        "/api/auth/login",
+        json={"username": "test_user", "password": "wrong-password"},
+    )
+    assert missing.status_code == wrong.status_code == 401
+    assert missing.json() == wrong.json()
 
 
 def test_papers_schema_uses_asset_id_without_legacy_columns():
@@ -98,6 +243,11 @@ def test_papers_schema_uses_asset_id_without_legacy_columns():
     assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     thread_columns = {row["name"]: row["notnull"] for row in conn.execute("PRAGMA table_info(chat_threads)")}
     assert thread_columns["paper_id"] == 0
+    user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    assert {"username", "password_hash", "is_active", "updated_at"} <= user_columns
+    for table in ("notes", "reading_history", "subscriptions"):
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        assert "user_id" in columns
 
 
 def test_init_schema_rejects_legacy_database_with_reset_command():
@@ -370,7 +520,10 @@ def test_api_ingest_does_not_deduplicate_matching_titles(api_client, monkeypatch
             published_at="2026-07-09",
         ),
     ]
-    monkeypatch.setattr("backend.app.main.fetch_arxiv_papers", lambda categories, keywords, max_results: fetched)
+    monkeypatch.setattr(
+        "backend.app.api.routers.ingest.fetch_arxiv_papers",
+        lambda categories, keywords, max_results: fetched,
+    )
     response = api_client.post("/api/ingest/arxiv", json={"categories": ["cs.AI"], "keywords": [], "max_results": 2})
     assert response.status_code == 200
     data = response.json()
@@ -497,7 +650,7 @@ def test_usenix_detail_removes_bibtex_title_braces():
 
 def test_api_ingests_usenix_source(api_client, monkeypatch):
     monkeypatch.setattr(
-        "backend.app.main.fetch_usenix_papers",
+        "backend.app.api.routers.ingest.fetch_usenix_papers",
         lambda venue, year, max_results: [
             PaperCandidate(
                 source=PaperSource.USENIX,
@@ -523,7 +676,7 @@ def test_api_ingests_usenix_source(api_client, monkeypatch):
 
 def test_api_upload_records_local_pdf(api_client, monkeypatch):
     monkeypatch.setattr(
-        "backend.app.main.save_and_extract_pdf",
+        "backend.app.api.routers.papers.save_and_extract_pdf",
         lambda file, store: SimpleNamespace(
             asset=AssetInfo(id=AssetId(f"sha256:{'a' * 64}"), size_bytes=16),
             title="Extracted PDF title",
@@ -688,18 +841,75 @@ def test_library_folder_recommendation_requires_user_approval(api_client, monkey
     assert api_client.get(f"/api/library/items?folder_id={inbox['id']}").json()["items"] == []
 
 
-def test_library_favorites_are_isolated_by_user_header(api_client):
+def test_library_favorites_are_isolated_by_session_and_ignore_user_header(api_client):
     paper_id = api_client.get("/api/papers?limit=1").json()["items"][0]["id"]
+    first_session = api_client.cookies.get("paperwiki_session")
+    registered = api_client.post(
+        "/api/auth/register",
+        json={"username": "second_user", "password": "second-password"},
+    )
+    assert registered.status_code == 201
+    second_session = api_client.cookies.get("paperwiki_session")
     response = api_client.post(
         "/api/library/favorites",
-        headers={"X-User-ID": "2"},
+        headers={"X-User-ID": "1", "Cookie": f"paperwiki_session={second_session}"},
         json={"paper_id": paper_id, "favorite": True},
     )
     assert response.status_code == 200
     assert response.json()["is_favorite"] is True
-    assert api_client.get("/api/library/items").json()["items"] == []
-    user_two_items = api_client.get("/api/library/items", headers={"X-User-ID": "2"}).json()["items"]
+    first_items = api_client.get(
+        "/api/library/items",
+        headers={"Cookie": f"paperwiki_session={first_session}"},
+    ).json()["items"]
+    assert first_items == []
+    user_two_items = api_client.get(
+        "/api/library/items",
+        headers={"Cookie": f"paperwiki_session={second_session}"},
+    ).json()["items"]
     assert [item["id"] for item in user_two_items] == [paper_id]
+
+
+def test_notes_history_subscriptions_and_chat_are_isolated_by_session(api_client):
+    paper_id = api_client.get("/api/papers?limit=1").json()["items"][0]["id"]
+    first_session = api_client.cookies.get("paperwiki_session")
+    registered = api_client.post(
+        "/api/auth/register",
+        json={"username": "private_owner", "password": "private-password"},
+    )
+    assert registered.status_code == 201
+    second_session = api_client.cookies.get("paperwiki_session")
+    second_headers = {"Cookie": f"paperwiki_session={second_session}"}
+    first_headers = {"Cookie": f"paperwiki_session={first_session}"}
+
+    note = api_client.post(
+        "/api/notes",
+        headers=second_headers,
+        json={"paper_id": paper_id, "note": "only second user", "comment": "private"},
+    )
+    assert note.status_code == 200
+    subscription = api_client.post(
+        "/api/subscriptions",
+        headers=second_headers,
+        json={"topic": "private topic"},
+    )
+    assert subscription.status_code == 200
+    thread = api_client.post("/api/chat/threads", headers=second_headers, json={}).json()
+
+    second_detail = api_client.get(f"/api/papers/{paper_id}", headers=second_headers).json()
+    assert [item["note"] for item in second_detail["notes"]] == ["only second user"]
+    assert [item["topic"] for item in api_client.get("/api/subscriptions", headers=second_headers).json()["items"]] == [
+        "private topic"
+    ]
+    assert api_client.get(f"/api/chat/threads/{thread['id']}", headers=second_headers).status_code == 200
+
+    first_detail = api_client.get(f"/api/papers/{paper_id}", headers=first_headers).json()
+    assert first_detail["notes"] == []
+    first_history = api_client.get("/api/history", headers=first_headers).json()["items"]
+    assert all(item["action"] != "新增笔记" for item in first_history)
+    assert api_client.get("/api/subscriptions", headers=first_headers).json()["items"] == []
+    assert api_client.get(f"/api/chat/threads/{thread['id']}", headers=first_headers).status_code == 404
+    assert api_client.get("/api/stats", headers=first_headers).json()["notes"] == 0
+    assert api_client.get("/api/stats", headers=second_headers).json()["notes"] == 1
 
 
 def test_library_schema_does_not_store_last_recommendation():

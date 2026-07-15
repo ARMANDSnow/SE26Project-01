@@ -4,8 +4,17 @@ import { ChatPage } from "@/features/chat/page"
 import { LibraryPage } from "@/features/library/page"
 import { PaperDetailPage } from "@/features/paper-detail/page"
 import { PapersPage } from "@/features/papers/page"
+import { AuthPage } from "@/features/auth/page"
+import { LoadingState } from "@/components/common/loading-state"
+import { useCurrentUserQuery } from "@/lib/query-hooks"
 
 export default function App() {
+  const userQuery = useCurrentUserQuery()
+  if (userQuery.isLoading) {
+    return <main className="grid min-h-screen place-items-center"><LoadingState label="正在检查登录状态" /></main>
+  }
+  if (!userQuery.data) return <AuthPage />
+
   return (
     <Routes>
       <Route element={<AppShell />}>

@@ -5,7 +5,7 @@ import json
 import sqlite3
 from typing import Any
 
-from ..database import get_paper_record, replace_paper_chunks
+from ..repositories.papers import get_paper_record, replace_paper_chunks
 from .fulltext import chunk_markdown
 from .remote_pdf import ensure_local_pdf
 
