@@ -7,6 +7,11 @@ from typing import Any
 
 from ..models import AssetId, PaperCandidate
 from ..repositories.learning import add_reading_history
+from ..repositories.uploads import (
+    create_upload_record,
+    paper_is_accessible,
+    update_upload_visibility,
+)
 from ..repositories.papers import (
     get_paper_detail,
     get_paper_title,
@@ -28,9 +33,20 @@ class PaperPdf:
 def register_uploaded_paper(
     conn: sqlite3.Connection,
     paper: PaperCandidate,
+    *,
+    owner_user_id: int,
+    visibility: str,
+    original_filename: str | None,
 ) -> dict[str, Any]:
     paper_id = upsert_paper(conn, paper, commit=False)
-    detail = get_paper_detail(conn, paper_id)
+    create_upload_record(
+        conn,
+        paper_id=paper_id,
+        owner_user_id=owner_user_id,
+        visibility=visibility,
+        original_filename=original_filename,
+    )
+    detail = get_paper_detail(conn, paper_id, user_id=owner_user_id)
     if detail is None:
         conn.rollback()
         raise RuntimeError("paper could not be loaded after insert")
@@ -82,13 +98,16 @@ def read_chunks(
     *,
     limit: int,
     offset: int,
+    user_id: int,
 ) -> tuple[list[dict[str, Any]], int] | None:
-    if not paper_exists(conn, paper_id):
+    if not paper_is_accessible(conn, paper_id, user_id):
         return None
     return list_paper_chunks(conn, paper_id, limit=limit, offset=offset)
 
 
-def resolve_pdf(conn: sqlite3.Connection, paper_id: int) -> PaperPdf | None:
+def resolve_pdf(conn: sqlite3.Connection, paper_id: int, user_id: int) -> PaperPdf | None:
+    if not paper_is_accessible(conn, paper_id, user_id):
+        return None
     title = get_paper_title(conn, paper_id)
     if title is None:
         return None
@@ -99,3 +118,28 @@ def resolve_pdf(conn: sqlite3.Connection, paper_id: int) -> PaperPdf | None:
         path=pdf_service.store.path_for(asset.id),
         title=title,
     )
+
+
+def can_access_paper(conn: sqlite3.Connection, paper_id: int, user_id: int) -> bool:
+    return paper_is_accessible(conn, paper_id, user_id)
+
+
+def change_upload_visibility(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    visibility: str,
+    user_id: int,
+) -> dict[str, Any]:
+    update_upload_visibility(
+        conn,
+        paper_id,
+        owner_user_id=user_id,
+        visibility=visibility,
+        commit=False,
+    )
+    detail = get_paper_detail(conn, paper_id, user_id=user_id)
+    if detail is None:
+        conn.rollback()
+        raise ValueError("owned upload not found")
+    conn.commit()
+    return detail

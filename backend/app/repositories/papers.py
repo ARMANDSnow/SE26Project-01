@@ -30,7 +30,11 @@ def row_to_paper_record(row: sqlite3.Row) -> PaperRecord:
     )
 
 
-def row_to_paper(row: sqlite3.Row, is_favorite: bool | None = None) -> dict[str, Any]:
+def row_to_paper(
+    row: sqlite3.Row,
+    is_favorite: bool | None = None,
+    upload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     paper = row_to_paper_record(row)
     pdf_available = paper.asset_id is not None or paper.pdf_url is not None
     pdf_base_url = f"/api/papers/{int(paper.id)}/pdf"
@@ -55,6 +59,7 @@ def row_to_paper(row: sqlite3.Row, is_favorite: bool | None = None) -> dict[str,
         },
         "processing_status": paper.processing_status,
         "is_favorite": bool(is_favorite),
+        "upload": upload,
         "created_at": paper.created_at,
     }
 
@@ -403,19 +408,29 @@ def list_papers(
     user_id: int = 1,
 ) -> list[dict[str, Any]]:
     from .library import ensure_user_library
+    from .uploads import accessible_paper_condition, upload_metadata_for_user
 
     ensure_user_library(conn, user_id)
     saved_ids = {
         int(row["paper_id"])
         for row in conn.execute("SELECT paper_id FROM library_items WHERE user_id = ?", (user_id,)).fetchall()
     }
-    rows = conn.execute("SELECT * FROM papers ORDER BY published_at DESC").fetchall()
+    access_condition, access_params = accessible_paper_condition("p", user_id)
+    rows = conn.execute(
+        f"SELECT p.* FROM papers p WHERE {access_condition} ORDER BY p.published_at DESC",
+        access_params,
+    ).fetchall()
     query = q.strip().lower()
     author_query = author.strip().lower()
     concept_query = concept.strip().lower()
     results: list[dict[str, Any]] = []
     for row in rows:
-        paper = row_to_paper(row, int(row["id"]) in saved_ids)
+        paper_id = int(row["id"])
+        paper = row_to_paper(
+            row,
+            paper_id in saved_ids,
+            upload_metadata_for_user(conn, paper_id, user_id),
+        )
         haystack = " ".join(
             [paper["title"], paper["abstract"], " ".join(paper["authors"]), " ".join(paper["categories"])]
         ).lower()
@@ -443,6 +458,10 @@ def list_papers(
 
 
 def get_paper_detail(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) -> dict[str, Any] | None:
+    from .uploads import paper_is_accessible, upload_metadata_for_user
+
+    if not paper_is_accessible(conn, paper_id, user_id):
+        return None
     row = conn.execute("SELECT * FROM papers WHERE id = ?", (paper_id,)).fetchone()
     if row is None:
         return None
@@ -450,7 +469,7 @@ def get_paper_detail(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) 
         "SELECT 1 FROM library_items WHERE user_id = ? AND paper_id = ?",
         (user_id, paper_id),
     ).fetchone() is not None
-    paper = row_to_paper(row, saved)
+    paper = row_to_paper(row, saved, upload_metadata_for_user(conn, paper_id, user_id))
     sections = conn.execute(
         "SELECT section, title, content, updated_at FROM wiki_sections WHERE paper_id = ? ORDER BY id",
         (paper_id,),

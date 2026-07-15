@@ -4,6 +4,11 @@ import sqlite3
 from typing import Any, cast
 
 from .papers import get_paper_detail, row_to_paper
+from .uploads import (
+    accessible_paper_condition,
+    paper_is_accessible,
+    upload_metadata_for_user,
+)
 
 
 def set_favorite(
@@ -14,7 +19,7 @@ def set_favorite(
     *,
     commit: bool = True,
 ) -> dict[str, Any]:
-    if conn.execute("SELECT 1 FROM papers WHERE id = ?", (paper_id,)).fetchone() is None:
+    if not paper_is_accessible(conn, paper_id, user_id):
         conn.rollback()
         raise ValueError("paper not found")
     folders = ensure_user_library(conn, user_id)
@@ -71,16 +76,22 @@ def ensure_user_library(conn: sqlite3.Connection, user_id: int) -> dict[str, int
 
 def list_library_folders(conn: sqlite3.Connection, user_id: int = 1) -> list[dict[str, Any]]:
     defaults = ensure_user_library(conn, user_id)
+    access_condition, access_params = accessible_paper_condition("p", user_id)
     rows = conn.execute(
-        """
+        f"""
         SELECT f.*, COUNT(i.id) AS item_count
         FROM library_folders f
-        LEFT JOIN library_items i ON i.folder_id = f.id AND i.user_id = f.user_id
+        LEFT JOIN library_items i
+          ON i.folder_id = f.id AND i.user_id = f.user_id
+         AND EXISTS (
+             SELECT 1 FROM papers p
+             WHERE p.id = i.paper_id AND {access_condition}
+         )
         WHERE f.user_id = ?
         GROUP BY f.id
         ORDER BY f.is_system DESC, lower(f.name), f.id
         """,
-        (user_id,),
+        (*access_params, user_id),
     ).fetchall()
     by_id = {int(row["id"]): row for row in rows}
 
@@ -184,8 +195,9 @@ def delete_library_folder(
 
 def list_library_items(conn: sqlite3.Connection, folder_id: int | None = None, user_id: int = 1) -> list[dict[str, Any]]:
     ensure_user_library(conn, user_id)
-    params: list[Any] = [user_id]
-    where = "i.user_id = ?"
+    access_condition, access_params = accessible_paper_condition("p", user_id)
+    params: list[Any] = [user_id, *access_params]
+    where = f"i.user_id = ? AND {access_condition}"
     if folder_id is not None:
         where += " AND i.folder_id = ?"
         params.append(folder_id)
@@ -200,7 +212,12 @@ def list_library_items(conn: sqlite3.Connection, folder_id: int | None = None, u
     ).fetchall()
     items = []
     for row in rows:
-        paper = row_to_paper(row, True)
+        paper_id = int(row["id"])
+        paper = row_to_paper(
+            row,
+            True,
+            upload_metadata_for_user(conn, paper_id, user_id),
+        )
         paper.update({"library_item_id": int(row["library_item_id"]), "folder_id": int(row["folder_id"]), "saved_at": row["saved_at"]})
         items.append(paper)
     return items
@@ -214,6 +231,12 @@ def move_library_item(
     *,
     commit: bool = True,
 ) -> dict[str, Any]:
+    item = conn.execute(
+        "SELECT paper_id FROM library_items WHERE id = ? AND user_id = ?",
+        (item_id, user_id),
+    ).fetchone()
+    if item is None or not paper_is_accessible(conn, int(item["paper_id"]), user_id):
+        raise ValueError("library item not found")
     folder = conn.execute(
         "SELECT id FROM library_folders WHERE id = ? AND user_id = ?",
         (folder_id, user_id),
@@ -237,14 +260,16 @@ def get_library_item_for_recommendation(
     item_id: int,
     user_id: int,
 ) -> sqlite3.Row | None:
+    access_condition, access_params = accessible_paper_condition("p", user_id)
     return cast(
         sqlite3.Row | None,
         conn.execute(
-        """
-        SELECT i.id, i.folder_id, p.title, p.abstract, p.categories_json, p.primary_category
-        FROM library_items i JOIN papers p ON p.id = i.paper_id
-        WHERE i.id = ? AND i.user_id = ?
-        """,
-        (item_id, user_id),
+            f"""
+            SELECT i.id, i.folder_id, p.title, p.abstract, p.categories_json,
+                   p.primary_category
+            FROM library_items i JOIN papers p ON p.id = i.paper_id
+            WHERE i.id = ? AND i.user_id = ? AND {access_condition}
+            """,
+            (item_id, user_id, *access_params),
         ).fetchone(),
     )

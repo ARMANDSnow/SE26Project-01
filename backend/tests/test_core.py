@@ -15,19 +15,28 @@ from backend.app.database import (
     SCHEMA_VERSION,
     IncompatibleSchemaError,
     add_note,
+    attach_concepts,
     connect,
     get_paper_detail,
     init_db,
     init_schema,
     list_paper_chunks,
     list_papers,
+    replace_wiki_sections,
     set_favorite,
     set_paper_asset_id,
     upsert_paper,
 )
-from backend.app.db.migrations import Migration, MigrationError, V3_MIGRATION, apply_migrations
+from backend.app.db.migrations import (
+    Migration,
+    MigrationError,
+    V3_MIGRATION,
+    V4_MIGRATION,
+    apply_migrations,
+)
 from backend.app.main import app
 from backend.app.models import AssetId, AssetInfo, PaperCandidate, PaperSource
+from backend.app.repositories.uploads import paper_is_accessible
 from backend.app.services.agents import SummaryAgent, process_paper
 from backend.app.services.asset_store import LocalAssetStore
 from backend.app.services.sources.common import MetadataPage
@@ -39,6 +48,7 @@ from backend.app.services.sources.sigops import (
     fetch_sigops_papers,
 )
 from backend.app.services.http_safety import UnsafeUrlError, _TrustedRedirectHandler
+from backend.app.services.paper_tools import PaperToolbox
 from backend.app.services.sources.usenix import _detail_to_paper
 from backend.app.services.search import answer_question, build_graph, search_wiki
 from backend.app.services.conversations import (
@@ -138,6 +148,50 @@ def test_v2_private_data_migrates_to_disabled_legacy_user() -> None:
     assert conn.execute("SELECT user_id FROM notes WHERE id = 20").fetchone()[0] == 1
     assert conn.execute("SELECT user_id FROM reading_history WHERE id = 30").fetchone()[0] == 1
     assert conn.execute("SELECT user_id FROM subscriptions WHERE id = 40").fetchone()[0] == 1
+
+
+def test_v3_uploads_migrate_as_legacy_public_documents() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("CREATE TABLE users(id INTEGER PRIMARY KEY)")
+    conn.execute("CREATE TABLE papers(id INTEGER PRIMARY KEY, source TEXT NOT NULL)")
+    conn.execute("INSERT INTO papers(id, source) VALUES (7, 'upload'), (8, 'arxiv')")
+    conn.execute("PRAGMA user_version = 3")
+
+    assert apply_migrations(conn, [V4_MIGRATION], target_version=4) == [4]
+    migrated = conn.execute(
+        """
+        SELECT owner_user_id, visibility, provenance, moderation_status
+        FROM paper_uploads WHERE paper_id = 7
+        """
+    ).fetchone()
+    assert dict(migrated) == {
+        "owner_user_id": None,
+        "visibility": "public",
+        "provenance": "legacy_upload",
+        "moderation_status": "approved",
+    }
+    assert conn.execute("SELECT 1 FROM paper_uploads WHERE paper_id = 8").fetchone() is None
+
+
+def test_upload_without_visibility_metadata_is_hidden_by_default() -> None:
+    with memory_db() as conn:
+        paper_id = upsert_paper(
+            conn,
+            PaperCandidate(
+                source=PaperSource.UPLOAD,
+                source_id="orphan-upload",
+                title="Orphan upload",
+                authors=(),
+                abstract="Must not become public without access metadata.",
+                categories=("manual",),
+                primary_category="manual",
+                published_at="2025-01-01",
+            ),
+        )
+
+        assert paper_is_accessible(conn, paper_id, user_id=1) is False
 
 
 @pytest.fixture()
@@ -248,6 +302,15 @@ def test_papers_schema_uses_asset_id_without_legacy_columns():
     for table in ("notes", "reading_history", "subscriptions"):
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         assert "user_id" in columns
+    upload_columns = {row["name"] for row in conn.execute("PRAGMA table_info(paper_uploads)")}
+    assert {
+        "paper_id",
+        "owner_user_id",
+        "visibility",
+        "provenance",
+        "moderation_status",
+        "original_filename",
+    } <= upload_columns
 
 
 def test_init_schema_rejects_legacy_database_with_reset_command():
@@ -308,7 +371,7 @@ def test_process_paper_generates_required_wiki_sections(monkeypatch):
 
     monkeypatch.setattr(SummaryAgent, "summarize", summarize)
 
-    def parse_document(conn, paper_id):
+    def parse_document(conn, paper_id, user_id=1):
         conn.execute(
             """
             INSERT INTO paper_documents(
@@ -699,6 +762,13 @@ def test_api_upload_records_local_pdf(api_client, monkeypatch):
     }
     assert {"file_url", "pdf_url", "asset_id"}.isdisjoint(paper)
     assert paper["authors"] == ["Ada", "Grace"]
+    assert paper["upload"] == {
+        "visibility": "private",
+        "provenance": "user_upload",
+        "moderation_status": "unreviewed",
+        "owned_by_current_user": True,
+        "original_filename": "demo.pdf",
+    }
 
 
 def test_api_upload_and_download_real_pdf(api_client):
@@ -735,6 +805,172 @@ def test_api_upload_and_download_real_pdf(api_client):
     assert download.headers["content-disposition"].startswith("attachment")
     assert download.content == view.content
     assert api_client.get(f"/api/papers/{paper['id']}/file").status_code == 404
+
+
+def test_private_and_public_upload_visibility_covers_direct_and_indirect_reads(
+    api_client,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "backend.app.api.routers.papers.save_and_extract_pdf",
+        lambda file, store: SimpleNamespace(
+            asset=AssetInfo(id=AssetId(f"sha256:{'c' * 64}"), size_bytes=16),
+            title="Private visibility sentinel",
+            text="Private visibility sentinel content.",
+        ),
+    )
+    first_user = api_client.get("/api/auth/me").json()
+    first_session = api_client.cookies.get("paperwiki_session")
+    uploaded = api_client.post(
+        "/api/papers/upload",
+        files={"file": ("private-sentinel.pdf", b"%PDF-1.4 mock", "application/pdf")},
+        data={"year": "2025", "visibility": "private"},
+    )
+    assert uploaded.status_code == 200
+    paper_id = uploaded.json()["id"]
+    with connect() as conn:
+        replace_wiki_sections(
+            conn,
+            paper_id,
+            {"summary": "Private visibility sentinel wiki evidence."},
+        )
+        attach_concepts(
+            conn,
+            paper_id,
+            [
+                {
+                    "name": "PrivateVisibilityConcept",
+                    "description": "Private visibility sentinel concept.",
+                    "relation": "topic",
+                    "weight": 1.0,
+                }
+            ],
+        )
+
+    registered = api_client.post(
+        "/api/auth/register",
+        json={"username": "visibility_reader", "password": "reader-password"},
+    )
+    assert registered.status_code == 201
+    second_user = registered.json()
+    second_session = api_client.cookies.get("paperwiki_session")
+    first_headers = {"Cookie": f"paperwiki_session={first_session}"}
+    second_headers = {"Cookie": f"paperwiki_session={second_session}"}
+
+    assert paper_id not in [
+        item["id"]
+        for item in api_client.get("/api/papers", headers=second_headers).json()["items"]
+    ]
+    for path in (
+        f"/api/papers/{paper_id}",
+        f"/api/papers/{paper_id}/chunks",
+        f"/api/papers/{paper_id}/pdf",
+    ):
+        assert api_client.get(path, headers=second_headers).status_code == 404
+    for path in (
+        f"/api/papers/{paper_id}/process",
+        f"/api/papers/{paper_id}/document/parse",
+        f"/api/papers/{paper_id}/summaries",
+    ):
+        assert api_client.post(path, headers=second_headers).status_code == 404
+    assert api_client.post(
+        "/api/library/favorites",
+        headers=second_headers,
+        json={"paper_id": paper_id, "favorite": True},
+    ).status_code == 404
+    assert api_client.post(
+        "/api/notes",
+        headers=second_headers,
+        json={"paper_id": paper_id, "note": "should not be accepted"},
+    ).status_code == 404
+    assert api_client.post(
+        f"/api/papers/{paper_id}/chat/threads",
+        headers=second_headers,
+        json={},
+    ).status_code == 404
+    assert api_client.post(
+        "/api/qa",
+        headers=second_headers,
+        json={"question": "sentinel", "paper_ids": [paper_id], "mode": "classic"},
+    ).status_code == 404
+    assert api_client.get(
+        "/api/wiki/search?q=Private%20visibility%20sentinel",
+        headers=second_headers,
+    ).json()["items"] == []
+    assert api_client.get(
+        "/api/graph?topic=PrivateVisibilityConcept",
+        headers=second_headers,
+    ).json() == {"nodes": [], "links": []}
+    with connect() as conn:
+        assert PaperToolbox(conn, user_id=second_user["id"]).search_metadata(
+            query="Private visibility sentinel"
+        )["items"] == []
+
+    published = api_client.patch(
+        f"/api/papers/{paper_id}/visibility",
+        headers=first_headers,
+        json={"visibility": "public"},
+    )
+    assert published.status_code == 200
+    assert published.json()["upload"]["owned_by_current_user"] is True
+    public_detail = api_client.get(f"/api/papers/{paper_id}", headers=second_headers)
+    assert public_detail.status_code == 200
+    assert public_detail.json()["upload"] == {
+        "visibility": "public",
+        "provenance": "user_upload",
+        "moderation_status": "unreviewed",
+        "owned_by_current_user": False,
+        "original_filename": None,
+    }
+    assert api_client.patch(
+        f"/api/papers/{paper_id}/visibility",
+        headers=second_headers,
+        json={"visibility": "private"},
+    ).status_code == 404
+    favorite = api_client.post(
+        "/api/library/favorites",
+        headers=second_headers,
+        json={"paper_id": paper_id, "favorite": True},
+    )
+    assert favorite.status_code == 200
+    thread = api_client.post(
+        f"/api/papers/{paper_id}/chat/threads",
+        headers=second_headers,
+        json={},
+    ).json()
+    assert api_client.get(
+        "/api/wiki/search?q=Private%20visibility%20sentinel",
+        headers=second_headers,
+    ).json()["items"]
+
+    privatized = api_client.patch(
+        f"/api/papers/{paper_id}/visibility",
+        headers=first_headers,
+        json={"visibility": "private"},
+    )
+    assert privatized.status_code == 200
+    assert api_client.get("/api/library/items", headers=second_headers).json()["items"] == []
+    assert all(
+        folder["item_count"] == 0
+        for folder in api_client.get("/api/library/folders", headers=second_headers).json()["items"]
+    )
+    assert api_client.get(f"/api/chat/threads/{thread['id']}", headers=second_headers).status_code == 404
+    assert api_client.get(
+        f"/api/papers/{paper_id}/chat/threads",
+        headers=second_headers,
+    ).json()["items"] == []
+    assert api_client.get(
+        "/api/wiki/search?q=Private%20visibility%20sentinel",
+        headers=second_headers,
+    ).json()["items"] == []
+    assert paper_id not in [
+        item["paper_id"]
+        for item in api_client.get("/api/history", headers=second_headers).json()["items"]
+    ]
+    first_stats = api_client.get("/api/stats", headers=first_headers).json()
+    second_stats = api_client.get("/api/stats", headers=second_headers).json()
+    assert first_stats["papers"] == second_stats["papers"] + 1
+    assert first_user["id"] != second_user["id"]
 
 
 def test_api_remote_pdf_downloads_once_and_serves_cache(api_client, monkeypatch):

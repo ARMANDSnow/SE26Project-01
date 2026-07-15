@@ -36,6 +36,14 @@ export type PaperPdf = {
   download_url: string | null;
 };
 
+export type PaperUpload = {
+  visibility: "private" | "public";
+  provenance: "user_upload" | "legacy_upload";
+  moderation_status: "unreviewed" | "approved" | "rejected";
+  owned_by_current_user: boolean;
+  original_filename?: string | null;
+};
+
 export type Paper = {
   id: number;
   source?: "arxiv" | "usenix" | "sigops" | "upload" | string;
@@ -52,6 +60,7 @@ export type Paper = {
   updated_at?: string;
   processing_status: "pending" | "processed" | "failed";
   is_favorite: boolean;
+  upload?: PaperUpload | null;
   created_at?: string;
   wiki?: WikiSection[];
   concepts?: Concept[];

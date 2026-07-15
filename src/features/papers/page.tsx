@@ -47,6 +47,7 @@ export function PapersPage() {
   const [source, setSource] = useState<"arxiv" | "usenix" | "sigops">("arxiv")
   const [venue, setVenue] = useState("osdi")
   const [year, setYear] = useState(String(new Date().getFullYear()))
+  const [uploadVisibility, setUploadVisibility] = useState<"private" | "public">("private")
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const papersQuery = usePapersQuery(filters)
@@ -120,8 +121,12 @@ export function PapersPage() {
     const file = event.target.files?.[0]
     if (!file) return
     try {
-      const paper = await uploadMutation.mutateAsync({ file, year: Number(year) || new Date().getFullYear() })
-      toast.success(`已上传《${paper.title}》`)
+      const paper = await uploadMutation.mutateAsync({
+        file,
+        year: Number(year) || new Date().getFullYear(),
+        visibility: uploadVisibility,
+      })
+      toast.success(`已${uploadVisibility === "private" ? "私有" : "公开"}上传《${paper.title}》`)
     } catch {
       toast.error("PDF 上传或读取失败，请确认文件未加密且不超过 30 MB。")
     } finally {
@@ -147,6 +152,15 @@ export function PapersPage() {
         actions={
           <div className="flex flex-wrap gap-2">
             <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={onUpload} />
+            <Select value={uploadVisibility} onValueChange={(value) => setUploadVisibility(value as "private" | "public")}>
+              <SelectTrigger className="h-11 w-[132px]" aria-label="上传可见性">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="private">私有上传</SelectItem>
+                <SelectItem value="public">公开上传</SelectItem>
+              </SelectContent>
+            </Select>
             <Button variant="outline" className="h-11" onClick={() => fileInputRef.current?.click()} disabled={uploadMutation.isPending}>
               {uploadMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
               上传 PDF

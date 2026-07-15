@@ -187,8 +187,13 @@ export function useIngestSourceMutation() {
 export function useUploadPaperMutation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ file, title, authors, year }: { file: File; title?: string; authors?: string; year?: number }) =>
-      uploadPaper(file, { title, authors, year }),
+    mutationFn: ({ file, title, authors, year, visibility }: {
+      file: File
+      title?: string
+      authors?: string
+      year?: number
+      visibility?: "private" | "public"
+    }) => uploadPaper(file, { title, authors, year, visibility }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["papers"] })
       queryClient.invalidateQueries({ queryKey: queryKeys.stats })

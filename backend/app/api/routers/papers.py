@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
@@ -18,8 +18,17 @@ from ...services.conversations import create_summary
 from ...services.documents import parse_paper_document
 from ...services.llm import LLMConfigurationError, LLMServiceError
 from ...services.pdf_import import save_and_extract_pdf
-from ...services.papers import list_catalog, read_chunks, read_detail, register_uploaded_paper, resolve_pdf
+from ...services.papers import (
+    change_upload_visibility,
+    can_access_paper,
+    list_catalog,
+    read_chunks,
+    read_detail,
+    register_uploaded_paper,
+    resolve_pdf,
+)
 from ...services.remote_pdf import RemotePdfError, default_asset_store
+from ..schemas import UploadVisibilityRequest
 
 
 router = APIRouter(
@@ -31,10 +40,12 @@ router = APIRouter(
 
 @router.post("/upload")
 def upload_paper(
+    user: CurrentUser,
     file: UploadFile = File(...),
     title: str = Form(default=""),
     authors: str = Form(default=""),
     year: int = Form(default_factory=lambda: date.today().year),
+    visibility: Literal["private", "public"] = Form(default="private"),
 ) -> dict[str, Any]:
     try:
         extracted = save_and_extract_pdf(file, default_asset_store())
@@ -58,7 +69,13 @@ def upload_paper(
     )
     with connect() as conn:
         try:
-            return register_uploaded_paper(conn, paper)
+            return register_uploaded_paper(
+                conn,
+                paper,
+                owner_user_id=user.id,
+                visibility=visibility,
+                original_filename=Path(file.filename).name if file.filename else None,
+            )
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail="论文入库后无法读取") from exc
 
@@ -101,11 +118,12 @@ def paper_detail(paper_id: int, user: CurrentUser) -> dict[str, Any]:
 @router.get("/{paper_id}/chunks")
 def paper_chunks(
     paper_id: int,
+    user: CurrentUser,
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     with connect() as conn:
-        result = read_chunks(conn, paper_id, limit=limit, offset=offset)
+        result = read_chunks(conn, paper_id, limit=limit, offset=offset, user_id=user.id)
         if result is None:
             raise HTTPException(status_code=404, detail="论文不存在")
         items, total = result
@@ -124,12 +142,13 @@ def _etag_matches(header_value: str | None, etag: str) -> bool:
 def _paper_pdf_response(
     paper_id: int,
     *,
+    user_id: int,
     disposition: str,
     if_none_match: str | None = None,
 ) -> Response:
     try:
         with connect() as conn:
-            pdf = resolve_pdf(conn, paper_id)
+            pdf = resolve_pdf(conn, paper_id, user_id)
             if pdf is None:
                 raise HTTPException(status_code=404, detail="论文不存在")
     except RemotePdfError as exc:
@@ -161,22 +180,30 @@ def _paper_pdf_response(
 @router.get("/{paper_id}/pdf")
 def paper_pdf(
     paper_id: int,
+    user: CurrentUser,
     if_none_match: str | None = Header(default=None),
 ) -> Response:
     """Serve a same-origin PDF, downloading trusted remote sources on demand."""
-    return _paper_pdf_response(paper_id, disposition="inline", if_none_match=if_none_match)
+    return _paper_pdf_response(
+        paper_id,
+        user_id=user.id,
+        disposition="inline",
+        if_none_match=if_none_match,
+    )
 
 
 @router.get("/{paper_id}/pdf/download")
-def download_paper_pdf(paper_id: int) -> Response:
-    return _paper_pdf_response(paper_id, disposition="attachment")
+def download_paper_pdf(paper_id: int, user: CurrentUser) -> Response:
+    return _paper_pdf_response(paper_id, user_id=user.id, disposition="attachment")
 
 
 @router.post("/{paper_id}/process")
 def process(paper_id: int, user: CurrentUser) -> Any:
-    if not get_settings().llm_available:
-        raise HTTPException(status_code=503, detail="LLM 未配置")
     with connect() as conn:
+        if not can_access_paper(conn, paper_id, user.id):
+            raise HTTPException(status_code=404, detail="论文不存在")
+        if not get_settings().llm_available:
+            raise HTTPException(status_code=503, detail="LLM 未配置")
         try:
             result = process_paper(conn, paper_id, user_id=user.id)
         except ValueError as exc:
@@ -193,10 +220,10 @@ def process(paper_id: int, user: CurrentUser) -> Any:
 
 
 @router.post("/{paper_id}/document/parse")
-def parse_document(paper_id: int) -> dict[str, Any]:
+def parse_document(paper_id: int, user: CurrentUser) -> dict[str, Any]:
     with connect() as conn:
         try:
-            return parse_paper_document(conn, paper_id)
+            return parse_paper_document(conn, paper_id, user_id=user.id)
         except ValueError as exc:
             status_code = 404 if str(exc) == "paper not found" else 422
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -205,10 +232,10 @@ def parse_document(paper_id: int) -> dict[str, Any]:
 
 
 @router.post("/{paper_id}/summaries")
-def generate_summary(paper_id: int) -> dict[str, Any]:
+def generate_summary(paper_id: int, user: CurrentUser) -> dict[str, Any]:
     with connect() as conn:
         try:
-            return create_summary(conn, paper_id)
+            return create_summary(conn, paper_id, user_id=user.id)
         except ValueError as exc:
             status_code = 404 if str(exc) == "paper not found" else 422
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -216,3 +243,16 @@ def generate_summary(paper_id: int) -> dict[str, Any]:
             raise HTTPException(status_code=503, detail=f"LLM 未配置：{exc}") from exc
         except LLMServiceError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.patch("/{paper_id}/visibility")
+def set_upload_visibility(
+    paper_id: int,
+    payload: UploadVisibilityRequest,
+    user: CurrentUser,
+) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return change_upload_visibility(conn, paper_id, payload.visibility, user.id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="上传论文不存在") from exc

@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from .uploads import accessible_paper_condition
+
 
 def add_reading_history(
     conn: sqlite3.Connection,
@@ -51,16 +53,17 @@ def get_history(
     limit: int = 30,
     user_id: int = 1,
 ) -> list[dict[str, Any]]:
+    access_sql, access_params = accessible_paper_condition("p", user_id)
     rows = conn.execute(
-        """
+        f"""
         SELECT h.id, h.action, h.created_at, p.id AS paper_id, p.title, p.primary_category
         FROM reading_history h
         JOIN papers p ON p.id = h.paper_id
-        WHERE h.user_id = ?
+        WHERE h.user_id = ? AND {access_sql}
         ORDER BY h.created_at DESC, h.id DESC
         LIMIT ?
         """,
-        (user_id, limit),
+        (user_id, *access_params, limit),
     ).fetchall()
     return [dict(row) for row in rows]
 

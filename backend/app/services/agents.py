@@ -117,7 +117,7 @@ def _safe_weight(value: Any) -> float:
 
 
 def process_paper(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) -> dict[str, Any]:
-    paper = get_paper_detail(conn, paper_id)
+    paper = get_paper_detail(conn, paper_id, user_id=user_id)
     if paper is None:
         raise ValueError("paper not found")
     try:
@@ -129,8 +129,8 @@ def process_paper(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) -> 
             or document.get("status") != "completed"
             or document.get("source_hash") != expected_hash
         ):
-            parse_paper_document(conn, paper_id)
-            paper = get_paper_detail(conn, paper_id)
+            parse_paper_document(conn, paper_id, user_id=user_id)
+            paper = get_paper_detail(conn, paper_id, user_id=user_id)
             if paper is None:
                 raise ValueError("paper not found")
         reading = ReaderAgent().read(paper)
@@ -157,5 +157,5 @@ def process_paper(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) -> 
     return {
         "status": "processed",
         "agents": ["ReaderAgent", "SummaryAgent", "ValidatorAgent"],
-        "paper": get_paper_detail(conn, paper_id),
+        "paper": get_paper_detail(conn, paper_id, user_id=user_id),
     }

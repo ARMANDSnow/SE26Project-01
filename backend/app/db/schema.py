@@ -5,11 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from .connection import connect
-from .migrations import V3_MIGRATION, apply_migrations
+from .migrations import V3_MIGRATION, V4_MIGRATION, apply_migrations
 
 
 PAPER_CHUNKS_FTS_TABLE = "paper_chunks_fts"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class IncompatibleSchemaError(RuntimeError):
@@ -55,6 +55,9 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
     subscription_columns = {
         str(row[1]) for row in conn.execute("PRAGMA table_info(subscriptions)").fetchall()
     }
+    upload_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(paper_uploads)").fetchall()
+    }
     required_paper_columns = {"source", "source_id", "asset_id", "processing_status"}
     if not required_paper_columns.issubset(paper_columns) or "title_hash" in paper_columns:
         raise IncompatibleSchemaError(
@@ -77,6 +80,18 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
     ):
         raise IncompatibleSchemaError(
             f"Database private-data schema does not match version {SCHEMA_VERSION}; rebuild it with: "
+            f"{_schema_reset_command(conn)}"
+        )
+    if not {
+        "paper_id",
+        "owner_user_id",
+        "visibility",
+        "provenance",
+        "moderation_status",
+        "original_filename",
+    }.issubset(upload_columns):
+        raise IncompatibleSchemaError(
+            f"Database upload schema does not match version {SCHEMA_VERSION}; rebuild it with: "
             f"{_schema_reset_command(conn)}"
         )
 
@@ -195,8 +210,13 @@ def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = No
 
 def init_schema(conn: sqlite3.Connection) -> None:
     tables = _schema_tables(conn)
-    if tables and int(conn.execute("PRAGMA user_version").fetchone()[0]) == 2:
-        apply_migrations(conn, [V3_MIGRATION], target_version=SCHEMA_VERSION)
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if tables and version in {2, 3}:
+        apply_migrations(
+            conn,
+            [V3_MIGRATION, V4_MIGRATION],
+            target_version=SCHEMA_VERSION,
+        )
     _assert_schema_compatible(conn)
     conn.executescript(
         """
@@ -393,6 +413,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
             UNIQUE(user_id, paper_id)
         );
 
+        CREATE TABLE IF NOT EXISTS paper_uploads (
+            paper_id INTEGER PRIMARY KEY REFERENCES papers(id) ON DELETE CASCADE,
+            owner_user_id INTEGER REFERENCES users(id) ON DELETE RESTRICT,
+            visibility TEXT NOT NULL CHECK(visibility IN ('private', 'public')),
+            provenance TEXT NOT NULL CHECK(provenance IN ('user_upload', 'legacy_upload')),
+            moderation_status TEXT NOT NULL
+                CHECK(moderation_status IN ('unreviewed', 'approved', 'rejected')),
+            original_filename TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK(provenance = 'legacy_upload' OR owner_user_id IS NOT NULL)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_papers_category ON papers(primary_category);
         CREATE INDEX IF NOT EXISTS idx_papers_published ON papers(published_at);
         CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source);
@@ -408,6 +441,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
         CREATE INDEX IF NOT EXISTS idx_library_folders_user ON library_folders(user_id, parent_id);
         CREATE INDEX IF NOT EXISTS idx_library_items_folder ON library_items(user_id, folder_id);
+        CREATE INDEX IF NOT EXISTS idx_paper_uploads_owner ON paper_uploads(owner_user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_paper_uploads_visibility ON paper_uploads(visibility, moderation_status);
         """
     )
     init_paper_chunks_fts(conn)

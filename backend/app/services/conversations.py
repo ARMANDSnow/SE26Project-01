@@ -6,6 +6,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 from ..config import get_settings
+from ..repositories.uploads import paper_is_accessible
 from .documents import estimate_tokens
 from .llm import LLMClient
 
@@ -27,9 +28,7 @@ def create_thread(
     user_id: int = 1,
     title: str = "新对话",
 ) -> dict[str, Any]:
-    if paper_id is not None and conn.execute(
-        "SELECT 1 FROM papers WHERE id = ?", (paper_id,)
-    ).fetchone() is None:
+    if paper_id is not None and not paper_is_accessible(conn, paper_id, user_id):
         raise ValueError("paper not found")
     thread_id = f"thread_{uuid4().hex}"
     conn.execute(
@@ -52,7 +51,12 @@ def list_threads(conn: sqlite3.Connection, paper_id: int | None, user_id: int = 
         """,
         params,
     ).fetchall()
-    return [dict(row) for row in rows]
+    return [
+        dict(row)
+        for row in rows
+        if row["paper_id"] is None
+        or paper_is_accessible(conn, int(row["paper_id"]), user_id)
+    ]
 
 
 def get_thread(conn: sqlite3.Connection, thread_id: str, user_id: int = 1) -> dict[str, Any] | None:
@@ -64,7 +68,13 @@ def get_thread(conn: sqlite3.Connection, thread_id: str, user_id: int = 1) -> di
         """,
         (thread_id, user_id),
     ).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    if row["paper_id"] is not None and not paper_is_accessible(
+        conn, int(row["paper_id"]), user_id
+    ):
+        return None
+    return dict(row)
 
 
 def update_thread_head(conn: sqlite3.Connection, thread_id: str, head_id: str | None, user_id: int = 1) -> dict[str, Any]:
@@ -456,7 +466,13 @@ def stream_run(conn: sqlite3.Connection, run: dict[str, Any]) -> Iterator[tuple[
             conn.commit()
 
 
-def create_summary(conn: sqlite3.Connection, paper_id: int) -> dict[str, Any]:
+def create_summary(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    user_id: int = 1,
+) -> dict[str, Any]:
+    if not paper_is_accessible(conn, paper_id, user_id):
+        raise ValueError("paper not found")
     row = conn.execute(
         """
         SELECT p.title, d.content_markdown, d.source_hash, d.status

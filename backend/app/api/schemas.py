@@ -33,6 +33,10 @@ class FavoriteRequest(BaseModel):
     favorite: bool = True
 
 
+class UploadVisibilityRequest(BaseModel):
+    visibility: Literal["private", "public"]
+
+
 class NoteRequest(BaseModel):
     paper_id: int
     note: str = Field(min_length=1, max_length=20_000)

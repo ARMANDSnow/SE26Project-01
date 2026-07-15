@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from ..repositories.papers import existing_paper_ids
+from ..repositories.uploads import existing_accessible_paper_ids
 from .qa_agent import run_qa_agent
 
 
@@ -19,10 +19,11 @@ def answer_question(
     paper_ids: list[int],
     *,
     mode: str,
+    user_id: int,
 ) -> dict[str, Any]:
     if paper_ids:
-        found = existing_paper_ids(conn, paper_ids)
+        found = existing_accessible_paper_ids(conn, paper_ids, user_id)
         missing = [paper_id for paper_id in paper_ids if paper_id not in found]
         if missing:
             raise PapersNotFoundError(missing)
-    return run_qa_agent(conn, question, paper_ids or None, mode=mode)
+    return run_qa_agent(conn, question, paper_ids or None, mode=mode, user_id=user_id)

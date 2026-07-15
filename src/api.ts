@@ -130,13 +130,27 @@ export async function ingestSource(
   });
 }
 
-export async function uploadPaper(file: File, details: { title?: string; authors?: string; year?: number } = {}): Promise<Paper> {
+export async function uploadPaper(
+  file: File,
+  details: { title?: string; authors?: string; year?: number; visibility?: "private" | "public" } = {},
+): Promise<Paper> {
   const body = new FormData()
   body.set("file", file)
   if (details.title) body.set("title", details.title)
   if (details.authors) body.set("authors", details.authors)
   if (details.year) body.set("year", String(details.year))
+  body.set("visibility", details.visibility ?? "private")
   return request<Paper>("/api/papers/upload", { method: "POST", body })
+}
+
+export async function updateUploadVisibility(
+  paperId: number,
+  visibility: "private" | "public",
+): Promise<Paper> {
+  return request<Paper>(`/api/papers/${paperId}/visibility`, {
+    method: "PATCH",
+    body: JSON.stringify({ visibility }),
+  })
 }
 
 export async function searchWiki(q: string): Promise<WikiSearchResult[]> {
