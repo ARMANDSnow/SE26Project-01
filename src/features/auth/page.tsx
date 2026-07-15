@@ -26,8 +26,10 @@ export function AuthPage() {
       const user = mode === "login"
         ? await login(username.trim(), password)
         : await register(username.trim(), password)
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey[0] !== queryKeys.currentUser[0],
+      })
       queryClient.setQueryData(queryKeys.currentUser, user)
-      await queryClient.invalidateQueries()
     } catch {
       setError(mode === "login" ? "用户名或密码错误。" : "注册失败，请检查用户名是否已存在。")
     } finally {

@@ -56,7 +56,7 @@ API Key 只从 `LLM_API_KEY` 环境变量读取。登录 Session 默认保存在
 
 ## 数据库 schema
 
-当前 schema version 3 会在启动时自动把 version 2 的资料库、笔记、历史和订阅迁移到用户归属模型。v2 占位用户没有密码，迁移后会作为禁用的 legacy 账户保留数据。更早的 `arxiv_id/file_path` schema 不提供迁移；检测到不匹配数据库时后端会明确拒绝启动，确认没有需要保留的数据后执行破坏性重建：
+当前 schema version 4 支持 v2→v3→v4 连续迁移：v2 的资料库、笔记、历史和订阅会迁移到用户归属模型，v3 的历史上传会标记为 `legacy public/approved`。v2 占位用户没有密码，迁移后会作为禁用的 legacy 账户保留数据。更早的 `arxiv_id/file_path` schema 不提供迁移；检测到不匹配数据库时后端会明确拒绝启动，确认没有需要保留的数据后执行破坏性重建：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\reset_database.py --database backend\data\arxiv_wiki.sqlite3 --apply

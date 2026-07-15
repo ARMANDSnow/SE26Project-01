@@ -25,7 +25,7 @@ Router -> Service -> Repository -> SQLite
 - Repository 接受显式数据库连接和领域参数；为了兼容 iter08 之前的调用，部分写方法暂时保留 `commit=True`，新 Service 应传入 `commit=False` 并统一提交。
 - `auth/` 从 HttpOnly Cookie 读取不透明 Session ID，并在每次请求时确认数据库用户仍然有效；业务 Router 不接受客户端用户 ID 作为身份来源。
 - `MemorySessionStore` 只适用于当前单进程部署；多 worker/多实例部署时应保持接口不变并替换为 Redis 实现。
-- `db/migrations/runner.py` 提供连续版本迁移和事务回滚；schema v3 已注册 v2 到 v3 的用户归属迁移。
+- `db/migrations/runner.py` 提供连续版本迁移和事务回滚；schema v4 已注册 v2→v3 的用户归属迁移和 v3→v4 的上传可见性迁移。
 
 ## Transitional Compatibility
 

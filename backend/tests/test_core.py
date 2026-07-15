@@ -821,6 +821,7 @@ def test_private_and_public_upload_visibility_covers_direct_and_indirect_reads(
     )
     first_user = api_client.get("/api/auth/me").json()
     first_session = api_client.cookies.get("paperwiki_session")
+    public_health_count = api_client.get("/api/health").json()["papers"]
     uploaded = api_client.post(
         "/api/papers/upload",
         files={"file": ("private-sentinel.pdf", b"%PDF-1.4 mock", "application/pdf")},
@@ -828,6 +829,7 @@ def test_private_and_public_upload_visibility_covers_direct_and_indirect_reads(
     )
     assert uploaded.status_code == 200
     paper_id = uploaded.json()["id"]
+    assert api_client.get("/api/health").json()["papers"] == public_health_count
     with connect() as conn:
         replace_wiki_sections(
             conn,
@@ -913,6 +915,7 @@ def test_private_and_public_upload_visibility_covers_direct_and_indirect_reads(
     )
     assert published.status_code == 200
     assert published.json()["upload"]["owned_by_current_user"] is True
+    assert api_client.get("/api/health").json()["papers"] == public_health_count + 1
     public_detail = api_client.get(f"/api/papers/{paper_id}", headers=second_headers)
     assert public_detail.status_code == 200
     assert public_detail.json()["upload"] == {
@@ -949,6 +952,7 @@ def test_private_and_public_upload_visibility_covers_direct_and_indirect_reads(
         json={"visibility": "private"},
     )
     assert privatized.status_code == 200
+    assert api_client.get("/api/health").json()["papers"] == public_health_count
     assert api_client.get("/api/library/items", headers=second_headers).json()["items"] == []
     assert all(
         folder["item_count"] == 0

@@ -3,11 +3,16 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from .uploads import accessible_paper_condition
+from .uploads import accessible_paper_condition, publicly_visible_paper_condition
 
 
-def paper_count(conn: sqlite3.Connection) -> int:
-    return int(conn.execute("SELECT COUNT(*) AS count FROM papers").fetchone()["count"])
+def public_paper_count(conn: sqlite3.Connection) -> int:
+    public_condition = publicly_visible_paper_condition("p")
+    return int(
+        conn.execute(
+            f"SELECT COUNT(*) AS count FROM papers p WHERE {public_condition}"
+        ).fetchone()["count"]
+    )
 
 
 def application_stats(conn: sqlite3.Connection, user_id: int) -> dict[str, Any]:

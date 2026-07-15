@@ -4,26 +4,35 @@ import sqlite3
 from typing import Any, cast
 
 
-def accessible_paper_condition(alias: str, user_id: int) -> tuple[str, tuple[int]]:
-    condition = f"""
+def publicly_visible_paper_condition(alias: str) -> str:
+    return f"""
         (
             (
                 {alias}.source != 'upload'
                 AND NOT EXISTS (
-                    SELECT 1 FROM paper_uploads access_upload
-                    WHERE access_upload.paper_id = {alias}.id
+                    SELECT 1 FROM paper_uploads public_upload
+                    WHERE public_upload.paper_id = {alias}.id
                 )
             )
             OR EXISTS (
+                SELECT 1 FROM paper_uploads public_upload
+                WHERE public_upload.paper_id = {alias}.id
+                  AND public_upload.visibility = 'public'
+                  AND public_upload.moderation_status != 'rejected'
+            )
+        )
+    """
+
+
+def accessible_paper_condition(alias: str, user_id: int) -> tuple[str, tuple[int]]:
+    public_condition = publicly_visible_paper_condition(alias)
+    condition = f"""
+        (
+            {public_condition}
+            OR EXISTS (
                 SELECT 1 FROM paper_uploads access_upload
                 WHERE access_upload.paper_id = {alias}.id
-                  AND (
-                      access_upload.owner_user_id = ?
-                      OR (
-                          access_upload.visibility = 'public'
-                          AND access_upload.moderation_status != 'rejected'
-                      )
-                  )
+                  AND access_upload.owner_user_id = ?
             )
         )
     """

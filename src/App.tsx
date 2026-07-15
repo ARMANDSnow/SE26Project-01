@@ -13,7 +13,7 @@ export default function App() {
   if (userQuery.isLoading) {
     return <main className="grid min-h-screen place-items-center"><LoadingState label="正在检查登录状态" /></main>
   }
-  if (!userQuery.data) return <AuthPage />
+  if (userQuery.isError || !userQuery.data) return <AuthPage />
 
   return (
     <Routes>
