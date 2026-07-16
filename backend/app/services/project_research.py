@@ -425,7 +425,9 @@ class ProjectResearchPipeline:
 
     @staticmethod
     def _artifact_key(step: dict[str, Any]) -> str:
-        return f"{step['idempotency_key']}:artifact"
+        step_key = str(step["idempotency_key"])
+        canonical_step_key = step_key.split(":manual:", 1)[0]
+        return f"{canonical_step_key}:artifact"
 
     def _save_artifact(
         self,

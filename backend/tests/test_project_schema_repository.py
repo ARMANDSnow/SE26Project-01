@@ -19,10 +19,12 @@ from backend.app.db.migrations.runner import Migration
 from backend.app.db.migrations.v9 import MIGRATION as V9_MIGRATION, migrate_v8_to_v9
 from backend.app.db.schema import IncompatibleSchemaError, init_schema
 from backend.app.repositories.projects import (
+    _dependency_status,
     add_project_item,
     create_project,
     create_project_analysis_run,
     delete_project,
+    get_project_analysis_inputs,
     get_project,
     list_project_items,
     project_backlinks,
@@ -237,6 +239,46 @@ def _repository_db() -> tuple[sqlite3.Connection, int, str, str]:
     )
     conn.commit()
     return conn, 1, run_id, artifact_id
+
+
+def test_run_derived_paper_metadata_dependency_uses_canonical_hash() -> None:
+    conn, paper_id, run_id, _ = _repository_db()
+    conn.execute(
+        """
+        INSERT INTO research_run_papers(
+            run_id, paper_id, stage, source, source_id
+        ) VALUES (?, ?, 'candidate', 'arxiv', '2501.00001')
+        """,
+        (run_id, paper_id),
+    )
+    conn.commit()
+    project = create_project(conn, 1, "Run dependency", "Canonical paper hash")
+    project_id = str(project["id"])
+    add_project_item(conn, project_id, 1, "run", run_id=run_id)
+
+    inputs = get_project_analysis_inputs(conn, project_id, 1)
+    dependency = next(
+        dict(item)
+        for item in inputs["dependencies"]
+        if item["dependency_type"] == "paper_metadata"
+    )
+    for nullable_key in (
+        "project_item_id",
+        "upstream_artifact_id",
+        "upstream_artifact_version",
+        "citation_id",
+        "evidence_id",
+        "paper_id",
+        "source_hash_snapshot",
+    ):
+        dependency.setdefault(nullable_key, None)
+    assert _dependency_status(
+        conn,
+        dependency,  # type: ignore[arg-type]
+        project_id=project_id,
+        user_id=1,
+        visited_artifact_ids=set(),
+    ) == "current"
 
 
 def test_project_owner_archive_items_fixed_report_and_backlinks() -> None:

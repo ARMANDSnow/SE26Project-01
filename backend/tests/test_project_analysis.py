@@ -10,6 +10,7 @@ from backend.app.config import get_settings
 from backend.app.database import connect
 from backend.app.main import app
 from backend.app.services.research_agents import GraphValidationAgent
+from backend.app.services.project_research import ProjectResearchPipeline
 from backend.app.services.research_contracts import (
     ProjectCoverageSummary,
     ResearchGraph,
@@ -68,6 +69,18 @@ def test_project_contracts_require_citations_for_factual_cluster_and_semantic_ed
             relation_type="belongs_to_cluster",
             citation_keys=[],
         )
+
+
+def test_project_model_and_artifact_identity_is_stable_across_manual_retry() -> None:
+    original = {
+        "idempotency_key": "project:p1:landscape:r1",
+    }
+    retried = {
+        "idempotency_key": "project:p1:landscape:r1:manual:retry-token",
+    }
+    assert ProjectResearchPipeline._artifact_key(original) == (
+        ProjectResearchPipeline._artifact_key(retried)
+    )
 
 
 def test_timeline_separates_metadata_publication_from_semantic_evolution() -> None:

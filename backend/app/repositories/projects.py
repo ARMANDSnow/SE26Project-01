@@ -815,7 +815,7 @@ def _run_analysis_sources(
                 "dependency_key": f"paper:{paper_id}",
                 "paper_id": paper_id,
                 "source_hash_snapshot": paper_hash,
-                "dependency_hash": _digest(paper),
+                "dependency_hash": str(paper["metadata_hash"]),
             }
         )
         brief = conn.execute(

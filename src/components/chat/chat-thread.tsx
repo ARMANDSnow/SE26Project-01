@@ -367,6 +367,12 @@ function Composer({ placeholder, hero = false, mode, onModeChange, routingEnable
   )
 }
 
+const modeHint: Record<ChatRouteMode, string> = {
+  auto: "自动判断问题类型；只有明确的主题论文调研才会创建 Research Run。",
+  normal: "普通对话不会创建 Research Run。",
+  deep_research: "深度研究将启动真实、可恢复的主题论文调研；每一步和预算都以数据库记录为准。",
+}
+
 function ChatSurface({ emptyTitle, emptyDescription, placeholder, hero, runBar, mode, onModeChange, routingEnabled = false }: Omit<ChatThreadProps, "thread" | "onOpenRun" | "initialMode"> & { mode: ChatRouteMode; onModeChange: (mode: ChatRouteMode) => void }) {
   const messageCount = useAuiState((state) => state.thread.messages.length)
 
@@ -379,7 +385,7 @@ function ChatSurface({ emptyTitle, emptyDescription, placeholder, hero, runBar, 
             <p className="text-sm leading-6 text-muted-foreground md:text-base">{emptyDescription}</p>
           </div>
           <Composer placeholder={placeholder} hero mode={mode} onModeChange={onModeChange} routingEnabled={routingEnabled} />
-          <p className="text-center text-xs text-muted-foreground">{routingEnabled ? "深度研究将启动真实、可恢复的主题论文调研；每一步和预算都以数据库记录为准。" : "当前对话使用原有上下文契约。"}</p>
+          <p className="text-center text-xs text-muted-foreground" aria-live="polite">{routingEnabled ? modeHint[mode] : "当前对话使用原有上下文契约。"}</p>
         </div>
       </ThreadPrimitive.Root>
     )

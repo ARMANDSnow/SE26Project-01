@@ -5,6 +5,8 @@
 ## Current Status
 
 - 当前分支：`codex/agentic-research-refactor`；iter15 已完成本地提交，未 push。
+- iter15 已在隔离数据库副本上完成真实 `gpt-5.5-medium` 项目分析：成功 Run 为 7/7 步、3/3 provider 调用，五类项目 Artifact 全部完成；另完成普通 Chat 和约 22k token 全文 Paper Chat。桌面凭据只注入隔离进程，未打印或写入仓库。
+- 真实验证修复了 Run-derived metadata dependency hash 与 manual retry durable identity；修复后同一成功 Run 的 Planner/Cluster/Timeline 各恰好一次调用。严格 Cluster claim/Citation 校验曾拒绝一份不合法模型输出，证明语义关系 fail closed。
 - iter15 将 schema 升至 v9：新增 owner-only 研究项目/项目成员、`mode='project'` 七步 Run、项目级追加版本 Artifact、dependency ledger 和项目 Citation reference。fresh、v8→v9、v2→v9、失败回滚与伪造 v9 fail-closed 已覆盖。
 - “我的资料库”现可建立/编辑/归档/恢复项目，加入当前可访问的 Run、论文和固定 Report version，生成主题簇、时间线、可追溯关系图和验证结果。项目关系不扩大底层资源权限。
 - 项目 Artifact 写入事务内重验 project revision/fingerprint、active lease 与每条 dependency；读取时递归验证 DAG。新上游版本、item/Citation/Evidence/ACL/source hash 变化会 stale/inaccessible，不回退旧 completed；项目变更会在同一事务内 fence 活跃分析。
@@ -72,7 +74,7 @@ npm run build
 git diff --check
 ```
 
-结果：120 个后端测试通过；strict mypy 覆盖 57 个源文件并通过；前端生产构建通过。隔离端口 Playwright 为 9 passed、6 skipped：1440px、1024px、390px 覆盖项目创建/恢复、Coverage/Decision、主题簇/时间线/图谱、Citation→Evidence、版本、键盘/焦点、reduced-motion、无溢出与 44px，并保留 topic 17→7、Harness、Chat/Paper Chat 回归。iter15 未改动 arXiv/PDF/Docling 获取路径，未重复网络 smoke；本轮未获得新的付费调用授权，因此未运行项目分析真实模型 smoke。iter14 的两篇论文 17/17 真实基线仍保留。
+结果：122 个后端测试通过；strict mypy 覆盖 57 个源文件并通过；前端生产构建通过。隔离端口 Playwright 为 9 passed、6 skipped：1440px、1024px、390px 覆盖项目创建/恢复、Coverage/Decision、主题簇/时间线/图谱、Citation→Evidence、版本、键盘/焦点、reduced-motion、无溢出与 44px，并保留 topic 17→7、Harness、Chat/Paper Chat 回归。真实项目分析、普通 Chat 与 Paper Chat smoke 已完成；未重复 arXiv/PDF/Docling 网络获取。完整性审计为 49 个 valid 节点、55 条 valid 边、22 条有 Citation 的语义边、0 stale/inaccessible dependency、0 重复 model identity、0 外键违规。
 
 ## Known Risks
 
@@ -94,9 +96,9 @@ git diff --check
 
 ## Next Candidates
 
-1. 获得单独付费授权后，对 `gpt-5.5-medium` 项目七步分析运行一次可追溯真实 smoke。
-2. 建立 Cluster/Timeline/Graph Citation entailment/覆盖率 gold set、人工复核队列和报告导出前再验证。
-3. 引入可取消进程 worker/任务队列、ambiguous-call Decision、Redis Session 与用户级 Run/SSE/模型配额。
+1. 建立 Cluster/Timeline/Graph Citation entailment/覆盖率 gold set、人工复核队列和报告导出前再验证。
+2. 为首次严格模型输出失败提供更明确的“新建分析版本”解释，并增加真实 provider ambiguous-call 人工 Decision。
+3. 引入可取消进程 worker/任务队列、Redis Session 与用户级 Run/SSE/模型配额。
 4. 如需使用旧 116 篇本地论文，先设计可审查、不破坏的 v0 legacy 迁移，不要直接 reset。
 
 ## Git Notes

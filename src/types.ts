@@ -268,6 +268,7 @@ export type SynthesisPlan = {
 };
 
 export type CitedStatement = { statement_id: string; text: string; citation_keys: string[] };
+export type LandscapeCitedStatement = { text: string; citation_keys: string[] };
 export type ComparisonMatrix = {
   dimensions: string[];
   papers: Array<{ paper_id: number; title: string }>;
@@ -514,7 +515,7 @@ export type TopicCluster = {
   claim_ids: string[];
   citation_keys: string[];
   summary_citation_keys: string[];
-  distinguishing_features: CitedStatement[];
+  distinguishing_features: LandscapeCitedStatement[];
   uncertainties: string[];
   schema_version: number;
 };
@@ -543,7 +544,7 @@ export type ResearchTimelineEvent = {
 export type ResearchTimeline = {
   events: ResearchTimelineEvent[];
   periods: Array<{ period_id: string; date_range: { start: string; end: string }; title: string; description: string; event_ids: string[]; citation_keys: string[] }>;
-  turning_points: CitedStatement[];
+  turning_points: LandscapeCitedStatement[];
   unresolved_questions: string[];
   citation_keys: string[];
   schema_version: number;

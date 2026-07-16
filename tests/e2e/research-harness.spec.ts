@@ -96,6 +96,9 @@ function topicPapers(id: string) {
 }
 
 async function installTopicFixtures(page: Page, state: { status: string; title: string }) {
+  await page.route("**/api/research/projects/backlinks?**", async (route) => {
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [] }) })
+  })
   await page.route("**/api/research/runs/**", async (route) => {
     const url = new URL(route.request().url())
     const match = url.pathname.match(/\/api\/research\/runs\/([^/]+)/)

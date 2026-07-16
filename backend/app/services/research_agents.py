@@ -343,7 +343,10 @@ class TopicClusteringAgent:
                 "Build topic clusters using only the supplied paper, claim, and citation aliases. Every factual "
                 "summary and distinguishing feature must cite one or more supplied valid citation aliases. A paper "
                 "may belong to multiple clusters only when citations support the membership. Put unsupported papers "
-                "in unclassified_paper_ids and uncertainty text; never infer relationships from title similarity."
+                "in unclassified_paper_ids and uncertainty text; never infer relationships from title similarity. "
+                "You may leave claim_ids empty. If a cluster includes a claim_id, at least one citation alias in that "
+                "same cluster must have exactly that claim_id. Do not attach a cross-paper claim to a single-paper "
+                "cluster unless the cluster citations directly map to that claim."
             ),
             input_data={"plan": plan.model_dump(mode="json"), **inputs},
         )
@@ -362,7 +365,10 @@ class TimelineAgent:
                 "Build a research timeline using only supplied publication metadata and valid citation aliases. "
                 "Publication events may use authoritative dates without a citation. Claims that work proposed, "
                 "improved, contradicted, continued, influenced, or became a turning point require supplied citations. "
-                "Do not infer influence from publication order."
+                "Do not infer influence from publication order. For each publication event, copy exactly one supplied "
+                "paper_id and its published_at into date; use no claim_ids or citation_keys. For every other event, "
+                "each claim_id must equal the claim_id of at least one citation alias on that same event. Periods and "
+                "turning points require supplied citation aliases; omit them when the evidence is insufficient."
             ),
             input_data={"plan": plan.model_dump(mode="json"), **inputs},
         )

@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react"
-import { ArrowLeft, ExternalLink, Loader2, Quote } from "lucide-react"
+import { ArrowLeft, ExternalLink, FolderKanban, Loader2, Quote } from "lucide-react"
 import { Link, Navigate, useParams } from "react-router"
 import { AddToProjectDialog } from "@/components/research/add-to-project-dialog"
 import { AppEmptyState } from "@/components/common/empty-state"
@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import {
   useResearchArtifactsQuery, useResearchCitationEvidenceQuery, useResearchCitationsQuery,
-  useResearchReportsQuery, useResearchRunQuery,
+  useResearchProjectBacklinksQuery, useResearchReportsQuery, useResearchRunQuery,
 } from "@/lib/query-hooks"
 import type { ComparisonMatrix, ResearchCitation, ResearchReport, SynthesisClaims } from "@/types"
 
@@ -32,11 +32,16 @@ export function ResearchReportPage() {
   const reports = useResearchReportsQuery(runId)
   const artifacts = useResearchArtifactsQuery(runId)
   const citations = useResearchCitationsQuery(runId)
+  const reportArtifact = reports.data?.find((item) => item.version === reportVersion)
+  const backlinks = useResearchProjectBacklinksQuery(
+    { item_type: "research_report", artifact_id: reportArtifact?.id ?? "", artifact_version: reportVersion },
+    Boolean(reportArtifact?.id && Number.isInteger(reportVersion) && reportVersion > 0),
+  )
   const [view, setView] = useState<View>("report")
   const [section, setSection] = useState("summary")
   if (!runId || !Number.isInteger(reportVersion) || reportVersion < 1) return <Navigate to="/library?view=reports" replace />
   if (run.isLoading || reports.isLoading || artifacts.isLoading || citations.isLoading) return <LoadingState label="正在读取固定版本报告" skeleton />
-  const artifact = reports.data?.find((item) => item.version === reportVersion)
+  const artifact = reportArtifact
   if (run.isError || reports.isError || !artifact || !isReport(artifact.content)) return <AppEmptyState title="无法打开报告" description="报告可能不存在、已无权访问，或当前版本已隐藏事实内容。" action={<Button asChild variant="outline" className="min-h-11"><Link to="/library?view=reports">返回报告列表</Link></Button>} />
   if (!artifact.is_current) return <section className="grid min-w-0 gap-5"><Button asChild variant="ghost" className="min-h-11 w-fit px-2"><Link to={`/runs/${runId}`}><ArrowLeft className="size-4" />返回调研任务</Link></Button><div className="rounded-xl border border-[var(--status-waiting)] bg-[var(--status-waiting-bg)] p-5"><h1 className="text-xl font-semibold">历史报告 v{artifact.version}</h1><p className="mt-2 text-sm leading-6">该固定版本的上游引用、证据或内容版本已变化。为避免将失效事实伪装成当前结论，正文、对比、主张和引用已隐藏。</p><Button asChild variant="outline" className="mt-4 min-h-11"><Link to={`/runs/${runId}`}>查看任务状态并重新生成</Link></Button></div></section>
   const report = artifact.content
@@ -48,6 +53,7 @@ export function ResearchReportPage() {
   const reportCitations = (citations.data ?? []).filter((item) => item.artifact_version === sourceVersions.citation_registry)
   return <section className="grid min-w-0 gap-5">
     <div className="flex min-w-0 flex-wrap items-start justify-between gap-3"><div className="min-w-0"><Button asChild variant="ghost" className="min-h-11 px-2"><Link to={`/runs/${runId}`}><ArrowLeft className="size-4" />返回调研任务</Link></Button><div className="mt-2 flex min-w-0 flex-wrap items-center gap-2"><h1 className="break-words text-2xl font-semibold [overflow-wrap:anywhere]">{report.title}</h1><Badge variant="outline">v{artifact.version}</Badge><Badge variant={artifact.is_current ? "secondary" : "outline"}>{artifact.is_current ? "当前有效" : "历史/已失效"}</Badge></div><p className="mt-2 break-words text-sm text-muted-foreground">{report.topic} · 来源任务：{run.data?.title ?? runId}</p></div><AddToProjectDialog item={{ item_type: "research_report", artifact_id: artifact.id, artifact_version: artifact.version }} /></div>
+    <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground"><FolderKanban className="size-4" /><span>所属研究项目：</span>{backlinks.isLoading ? <span>正在读取…</span> : (backlinks.data ?? []).length ? backlinks.data?.map((item) => <Button key={item.project_id} asChild variant="link" className="h-auto min-h-11 px-1"><Link to={`/library/projects/${item.project_id}`}>{item.project_title}</Link></Button>) : <span>尚未加入</span>}</div>
     <div className="sm:hidden"><Label htmlFor="report-view">报告内容</Label><Select value={view} onValueChange={(value) => setView(value as View)}><SelectTrigger id="report-view" className="mt-2 min-h-11 w-full"><SelectValue /></SelectTrigger><SelectContent>{views.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select></div>
     <div className="hidden grid-cols-4 rounded-xl bg-muted p-1 sm:grid" role="tablist" aria-label="报告内容">{views.map((item) => <button key={item.value} id={`report-tab-${item.value}`} type="button" role="tab" aria-controls="report-tabpanel" aria-selected={view === item.value} tabIndex={view === item.value ? 0 : -1} className="min-h-11 rounded-lg px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-selected:bg-background aria-selected:shadow-sm" onClick={() => setView(item.value)}>{item.label}</button>)}</div>
     <div id="report-tabpanel" role="tabpanel" aria-labelledby={`report-tab-${view}`}>

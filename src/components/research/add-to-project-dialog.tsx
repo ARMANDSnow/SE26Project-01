@@ -30,7 +30,7 @@ export function AddToProjectDialog({ item, children }: { item: ResearchProjectIt
           {projects.isLoading || backlinks.isLoading ? <p className="flex items-center gap-2 py-4 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin motion-reduce:animate-none" />正在读取项目</p> : null}
           {projects.isError || backlinks.isError ? <p role="alert" className="rounded-lg border border-destructive/40 p-3 text-sm text-destructive">项目读取失败，未假定资料已经加入。</p> : null}
           {(projects.data ?? []).map((project) => (
-            <ProjectChoice key={project.id} projectId={project.id} title={project.title} description={project.description} item={item} linked={linked.has(project.id)} />
+            <ProjectChoice key={project.id} projectId={project.id} title={project.title} description={project.description} item={item} linked={linked.has(project.id)} onAdded={() => setOpen(false)} />
           ))}
           {!projects.isLoading && !projects.isError && !(projects.data?.length) ? <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">还没有可编辑的研究项目。请先在“我的资料库”创建项目。</p> : null}
         </div>
@@ -39,8 +39,8 @@ export function AddToProjectDialog({ item, children }: { item: ResearchProjectIt
   )
 }
 
-function ProjectChoice({ projectId, title, description, item, linked }: {
-  projectId: string; title: string; description: string; item: ResearchProjectItemInput; linked: boolean
+function ProjectChoice({ projectId, title, description, item, linked, onAdded }: {
+  projectId: string; title: string; description: string; item: ResearchProjectItemInput; linked: boolean; onAdded: () => void
 }) {
   const mutation = useAddResearchProjectItemMutation(projectId)
   return (
@@ -48,7 +48,10 @@ function ProjectChoice({ projectId, title, description, item, linked }: {
       type="button"
       disabled={linked || mutation.isPending}
       onClick={() => mutation.mutate(item, {
-        onSuccess: () => toast.success(`已加入“${title}”。`),
+        onSuccess: () => {
+          toast.success(`已加入“${title}”。`)
+          onAdded()
+        },
         onError: () => toast.error("加入项目失败；资料权限或项目状态可能已变化。"),
       })}
       className="flex min-h-14 w-full min-w-0 items-center gap-3 rounded-xl border px-3 py-2 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"

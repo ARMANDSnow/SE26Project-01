@@ -217,12 +217,7 @@ export async function fetchResearchProjectBacklinks(item: ResearchProjectItemInp
     params.set("artifact_version", String(item.artifact_version))
   }
   const data = await request<{ items: ResearchProjectBacklink[] }>(`/api/research/projects/backlinks?${params}`)
-  return data.items.map((item) => ({
-    project_id: (item as unknown as { id: string }).id,
-    project_title: (item as unknown as { title: string }).title,
-    project_status: (item as unknown as { status: ResearchProjectBacklink["project_status"] }).status,
-    item_id: item.item_id,
-  }))
+  return data.items
 }
 
 export async function fetchResearchReportLibrary(): Promise<ResearchReportLibraryItem[]> {

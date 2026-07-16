@@ -46,7 +46,8 @@ Router -> Service -> Repository -> SQLite
 - `mode='project'` 使用独立七步 `project.*` namespace，复用 Run/Step/Event/Decision/lease/SSE 状态机，不落入 Harness 或改变 topic 17 步。项目 title/item/order/status 变更在事务内递增 revision 并设置 `requested_action=cancel`，使旧 lease 立即失去写权。
 - 项目 Artifact 按 `(project_id, artifact_type)` 追加版本，`research_artifact_dependencies` 固定 project item、upstream Artifact/version/content hash、Citation/Evidence UUID 和 paper/source hash。写入事务内重算 revision/fingerprint 并逐条复验 dependency；读取时递归校验整个 DAG。最高版本 stale/inaccessible 时不回退旧 completed。
 - `LandscapePlannerAgent`、`TopicClusteringAgent`、`TimelineAgent` 只接收服务端编制的 Paper/Claim/Citation 白名单；Graph construction 与 `GraphValidationAgent` 为确定性服务。Cluster 事实、Timeline 语义事件、Graph 语义边必须有当前有效 Citation；publication/precedes 仅表达已验证日期和时间排序。
-- 项目模型 operation identity 绑定 project revision、input fingerprint、step idempotency 和 schema/model；provider 结果与该次预算结算在一个事务内完成。`started/ambiguous` 仍 fail closed，不隐式发出第二次付费请求。
+- 项目模型 operation identity 绑定 project revision、input fingerprint、canonical step idempotency 和 schema/model；手动 retry 的随机 UI suffix 不进入付费 operation identity，因此已完成调用可安全复用。provider 结果与该次预算结算在一个事务内完成；`started/ambiguous` 仍 fail closed，不隐式发出第二次付费请求。
+- Run-derived paper metadata dependency 固定仓储生成的 canonical metadata hash，不使用分析输入对象的临时摘要 hash；否则当前论文会被错误投影为 stale。该约束由 repository 回归测试覆盖。
 
 ## Transitional Compatibility
 
