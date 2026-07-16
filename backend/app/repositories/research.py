@@ -5,6 +5,8 @@ import sqlite3
 import uuid
 from typing import Any, cast
 
+from .uploads import paper_is_accessible
+
 
 RUN_STATUSES = {
     "queued",
@@ -99,6 +101,10 @@ def _insert_event(
     step_id: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> int:
+    from .research_data import assert_safe_research_payload
+
+    assert_safe_research_payload(summary)
+    assert_safe_research_payload(payload or {})
     cursor = conn.execute(
         """
         INSERT INTO research_events(run_id, step_id, event_type, summary, payload_json)
@@ -205,6 +211,78 @@ def insert_harness_run(
     return run_id
 
 
+def insert_topic_research_run(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    title: str,
+    goal: str,
+    thread_id: str,
+    run_id: str | None = None,
+) -> str:
+    """Insert a real topic-research workflow inside the caller's transaction."""
+
+    owner = conn.execute(
+        "SELECT 1 FROM chat_threads WHERE id = ? AND user_id = ? AND paper_id IS NULL",
+        (thread_id, user_id),
+    ).fetchone()
+    if owner is None:
+        raise ResearchNotFoundError("conversation not found")
+    from .research_data import DEFAULT_TOPIC_BUDGET, DEFAULT_TOPIC_USAGE
+
+    run_id = run_id or str(uuid.uuid4())
+    steps: tuple[tuple[str, str, str, str, list[str], int], ...] = (
+        ("brief", "topic.brief", "理解研究目标", "Coordinator Agent", [], 1),
+        ("query_planning", "topic.query_planning", "制定检索计划", "Search Agent", ["brief"], 1),
+        ("local_search", "topic.local_search", "检索本地论文库", "Search Agent", ["query_planning"], 2),
+        ("arxiv_search", "topic.arxiv_search", "搜索 arXiv 候选", "Search Agent", ["query_planning"], 3),
+        ("dedup_import", "topic.dedup_import", "去重并导入候选", "Search Agent", ["local_search", "arxiv_search"], 2),
+        ("screening", "topic.screening", "筛选候选论文", "Screening Agent", ["dedup_import"], 2),
+        ("fulltext_acquisition", "topic.fulltext", "获取并解析全文", "Reader Agent", ["screening"], 3),
+        ("reading", "topic.reading", "检索正文与定位证据", "Reader Agent", ["fulltext_acquisition"], 2),
+        ("extraction", "topic.extraction", "抽取结构化阅读卡", "Extraction Agent", ["reading"], 2),
+        ("finalize_dataset", "topic.finalize", "完成调研数据集", "Coordinator Agent", ["extraction"], 1),
+    )
+    conn.execute(
+        """
+        INSERT INTO research_runs(
+            id, user_id, thread_id, title, goal, mode, budget_json, usage_json
+        ) VALUES (?, ?, ?, ?, ?, 'topic', ?, ?)
+        """,
+        (run_id, user_id, thread_id, title, goal, _json(DEFAULT_TOPIC_BUDGET), _json(DEFAULT_TOPIC_USAGE)),
+    )
+    for position, (key, step_type, step_title, agent, dependencies, max_attempts) in enumerate(steps):
+        conn.execute(
+            """
+            INSERT INTO research_steps(
+                id, run_id, step_key, step_type, title, agent_name, position,
+                depends_on_json, input_json, max_attempts, idempotency_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                run_id,
+                key,
+                step_type,
+                step_title,
+                agent,
+                position,
+                _json(dependencies),
+                _json({"goal": goal} if key == "brief" else {}),
+                max_attempts,
+                f"topic:{key}:v1",
+            ),
+        )
+    _insert_event(
+        conn,
+        run_id,
+        "run.created",
+        "主题调研任务已创建",
+        payload={"mode": "topic", "step_count": len(steps)},
+    )
+    return run_id
+
+
 def list_runs(conn: sqlite3.Connection, user_id: int, *, limit: int = 100) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
@@ -254,7 +332,18 @@ def get_run_snapshot(conn: sqlite3.Connection, run_id: str, user_id: int) -> dic
             (run_id, user_id),
         ).fetchone()
         result = _run_row(run)
-        result["steps"] = [_public_step_row(row) for row in steps]
+        public_steps = [_public_step_row(row) for row in steps]
+        for step in public_steps:
+            output = step["output"]
+            evidence_refs = output.get("evidence_refs") if isinstance(output, dict) else None
+            if isinstance(evidence_refs, dict):
+                output["evidence_refs"] = {
+                    paper_id: refs
+                    for paper_id, refs in evidence_refs.items()
+                    if str(paper_id).isdigit()
+                    and paper_is_accessible(conn, int(paper_id), user_id)
+                }
+        result["steps"] = public_steps
         result["decisions"] = [_decision_row(row) for row in decisions]
         result["latest_event_id"] = int(latest["latest_event_id"] if latest else 0)
         conn.commit()
@@ -282,7 +371,13 @@ def list_events(
         """,
         (run_id, user_id, after_id, limit),
     ).fetchall()
-    return [_event_row(row) for row in rows]
+    events = [_event_row(row) for row in rows]
+    for event in events:
+        payload = event.get("payload", {})
+        paper_id = payload.get("paper_id") if isinstance(payload, dict) else None
+        if isinstance(paper_id, int) and not paper_is_accessible(conn, paper_id, user_id):
+            event["payload"] = {"paper_withdrawn": True}
+    return events
 
 
 def request_action(
@@ -353,7 +448,12 @@ def resume_run(conn: sqlite3.Connection, run_id: str, user_id: int) -> dict[str,
         )
         if cursor.rowcount != 1:
             raise ResearchConflictError("research run changed; retry the request")
-        _insert_event(conn, run_id, "run.resumed", "Research Harness 已继续")
+        _insert_event(
+            conn,
+            run_id,
+            "run.resumed",
+            "主题调研已继续" if str(run["mode"]) == "topic" else "Research Harness 已继续",
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -389,7 +489,12 @@ def retry_run(conn: sqlite3.Connection, run_id: str, user_id: int) -> dict[str, 
         )
         if cursor.rowcount != 1:
             raise ResearchConflictError("research run changed; retry the request")
-        _insert_event(conn, run_id, "run.retried", "Research Harness 已重试")
+        _insert_event(
+            conn,
+            run_id,
+            "run.retried",
+            "主题调研已从检查点重试" if str(run["mode"]) == "topic" else "Research Harness 已重试",
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -423,6 +528,21 @@ def resolve_decision(
         valid_ids = {str(item.get("id")) for item in options if isinstance(item, dict)}
         if option_id not in valid_ids:
             raise ValueError("unknown decision option")
+        selected_option = next(
+            (item for item in options if isinstance(item, dict) and str(item.get("id")) == option_id),
+            None,
+        )
+        decision_action = "resume"
+        if isinstance(selected_option, dict) and selected_option.get("action") is not None:
+            # Local import avoids a repository module cycle while keeping the
+            # state transition and budget mutation in this transaction.
+            from .research_data import apply_budget_decision
+
+            decision_action = apply_budget_decision(
+                conn,
+                decision_row=row,
+                option=selected_option,
+            )
         cursor = conn.execute(
             f"""
             UPDATE research_decisions
@@ -434,10 +554,40 @@ def resolve_decision(
         if cursor.rowcount != 1:
             raise ResearchConflictError("decision changed; retry the request")
         run_id = str(row["run_id"])
+        if decision_action == "stop":
+            conn.execute(
+                f"""
+                UPDATE research_steps
+                SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL,
+                    heartbeat_at = NULL, completed_at = {_NOW}, updated_at = {_NOW}
+                WHERE run_id = ? AND status IN ('queued', 'waiting_input', 'paused')
+                """,
+                (run_id,),
+            )
+            conn.execute(
+                f"""
+                UPDATE research_runs
+                SET status = 'cancelled', requested_action = NULL,
+                    state_version = state_version + 1, updated_at = {_NOW}, completed_at = {_NOW}
+                WHERE id = ? AND user_id = ? AND status = 'waiting_input'
+                """,
+                (run_id, user_id),
+            )
+            _insert_event(
+                conn,
+                run_id,
+                "run.cancelled",
+                "调研任务已按预算决策停止",
+                step_id=str(row["step_id"]) if row["step_id"] else None,
+                payload={"decision_id": decision_id, "option_id": option_id},
+            )
+            conn.commit()
+            return get_run_snapshot(conn, run_id, user_id)
         if row["step_id"] is not None:
             step_cursor = conn.execute(
                 f"""
-                UPDATE research_steps SET status = 'queued', updated_at = {_NOW}
+                UPDATE research_steps
+                SET status = 'queued', max_attempts = max_attempts + 1, updated_at = {_NOW}
                 WHERE id = ? AND run_id = ? AND status = 'waiting_input'
                 """,
                 (row["step_id"], run_id),
@@ -546,7 +696,7 @@ def recover_expired_leases(conn: sqlite3.Connection) -> int:
                 f"""
                 UPDATE research_steps
                 SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
-                    heartbeat_at = NULL, updated_at = {_NOW}
+                    heartbeat_at = NULL, max_attempts = max_attempts + 1, updated_at = {_NOW}
                 WHERE id = ? AND status = 'running' AND lease_expires_at <= {_NOW}
                 """,
                 (row["id"],),
@@ -578,12 +728,16 @@ def claim_next_step(
             SELECT s.* FROM research_steps s
             JOIN research_runs r ON r.id = s.run_id
             WHERE s.status = 'queued'
+              AND s.attempt_count < s.max_attempts
               AND r.status IN ('queued', 'running')
               AND r.requested_action IS NULL
               AND NOT EXISTS (
-                  SELECT 1 FROM research_steps prior
-                  WHERE prior.run_id = s.run_id AND prior.position < s.position
-                    AND prior.status != 'completed'
+                  SELECT 1 FROM json_each(s.depends_on_json) dependency
+                  LEFT JOIN research_steps prior
+                    ON prior.run_id = s.run_id
+                   AND prior.plan_version = s.plan_version
+                   AND prior.step_key = dependency.value
+                  WHERE prior.id IS NULL OR prior.status != 'completed'
               )
             ORDER BY r.created_at, s.position
             LIMIT 1
@@ -669,11 +823,14 @@ def finish_step(
     lease_generation: int,
     output: dict[str, Any],
 ) -> bool:
+    from .research_data import assert_safe_research_payload
+
+    assert_safe_research_payload(output)
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
             f"""
-            SELECT s.*, r.requested_action FROM research_steps s
+            SELECT s.*, r.requested_action, r.mode AS run_mode FROM research_steps s
             JOIN research_runs r ON r.id = s.run_id
             WHERE s.id = ? AND s.status = 'running' AND s.lease_owner = ?
               AND s.lease_generation = ? AND s.lease_expires_at > {_NOW}
@@ -734,7 +891,11 @@ def finish_step(
                 conn,
                 run_id,
                 f"run.{run_status}",
-                f"Research Harness 已{'取消' if run_status == 'cancelled' else '暂停'}",
+                (
+                    f"主题调研已{'取消' if run_status == 'cancelled' else '暂停'}"
+                    if str(row["run_mode"]) == "topic"
+                    else f"Research Harness 已{'取消' if run_status == 'cancelled' else '暂停'}"
+                ),
                 step_id=step_id,
             )
             conn.commit()
@@ -759,7 +920,11 @@ def finish_step(
             "step.completed",
             f"{row['title']} 已完成",
             step_id=step_id,
-            payload={"step_key": row["step_key"], "scaffold_only": True},
+            payload={
+                "step_key": row["step_key"],
+                "mode": str(row["run_mode"]),
+                "scaffold_only": str(row["run_mode"]) == "harness",
+            },
         )
         remaining = conn.execute(
             "SELECT COUNT(*) AS count FROM research_steps WHERE run_id = ? AND status != 'completed'",
@@ -779,8 +944,13 @@ def finish_step(
                 conn,
                 run_id,
                 "run.completed",
-                "Research Harness 骨架流程已完成",
-                payload={"scaffold_only": True, "research_claims": 0},
+                "Research Harness 骨架流程已完成"
+                if str(row["run_mode"]) == "harness"
+                else "主题调研数据集已完成",
+                payload={
+                    "mode": str(row["run_mode"]),
+                    "scaffold_only": str(row["run_mode"]) == "harness",
+                },
             )
         else:
             conn.execute(
@@ -806,12 +976,21 @@ def fail_step(
     # Provider bodies, local paths and credentials must not become durable
     # Research state. Keep the public failure useful without echoing the cause.
     del error_message
-    safe_message = "Harness step failed; retry the run or inspect server logs."
+    public_messages = {
+        "llm_configuration_unavailable": "主题调研需要真实模型配置；当前 LLM_API_KEY 未配置。",
+        "structured_model_output_invalid": "模型输出未通过严格结构校验，未写入调研数据。",
+        "tool_timeout": "研究工具执行超时，可从检查点重试。",
+        "research_dataset_empty": "没有有效 Paper Brief，不能完成调研数据集。",
+    }
+    safe_message = public_messages.get(
+        error_code,
+        "Research step failed; retry the run or inspect the safe error code.",
+    )
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
             f"""
-            SELECT s.run_id, s.title, r.requested_action
+            SELECT s.run_id, s.title, r.requested_action, r.mode AS run_mode
             FROM research_steps s JOIN research_runs r ON r.id = s.run_id
             WHERE s.id = ? AND s.status = 'running' AND s.lease_owner = ?
               AND s.lease_generation = ? AND s.lease_expires_at > {_NOW}
@@ -868,7 +1047,11 @@ def fail_step(
                 conn,
                 run_id,
                 f"run.{run_status}",
-                f"Research Harness 已{'取消' if run_status == 'cancelled' else '暂停'}",
+                (
+                    f"主题调研已{'取消' if run_status == 'cancelled' else '暂停'}"
+                    if str(row["run_mode"]) == "topic"
+                    else f"Research Harness 已{'取消' if run_status == 'cancelled' else '暂停'}"
+                ),
                 step_id=step_id,
             )
             conn.commit()

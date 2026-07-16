@@ -7,6 +7,7 @@ import re
 import xml.etree.ElementTree as ET
 
 from ...models import PaperCandidate, PaperSource
+from ..research_contracts import canonical_arxiv_id
 
 
 ARXIV_API = "https://export.arxiv.org/api/query"
@@ -19,22 +20,22 @@ def _clean_text(value: str | None) -> str:
 
 def _entry_to_paper(entry: ET.Element) -> PaperCandidate:
     raw_id = _clean_text(entry.findtext(f"{ATOM}id"))
-    source_id = raw_id.rstrip("/").split("/")[-1]
+    source_id = canonical_arxiv_id(raw_id)
     authors = [_clean_text(author.findtext(f"{ATOM}name")) for author in entry.findall(f"{ATOM}author")]
     categories = [item.attrib.get("term", "") for item in entry.findall(f"{ATOM}category") if item.attrib.get("term")]
     pdf_url = ""
     landing_url = raw_id
     for link in entry.findall(f"{ATOM}link"):
         if link.attrib.get("title") == "pdf":
-            pdf_url = link.attrib.get("href", "")
+            pdf_url = link.attrib.get("href", "").replace("http://", "https://", 1)
         if link.attrib.get("rel") == "alternate":
-            landing_url = link.attrib.get("href", landing_url)
+            landing_url = link.attrib.get("href", landing_url).replace("http://", "https://", 1)
     published = _clean_text(entry.findtext(f"{ATOM}published"))[:10] or datetime.utcnow().date().isoformat()
     updated = _clean_text(entry.findtext(f"{ATOM}updated"))[:10]
     return PaperCandidate(
         source=PaperSource.ARXIV,
         source_id=source_id,
-        source_url=landing_url or f"https://arxiv.org/abs/{source_id}",
+        source_url=(landing_url or f"https://arxiv.org/abs/{source_id}").replace("http://", "https://", 1),
         title=_clean_text(entry.findtext(f"{ATOM}title")),
         authors=tuple(author for author in authors if author),
         abstract=_clean_text(entry.findtext(f"{ATOM}summary")),

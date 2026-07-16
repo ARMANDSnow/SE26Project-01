@@ -5,12 +5,20 @@ from pathlib import Path
 from typing import Any
 
 from .connection import connect
-from .migrations import V3_MIGRATION, V4_MIGRATION, V5_MIGRATION, V6_MIGRATION, apply_migrations
+from .migrations import (
+    V3_MIGRATION,
+    V4_MIGRATION,
+    V5_MIGRATION,
+    V6_MIGRATION,
+    V7_MIGRATION,
+    apply_migrations,
+)
 from .migrations.v5 import RESEARCH_SCHEMA_SQL
+from .migrations.v7 import RESEARCH_DATA_SCHEMA_SQL
 
 
 PAPER_CHUNKS_FTS_TABLE = "paper_chunks_fts"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class IncompatibleSchemaError(RuntimeError):
@@ -30,6 +38,130 @@ def _schema_reset_command(conn: sqlite3.Connection) -> str:
     row = conn.execute("PRAGMA database_list").fetchone()
     path = str(row[2]) if row is not None and row[2] else "<database-path>"
     return f'python scripts/reset_database.py --database "{path}" --apply'
+
+
+def _table_sql(conn: sqlite3.Connection, table: str) -> str:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return " ".join(str(row[0] or "").lower().split()) if row is not None else ""
+
+
+def _index_signature(conn: sqlite3.Connection, table: str) -> dict[str, tuple[int, tuple[str, ...]]]:
+    result: dict[str, tuple[int, tuple[str, ...]]] = {}
+    for row in conn.execute(f"PRAGMA index_list({table})").fetchall():
+        name = str(row[1])
+        columns = tuple(
+            str(item[2]) for item in conn.execute(f'PRAGMA index_info("{name}")').fetchall()
+        )
+        result[name] = (int(row[2]), columns)
+    return result
+
+
+def _assert_research_data_schema(conn: sqlite3.Connection) -> None:
+    artifact_rows = conn.execute("PRAGMA table_info(research_artifacts)").fetchall()
+    paper_rows = conn.execute("PRAGMA table_info(research_run_papers)").fetchall()
+    artifact_specs = {
+        str(row[1]): (str(row[2]).upper(), int(row[3]), int(row[5])) for row in artifact_rows
+    }
+    paper_specs = {
+        str(row[1]): (str(row[2]).upper(), int(row[3]), int(row[5])) for row in paper_rows
+    }
+    expected_artifact = {
+        "id": ("TEXT", 0, 1),
+        "run_id": ("TEXT", 1, 0),
+        "paper_id": ("INTEGER", 0, 0),
+        "artifact_type": ("TEXT", 1, 0),
+        "schema_version": ("INTEGER", 1, 0),
+        "source_step_id": ("TEXT", 1, 0),
+        "version": ("INTEGER", 1, 0),
+        "status": ("TEXT", 1, 0),
+        "content_json": ("TEXT", 1, 0),
+        "source_hash": ("TEXT", 0, 0),
+        "idempotency_key": ("TEXT", 1, 0),
+        "content_hash": ("TEXT", 1, 0),
+        "created_at": ("TEXT", 1, 0),
+        "updated_at": ("TEXT", 1, 0),
+    }
+    expected_paper = {
+        "run_id": ("TEXT", 1, 1),
+        "paper_id": ("INTEGER", 1, 2),
+        "source_step_id": ("TEXT", 0, 0),
+        "stage": ("TEXT", 1, 0),
+        "rank": ("INTEGER", 0, 0),
+        "score": ("REAL", 0, 0),
+        "inclusion_reason": ("TEXT", 0, 0),
+        "exclusion_reason": ("TEXT", 0, 0),
+        "source": ("TEXT", 1, 0),
+        "source_id": ("TEXT", 1, 0),
+        "source_hash": ("TEXT", 0, 0),
+        "created_at": ("TEXT", 1, 0),
+        "updated_at": ("TEXT", 1, 0),
+    }
+    artifact_fks = {
+        (str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper())
+        for row in conn.execute("PRAGMA foreign_key_list(research_artifacts)").fetchall()
+    }
+    paper_fks = {
+        (str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper())
+        for row in conn.execute("PRAGMA foreign_key_list(research_run_papers)").fetchall()
+    }
+    artifact_indexes = _index_signature(conn, "research_artifacts")
+    paper_indexes = _index_signature(conn, "research_run_papers")
+    artifact_sql = _table_sql(conn, "research_artifacts")
+    paper_sql = _table_sql(conn, "research_run_papers")
+    if (
+        artifact_specs != expected_artifact
+        or paper_specs != expected_paper
+        or not {
+            ("run_id", "research_runs", "id", "CASCADE"),
+            ("paper_id", "papers", "id", "CASCADE"),
+            ("source_step_id", "research_steps", "id", "CASCADE"),
+        }.issubset(artifact_fks)
+        or not {
+            ("run_id", "research_runs", "id", "CASCADE"),
+            ("paper_id", "papers", "id", "CASCADE"),
+            ("source_step_id", "research_steps", "id", "SET NULL"),
+        }.issubset(paper_fks)
+        or artifact_indexes.get("idx_research_artifacts_run_type") != (
+            0,
+            ("run_id", "artifact_type", "version"),
+        )
+        or artifact_indexes.get("idx_research_artifacts_paper") != (
+            0,
+            ("paper_id", "artifact_type", "version"),
+        )
+        or paper_indexes.get("idx_research_run_papers_stage") != (
+            0,
+            ("run_id", "stage", "rank", "paper_id"),
+        )
+        or paper_indexes.get("idx_research_run_papers_source") != (
+            0,
+            ("source", "source_id", "source_hash"),
+        )
+        or "unique(run_id, artifact_type, version)" not in artifact_sql
+        or "unique(run_id, idempotency_key)" not in artifact_sql
+        or "check(json_valid(content_json))" not in artifact_sql
+        or "check(artifact_type in ( 'research_brief', 'search_queries', 'candidate_papers', 'screening_result', 'paper_brief', 'extraction_result' ))" not in artifact_sql
+        or "check(schema_version >= 1)" not in artifact_sql
+        or "check(version >= 1)" not in artifact_sql
+        or "check(status in ('draft', 'completed', 'failed', 'stale'))" not in artifact_sql
+        or "check(artifact_type != 'paper_brief' or ( paper_id is not null and length(trim(coalesce(source_hash, ''))) = 64 ))" not in artifact_sql
+        or "primary key(run_id, paper_id)" not in paper_sql
+        or "unique(run_id, source, source_id)" not in paper_sql
+        or "'candidate', 'selected', 'excluded', 'fulltext_ready', 'read', 'extracted'"
+        not in paper_sql
+        or "check(rank is null or rank > 0)" not in paper_sql
+        or "check(score is null or (score >= 0 and score <= 1))" not in paper_sql
+        or "check(stage != 'excluded' or length(trim(coalesce(exclusion_reason, ''))) > 0)" not in paper_sql
+        or "check(stage not in ('selected', 'fulltext_ready', 'read', 'extracted') or length(trim(coalesce(inclusion_reason, ''))) > 0)" not in paper_sql
+        or "check(stage not in ('fulltext_ready', 'read', 'extracted') or (length(trim(coalesce(source_hash, ''))) = 64 and source_hash not glob '*[^0-9a-f]*'))" not in paper_sql
+    ):
+        raise IncompatibleSchemaError(
+            f"Database topic research schema does not match version {SCHEMA_VERSION}; "
+            f"rebuild it with: {_schema_reset_command(conn)}"
+        )
 
 
 def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
@@ -160,6 +292,7 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
             f"Database research event schema does not match version {SCHEMA_VERSION}; rebuild it with: "
             f"{_schema_reset_command(conn)}"
         )
+    _assert_research_data_schema(conn)
 
 
 def supports_fts5(conn: sqlite3.Connection) -> bool:
@@ -277,10 +410,10 @@ def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = No
 def init_schema(conn: sqlite3.Connection) -> None:
     tables = _schema_tables(conn)
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    if tables and version in {2, 3, 4, 5}:
+    if tables and version in {2, 3, 4, 5, 6}:
         apply_migrations(
             conn,
-            [V3_MIGRATION, V4_MIGRATION, V5_MIGRATION, V6_MIGRATION],
+            [V3_MIGRATION, V4_MIGRATION, V5_MIGRATION, V6_MIGRATION, V7_MIGRATION],
             target_version=SCHEMA_VERSION,
         )
     _assert_schema_compatible(conn)
@@ -513,6 +646,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.executescript(RESEARCH_SCHEMA_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ").replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ").replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS "))
+    conn.executescript(RESEARCH_DATA_SCHEMA_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ").replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ").replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS "))
     init_paper_chunks_fts(conn)
     rebuild_paper_chunks_fts(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

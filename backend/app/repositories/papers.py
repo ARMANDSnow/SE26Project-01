@@ -73,49 +73,9 @@ def find_existing_paper_id(conn: sqlite3.Connection, paper: PaperCandidate) -> P
 
 
 def upsert_paper(conn: sqlite3.Connection, paper: PaperCandidate, commit: bool = True) -> PaperId:
-    existing_id = find_existing_paper_id(conn, paper)
-    if existing_id is not None:
-        identity_row = conn.execute(
-            "SELECT asset_id FROM papers WHERE id = ?",
-            (int(existing_id),),
-        ).fetchone()
-        conn.execute(
-            """
-            UPDATE papers SET
-                title = ?,
-                authors_json = ?,
-                abstract = ?,
-                categories_json = ?,
-                primary_category = ?,
-                published_at = ?,
-                updated_at = ?,
-                pdf_url = COALESCE(?, pdf_url),
-                source_url = COALESCE(?, source_url),
-                venue = COALESCE(?, venue),
-                asset_id = asset_id
-            WHERE id = ?
-            """,
-            (
-                paper.title,
-                json.dumps(paper.authors, ensure_ascii=False),
-                paper.abstract,
-                json.dumps(paper.categories, ensure_ascii=False),
-                paper.primary_category,
-                paper.published_at,
-                paper.updated_at,
-                paper.pdf_url,
-                paper.source_url,
-                paper.venue,
-                int(existing_id),
-            ),
-        )
-        if paper.asset_id and identity_row is not None and identity_row["asset_id"] != str(paper.asset_id):
-            set_paper_asset_id(conn, existing_id, paper.asset_id, commit=False)
-        if commit:
-            conn.commit()
-        return existing_id
-
-    conn.execute(
+    # A single UPSERT closes the SELECT-then-INSERT race between concurrent
+    # Research Runs importing the same source identity.
+    row = conn.execute(
         """
         INSERT INTO papers (
             source, source_id, source_url, venue, pdf_url, asset_id,
@@ -123,6 +83,18 @@ def upsert_paper(conn: sqlite3.Connection, paper: PaperCandidate, commit: bool =
             published_at, updated_at, processing_status
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source, source_id) DO UPDATE SET
+            title = excluded.title,
+            authors_json = excluded.authors_json,
+            abstract = excluded.abstract,
+            categories_json = excluded.categories_json,
+            primary_category = excluded.primary_category,
+            published_at = excluded.published_at,
+            updated_at = excluded.updated_at,
+            pdf_url = COALESCE(excluded.pdf_url, papers.pdf_url),
+            source_url = COALESCE(excluded.source_url, papers.source_url),
+            venue = COALESCE(excluded.venue, papers.venue)
+        RETURNING id, asset_id
         """,
         (
             paper.source.value,
@@ -140,14 +112,15 @@ def upsert_paper(conn: sqlite3.Connection, paper: PaperCandidate, commit: bool =
             paper.updated_at,
             paper.processing_status,
         ),
-    )
-    row = conn.execute(
-        "SELECT id FROM papers WHERE source = ? AND source_id = ?",
-        (paper.source.value, paper.source_id),
     ).fetchone()
+    if row is None:
+        raise RuntimeError("paper upsert did not return an id")
+    paper_id = PaperId(int(row["id"]))
+    if paper.asset_id and row["asset_id"] != str(paper.asset_id):
+        set_paper_asset_id(conn, paper_id, paper.asset_id, commit=False)
     if commit:
         conn.commit()
-    return PaperId(int(row["id"]))
+    return paper_id
 
 
 def get_paper_record(conn: sqlite3.Connection, paper_id: PaperId | int) -> PaperRecord | None:

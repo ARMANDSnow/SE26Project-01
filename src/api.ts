@@ -1,4 +1,4 @@
-import type { ChatMessageRepository, ChatRouteMode, ChatRouteResponse, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, ResearchRun, Stats, Subscription, User, WikiSearchResult } from "./types";
+import type { ChatMessageRepository, ChatRouteMode, ChatRouteResponse, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, ResearchArtifact, ResearchRun, ResearchRunPaper, Stats, Subscription, User, WikiSearchResult } from "./types";
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -48,6 +48,16 @@ export async function fetchResearchRuns(): Promise<ResearchRun[]> {
 
 export async function fetchResearchRun(runId: string): Promise<ResearchRun> {
   return request<ResearchRun>(`/api/research/runs/${runId}`)
+}
+
+export async function fetchResearchArtifacts(runId: string): Promise<ResearchArtifact[]> {
+  const data = await request<{ items: ResearchArtifact[] }>(`/api/research/runs/${runId}/artifacts`)
+  return data.items
+}
+
+export async function fetchResearchRunPapers(runId: string): Promise<ResearchRunPaper[]> {
+  const data = await request<{ items: ResearchRunPaper[] }>(`/api/research/runs/${runId}/papers`)
+  return data.items
 }
 
 export async function createResearchRun(payload: {

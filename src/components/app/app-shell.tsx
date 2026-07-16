@@ -176,7 +176,7 @@ export function AppShell() {
           </div>
           <div className="rounded-lg border bg-sidebar-accent/40 p-3 text-xs leading-5 text-sidebar-foreground/70">
             <span className="font-semibold text-sidebar-foreground">当前阶段</span>
-            <p className="mt-1">Research Harness 已接入；论文调研 Agent 与报告链路将按迭代逐步开放。</p>
+            <p className="mt-1">主题论文调研已接入真实可恢复数据链路；综合报告与引用闭环仍待后续迭代。</p>
           </div>
         </SidebarFooter>
       </Sidebar>

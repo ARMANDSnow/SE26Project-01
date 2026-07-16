@@ -21,7 +21,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "DATABASE_PATH=/tmp/paperwiki-iter12-e2e.sqlite3 UPLOAD_DIR=/tmp/paperwiki-iter12-e2e-uploads .venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000",
+      command: "DATABASE_PATH=/tmp/paperwiki-iter13-final-e2e.sqlite3 UPLOAD_DIR=/tmp/paperwiki-iter13-final-e2e-uploads .venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000",
       url: "http://127.0.0.1:8000/api/health",
       timeout: 30_000,
       reuseExistingServer: false,

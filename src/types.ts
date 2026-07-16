@@ -185,6 +185,124 @@ export type ResearchStep = {
   completed_at?: string | null;
 };
 
+export type ResearchBudget = {
+  kind: "harness" | "topic";
+  max_candidates?: number;
+  max_fulltext_papers?: number;
+  max_model_calls?: number;
+  max_tool_calls?: number;
+  max_wall_clock_seconds?: number;
+  external_calls?: number;
+};
+
+export type ResearchUsage = {
+  candidate_papers?: number;
+  fulltext_papers?: number;
+  model_calls?: number;
+  tool_calls?: number;
+  successful_calls?: number;
+  failed_calls?: number;
+  wall_clock_seconds?: number;
+  external_calls?: number;
+};
+
+export type ResearchBrief = {
+  topic: string;
+  research_questions: string[];
+  scope: string;
+  inclusion_criteria: string[];
+  exclusion_criteria: string[];
+  date_range: { start_year?: number | null; end_year?: number | null };
+  preferred_sources: Array<"local" | "arxiv">;
+  output_language: string;
+  constraints: string[];
+  schema_version: 1;
+};
+
+export type ChunkEvidenceRef = {
+  chunk_id: number;
+  paper_id: number;
+  source_hash: string;
+  chunk_index: number;
+  char_start: number;
+  char_end: number;
+  heading: string;
+};
+
+export type PaperBrief = {
+  paper_id: number;
+  source: string;
+  source_id: string;
+  title: string;
+  authors: string[];
+  year: number;
+  research_question: string;
+  method: string;
+  dataset: string;
+  experiments: string;
+  key_findings: string[];
+  limitations: string[];
+  relevance: string;
+  evidence_ids: ChunkEvidenceRef[];
+  source_hash: string;
+  schema_version: 1;
+};
+
+export type ResearchArtifactType =
+  | "research_brief" | "search_queries" | "candidate_papers"
+  | "screening_result" | "paper_brief" | "extraction_result";
+
+export type ResearchArtifact = {
+  id: string;
+  run_id: string;
+  paper_id?: number | null;
+  artifact_type: ResearchArtifactType;
+  schema_version: number;
+  source_step_id: string;
+  version: number;
+  status: "draft" | "completed" | "failed" | "stale";
+  content: Record<string, unknown>;
+  source_hash?: string | null;
+  is_current: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ResearchRunPaperStage =
+  | "candidate" | "selected" | "excluded" | "fulltext_ready" | "read" | "extracted";
+
+export type ResearchRunPaper = {
+  run_id: string;
+  paper_id: number;
+  source_step_id?: string | null;
+  stage: ResearchRunPaperStage;
+  rank?: number | null;
+  score?: number | null;
+  inclusion_reason?: string | null;
+  exclusion_reason?: string | null;
+  source: string;
+  source_id: string;
+  source_hash?: string | null;
+  title: string;
+  authors: string[];
+  abstract: string;
+  published_at: string;
+  primary_category: string;
+  source_url?: string | null;
+  processing_status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ResearchToolCallSummary = {
+  tool: string;
+  status: "completed" | "failed" | "reused";
+  attempt: number;
+  summary: string;
+  duration_ms: number;
+  error_code?: string | null;
+};
+
 export type ResearchDecision = {
   id: string;
   run_id: string;
@@ -209,8 +327,8 @@ export type ResearchRun = {
   requested_action?: "pause" | "cancel" | null;
   state_version: number;
   plan_version: number;
-  budget: Record<string, unknown>;
-  usage: Record<string, unknown>;
+  budget: ResearchBudget;
+  usage: ResearchUsage;
   error_code?: string | null;
   error_message?: string | null;
   created_at: string;

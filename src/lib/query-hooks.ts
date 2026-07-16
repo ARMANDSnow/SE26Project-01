@@ -28,6 +28,8 @@ import {
   fetchCurrentUser,
   fetchResearchRun,
   fetchResearchRuns,
+  fetchResearchArtifacts,
+  fetchResearchRunPapers,
   createResearchRun,
   controlResearchRun,
   resolveResearchDecision,
@@ -68,6 +70,8 @@ export const queryKeys = {
   libraryItems: (folderId?: number) => ["library-items", folderId ?? "all"] as const,
   researchRuns: ["research-runs"] as const,
   researchRun: (id: string) => ["research-run", id] as const,
+  researchArtifacts: (id: string) => ["research-artifacts", id] as const,
+  researchRunPapers: (id: string) => ["research-run-papers", id] as const,
   chatThreads: ["chat-threads"] as const,
 }
 
@@ -129,6 +133,22 @@ export function useResearchRunQuery(id: string) {
       const next = incoming as ResearchRun
       return current && current.state_version > next.state_version ? current : next
     },
+  })
+}
+
+export function useResearchArtifactsQuery(id: string) {
+  return useQuery({
+    queryKey: queryKeys.researchArtifacts(id),
+    queryFn: () => fetchResearchArtifacts(id),
+    enabled: id.length > 0,
+  })
+}
+
+export function useResearchRunPapersQuery(id: string) {
+  return useQuery({
+    queryKey: queryKeys.researchRunPapers(id),
+    queryFn: () => fetchResearchRunPapers(id),
+    enabled: id.length > 0,
   })
 }
 

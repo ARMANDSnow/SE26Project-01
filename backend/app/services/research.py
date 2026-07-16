@@ -16,6 +16,8 @@ from ..repositories.research import (
     reconcile_requested_actions,
     recover_expired_leases,
 )
+from .research_contracts import ResearchStepError, ResearchWaitingInput
+from .topic_research import TopicResearchPipeline
 
 
 HarnessHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -59,16 +61,23 @@ class ResearchExecutor:
         lease_seconds: int = 60,
         heartbeat_seconds: int = 15,
         poll_seconds: float = 1.0,
-        handler: HarnessHandler = run_harness_step,
+        handler: HarnessHandler | None = None,
+        topic_pipeline: TopicResearchPipeline | None = None,
     ) -> None:
         self.worker_id = f"research-{uuid.uuid4()}"
         self.lease_seconds = lease_seconds
         self.heartbeat_seconds = heartbeat_seconds
         self.poll_seconds = poll_seconds
-        self.handler = handler
+        self.topic_pipeline = topic_pipeline or TopicResearchPipeline()
+        self.handler = handler or self._dispatch_step
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._supervisor: threading.Thread | None = None
+
+    def _dispatch_step(self, step: dict[str, Any]) -> dict[str, Any]:
+        if str(step.get("step_type", "")).startswith("topic."):
+            return self.topic_pipeline.handle(step)
+        return run_harness_step(step)
 
     def start(self) -> None:
         if self._supervisor is not None and self._supervisor.is_alive():
@@ -135,17 +144,23 @@ class ResearchExecutor:
 
         worker = threading.Thread(target=work, name="paperwiki-research-worker", daemon=True)
         worker.start()
-        while worker.is_alive() and not self._stop.wait(self.heartbeat_seconds):
-            with connect() as conn:
-                owned = heartbeat_step(
-                    conn,
-                    step_id=str(step["id"]),
-                    worker_id=self.worker_id,
-                    lease_generation=int(step["lease_generation"]),
-                    lease_seconds=self.lease_seconds,
-                )
-            if not owned:
+        next_heartbeat = time.monotonic() + self.heartbeat_seconds
+        while worker.is_alive():
+            if self._stop.is_set():
                 return
+            worker.join(timeout=min(0.1, max(0.01, next_heartbeat - time.monotonic())))
+            if worker.is_alive() and time.monotonic() >= next_heartbeat:
+                with connect() as conn:
+                    owned = heartbeat_step(
+                        conn,
+                        step_id=str(step["id"]),
+                        worker_id=self.worker_id,
+                        lease_generation=int(step["lease_generation"]),
+                        lease_seconds=self.lease_seconds,
+                    )
+                if not owned:
+                    return
+                next_heartbeat = time.monotonic() + self.heartbeat_seconds
         worker.join(timeout=0)
         if self._stop.is_set() and worker.is_alive():
             return
@@ -157,6 +172,19 @@ class ResearchExecutor:
                     worker_id=self.worker_id,
                     lease_generation=int(step["lease_generation"]),
                     output=result,
+                )
+            elif isinstance(failure, ResearchWaitingInput):
+                # The budget repository atomically released this lease and
+                # persisted Run/Step/Decision as waiting_input.
+                return
+            elif isinstance(failure, ResearchStepError):
+                fail_step(
+                    conn,
+                    step_id=str(step["id"]),
+                    worker_id=self.worker_id,
+                    lease_generation=int(step["lease_generation"]),
+                    error_code=failure.code,
+                    error_message=failure.public_message,
                 )
             else:
                 fail_step(

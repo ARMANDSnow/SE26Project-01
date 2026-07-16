@@ -22,6 +22,12 @@ from ...repositories.research import (
     resume_run,
     retry_run,
 )
+from ...repositories.research_data import (
+    get_artifact,
+    get_paper_brief,
+    list_artifacts,
+    list_run_papers,
+)
 from ...services.research import ResearchExecutor
 from ..schemas import ResearchDecisionResolveRequest, ResearchRunCreateRequest
 
@@ -82,6 +88,53 @@ def research_run(run_id: str, user: CurrentUser) -> dict[str, Any]:
     with connect() as conn:
         try:
             return get_run_snapshot(conn, run_id, user.id)
+        except ResearchNotFoundError as exc:
+            raise _not_found(exc) from exc
+
+
+@router.get("/runs/{run_id}/artifacts")
+def research_run_artifacts(
+    run_id: str,
+    user: CurrentUser,
+    artifact_type: str | None = Query(default=None, max_length=80),
+) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return {"items": list_artifacts(conn, run_id, user.id, artifact_type=artifact_type)}
+        except ResearchNotFoundError as exc:
+            raise _not_found(exc) from exc
+
+
+@router.get("/runs/{run_id}/artifacts/{artifact_id}")
+def research_artifact(run_id: str, artifact_id: str, user: CurrentUser) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return get_artifact(conn, run_id, artifact_id, user.id)
+        except ResearchNotFoundError as exc:
+            raise _not_found(exc) from exc
+
+
+@router.get("/runs/{run_id}/papers")
+def research_run_papers(
+    run_id: str,
+    user: CurrentUser,
+    stage: str | None = Query(default=None, max_length=40),
+) -> dict[str, Any]:
+    allowed = {"candidate", "selected", "excluded", "fulltext_ready", "read", "extracted"}
+    if stage is not None and stage not in allowed:
+        raise HTTPException(status_code=422, detail="unknown research paper stage")
+    with connect() as conn:
+        try:
+            return {"items": list_run_papers(conn, run_id, user.id, stage=stage)}
+        except ResearchNotFoundError as exc:
+            raise _not_found(exc) from exc
+
+
+@router.get("/runs/{run_id}/papers/{paper_id}/brief")
+def research_paper_brief(run_id: str, paper_id: int, user: CurrentUser) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            return get_paper_brief(conn, run_id, paper_id, user.id)
         except ResearchNotFoundError as exc:
             raise _not_found(exc) from exc
 

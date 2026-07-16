@@ -17,11 +17,12 @@ function ResearchRunCard({ runId }: { runId: string }) {
   const run = query.data
   const steps = run.steps ?? []
   const done = steps.filter((step) => step.status === "completed").length
+  const isHarness = run.mode === "harness"
   return (
     <section className="my-2 overflow-hidden rounded-xl border bg-[var(--surface-raised)] shadow-sm" aria-label={`Research Run：${run.title}`}>
       <div className="flex items-start gap-3 p-4">
         <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><FlaskConical className="size-4" /></span>
-        <div className="min-w-0 flex-1"><p className="text-xs font-medium text-muted-foreground">Research Harness</p><h3 className="mt-0.5 line-clamp-2 text-sm font-semibold">{run.title}</h3><p className="mt-1 text-xs text-muted-foreground">真实三步骨架 · {done}/{steps.length} 步完成</p></div>
+        <div className="min-w-0 flex-1"><p className="text-xs font-medium text-muted-foreground">{isHarness ? "Research Harness" : "主题论文调研"}</p><h3 className="mt-0.5 line-clamp-2 text-sm font-semibold">{run.title}</h3><p className="mt-1 text-xs text-muted-foreground">{isHarness ? "确定性三步骨架" : "真实可恢复数据链路"} · {done}/{steps.length} 步完成</p></div>
         <Badge variant={researchStatusTone[run.status]}>{researchStatusLabel[run.status]}</Badge>
       </div>
       <Button variant="ghost" className="min-h-11 w-full justify-between rounded-none border-t px-4" onClick={(event) => openRun(run.id, event.currentTarget)}>查看 Workflow<ArrowRight className="size-4" /></Button>

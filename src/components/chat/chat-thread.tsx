@@ -171,7 +171,7 @@ async function* routeAndStreamChat(
   persistedIds.add(assistantMessageId)
   onResearchRun(routed.run)
   yield { content: [
-    { type: "text", text: `已创建调研任务「${routed.run.title}」。当前仅执行可恢复 Harness 骨架，尚未检索论文。` },
+    { type: "text", text: `已创建主题调研任务「${routed.run.title}」。Workflow 将按数据库中的真实步骤检索、筛选与读取论文；缺少模型配置时会明确失败。` },
     { type: "data", name: "research-run", data: { run_id: routed.run.id } },
   ] }
 }
@@ -362,7 +362,7 @@ function ChatSurface({ emptyTitle, emptyDescription, placeholder, hero, runBar, 
             <p className="text-sm leading-6 text-muted-foreground md:text-base">{emptyDescription}</p>
           </div>
           <Composer placeholder={placeholder} hero mode={mode} onModeChange={onModeChange} routingEnabled={routingEnabled} />
-          <p className="text-center text-xs text-muted-foreground">{routingEnabled ? "深度研究当前仅启动可恢复三步 Harness；尚不检索论文或调用研究 Agent。" : "当前对话使用原有上下文契约。"}</p>
+          <p className="text-center text-xs text-muted-foreground">{routingEnabled ? "深度研究将启动真实、可恢复的主题论文调研；每一步和预算都以数据库记录为准。" : "当前对话使用原有上下文契约。"}</p>
         </div>
       </ThreadPrimitive.Root>
     )

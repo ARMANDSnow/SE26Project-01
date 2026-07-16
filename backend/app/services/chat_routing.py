@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 from ..repositories.research import (
     ResearchNotFoundError,
     get_run_snapshot,
-    insert_harness_run,
+    insert_topic_research_run,
 )
 from .chat_parts import decode_parts, encode_parts, research_run_parts, text_parts
 from .conversations import get_thread
@@ -158,14 +158,16 @@ def _replayed_run(
     if run_id is None:
         raise ChatRouteConflict("message id already exists")
     owned_run = conn.execute(
-        "SELECT thread_id, title, goal FROM research_runs WHERE id = ? AND user_id = ?",
+        "SELECT thread_id, title, goal, mode FROM research_runs WHERE id = ? AND user_id = ?",
         (run_id, user_id),
     ).fetchone()
-    expected_label = (
-        f"已创建调研任务「{owned_run['title']}」。当前仅执行可恢复 Harness 骨架，尚未检索论文。"
-        if owned_run is not None
-        else ""
-    )
+    expected_label = ""
+    if owned_run is not None:
+        expected_label = (
+            f"已创建主题调研任务「{owned_run['title']}」。Workflow 将只展示数据库中真实完成的检索、筛选、正文与阅读卡数据。"
+            if str(owned_run["mode"]) == "topic"
+            else f"已创建调研任务「{owned_run['title']}」。当前仅执行可恢复 Harness 骨架，尚未检索论文。"
+        )
     thread_head = conn.execute(
         "SELECT active_leaf_id FROM chat_threads WHERE id = ? AND user_id = ?",
         (thread_id, user_id),
@@ -263,14 +265,14 @@ def create_chat_research_run(
             ),
         )
         title = _title_from_content(content)
-        run_id = insert_harness_run(
+        run_id = insert_topic_research_run(
             conn,
             user_id=user_id,
             title=title,
             goal=content,
             thread_id=thread_id,
         )
-        label = f"已创建调研任务「{title}」。当前仅执行可恢复 Harness 骨架，尚未检索论文。"
+        label = f"已创建主题调研任务「{title}」。Workflow 将只展示数据库中真实完成的检索、筛选、正文与阅读卡数据。"
         conn.execute(
             """
             INSERT INTO chat_messages(

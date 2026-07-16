@@ -7,7 +7,8 @@ const terminalStatuses = new Set(["completed", "failed", "cancelled"])
 const eventTypes = [
   "run.created", "run.pause_requested", "run.cancel_requested", "run.resumed", "run.retried",
   "run.paused", "run.cancelled", "run.completed", "run.failed", "step.started",
-  "step.completed", "step.lease_recovered", "decision.resolved",
+  "step.completed", "step.lease_recovered", "decision.requested", "decision.resolved",
+  "artifact.created", "paper.updated",
 ]
 type SharedStream = { source: EventSource; refs: number; cursor: number; timer?: number; handler: EventListener }
 const sharedStreams = new Map<string, SharedStream>()
@@ -29,6 +30,8 @@ function subscribe(runId: string, cursor: number, queryClient: QueryClient) {
     stream.timer = window.setTimeout(() => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.researchRun(runId) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.researchRuns })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchArtifacts(runId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchRunPapers(runId) })
     }, 150)
   }) as EventListener
   eventTypes.forEach((eventType) => source.addEventListener(eventType, stream.handler))

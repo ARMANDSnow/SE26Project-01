@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
@@ -60,7 +60,12 @@ class PaperPdfService:
         except AssetNotFoundError:
             return None
 
-    def ensure(self, paper_id: PaperId | int) -> AssetInfo:
+    def ensure(
+        self,
+        paper_id: PaperId | int,
+        *,
+        before_attach: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> AssetInfo:
         existing = self.get(paper_id)
         if existing is not None:
             return existing
@@ -93,7 +98,17 @@ class PaperPdfService:
             except (HTTPError, URLError, TimeoutError, OSError, AssetStoreError, UnsafeUrlError) as exc:
                 raise RemotePdfError(f"remote PDF download failed: {exc}") from exc
 
-            set_paper_asset_id(self.conn, paper_id, asset.id)
+            if before_attach is None:
+                set_paper_asset_id(self.conn, paper_id, asset.id)
+            else:
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    before_attach(self.conn)
+                    set_paper_asset_id(self.conn, paper_id, asset.id, commit=False)
+                    self.conn.commit()
+                except Exception:
+                    self.conn.rollback()
+                    raise
             return asset
 
     def attach(self, paper_id: PaperId | int, source: BinaryIO) -> AssetInfo:

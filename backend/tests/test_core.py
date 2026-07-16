@@ -1654,6 +1654,10 @@ def test_research_api_runs_deterministic_harness_and_isolates_owner(api_client):
     for method, path in (
         ("get", f"/api/research/runs/{run_id}"),
         ("get", f"/api/research/runs/{run_id}/events?after=0"),
+        ("get", f"/api/research/runs/{run_id}/artifacts"),
+        ("get", f"/api/research/runs/{run_id}/artifacts/not-owned"),
+        ("get", f"/api/research/runs/{run_id}/papers"),
+        ("get", f"/api/research/runs/{run_id}/papers/1/brief"),
         ("post", f"/api/research/runs/{run_id}/pause"),
         ("post", f"/api/research/runs/{run_id}/cancel"),
         ("post", f"/api/research/runs/{run_id}/retry"),
@@ -1780,6 +1784,40 @@ def test_chat_route_explicit_research_is_atomic_idempotent_and_persists_parts(ap
     assert conflict.status_code == 409
 
 
+def test_topic_research_without_llm_configuration_fails_explicitly(api_client):
+    thread = api_client.post("/api/chat/threads", json={}).json()
+    routed = api_client.post(
+        "/api/chat/route",
+        json={
+            "thread_id": thread["id"],
+            "mode": "deep_research",
+            "user_message": {"id": "missing-llm-u", "content": "调研 RAG 证据链论文"},
+            "assistant_message_id": "missing-llm-a",
+        },
+    )
+    assert routed.status_code == 200
+    run_id = routed.json()["run"]["id"]
+    failed = None
+    for _ in range(80):
+        snapshot = api_client.get(f"/api/research/runs/{run_id}")
+        assert snapshot.status_code == 200
+        if snapshot.json()["status"] == "failed":
+            failed = snapshot.json()
+            break
+        import time
+
+        time.sleep(0.02)
+    assert failed is not None, json.dumps(snapshot.json(), ensure_ascii=False)
+    assert failed["mode"] == "topic"
+    assert len(failed["steps"]) == 10
+    assert failed["error_code"] == "llm_configuration_unavailable"
+    assert failed["error_message"] == "主题调研需要真实模型配置；当前 LLM_API_KEY 未配置。"
+    serialized = json.dumps(failed, ensure_ascii=False)
+    assert "Authorization" not in serialized
+    assert "Bearer" not in serialized
+    assert "/Users/" not in serialized
+
+
 def test_chat_route_replay_skips_unstable_auto_classifier(api_client):
     class UnstableClassifier:
         calls = 0
@@ -1816,7 +1854,7 @@ def test_chat_route_rolls_back_every_write_when_run_insert_fails(api_client, mon
     def injected_failure(*_args, **_kwargs):
         raise RuntimeError("injected after user message")
 
-    monkeypatch.setattr("backend.app.services.chat_routing.insert_harness_run", injected_failure)
+    monkeypatch.setattr("backend.app.services.chat_routing.insert_topic_research_run", injected_failure)
     with pytest.raises(RuntimeError, match="injected"):
         api_client.post(
             "/api/chat/route",

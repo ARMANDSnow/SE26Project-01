@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import sqlite3
-from typing import Any
+from typing import Any, Callable
 
 from ..repositories.papers import get_paper_record, replace_paper_chunks
 from ..repositories.uploads import paper_is_accessible
@@ -24,6 +24,7 @@ def parse_paper_document(
     conn: sqlite3.Connection,
     paper_id: int,
     user_id: int = 1,
+    fence: Callable[[sqlite3.Connection], None] | None = None,
 ) -> dict[str, Any]:
     if not paper_is_accessible(conn, paper_id, user_id):
         raise ValueError("paper not found")
@@ -38,16 +39,24 @@ def parse_paper_document(
         raise ValueError("paper has no stored PDF asset")
     source_hash = str(paper.asset_id).removeprefix("sha256:")
 
-    conn.execute(
-        """
-        INSERT INTO paper_documents (paper_id, status, error)
-        VALUES (?, 'processing', NULL)
-        ON CONFLICT(paper_id) DO UPDATE SET status = 'processing', error = NULL,
-            updated_at = CURRENT_TIMESTAMP
-        """,
-        (paper_id,),
-    )
-    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if fence is not None:
+            fence(conn)
+        conn.execute(
+            """
+            INSERT INTO paper_documents (paper_id, source_hash, status, error)
+            VALUES (?, ?, 'processing', NULL)
+            ON CONFLICT(paper_id) DO UPDATE SET source_hash = excluded.source_hash,
+                status = 'processing', error = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (paper_id, source_hash),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
     try:
         from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
@@ -72,6 +81,9 @@ def parse_paper_document(
         structure = json.dumps(document.export_to_dict(), ensure_ascii=False)
         parser_version = importlib.metadata.version("docling")
         token_count = estimate_tokens(markdown)
+        conn.execute("BEGIN IMMEDIATE")
+        if fence is not None:
+            fence(conn)
         cursor = conn.execute(
             """
             UPDATE paper_documents
@@ -79,9 +91,22 @@ def parse_paper_document(
                 content_markdown = ?, structure_json = ?, token_count = ?,
                 status = 'completed', error = NULL, parsed_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE paper_id = ?
+            WHERE paper_id = ? AND source_hash = ?
+              AND EXISTS (
+                  SELECT 1 FROM papers p
+                  WHERE p.id = paper_documents.paper_id AND p.asset_id = ?
+              )
             """,
-            (parser_version, source_hash, markdown, structure, token_count, paper_id),
+            (
+                parser_version,
+                source_hash,
+                markdown,
+                structure,
+                token_count,
+                paper_id,
+                source_hash,
+                f"sha256:{source_hash}",
+            ),
         )
         if cursor.rowcount == 0:
             raise RuntimeError("paper document row disappeared during parsing")
@@ -94,14 +119,26 @@ def parse_paper_document(
         )
         conn.commit()
     except Exception as exc:
-        conn.execute(
-            """
-            UPDATE paper_documents SET status = 'failed', error = ?,
-                updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?
-            """,
-            (str(exc)[:1000], paper_id),
-        )
-        conn.commit()
+        conn.rollback()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if fence is not None:
+                fence(conn)
+            conn.execute(
+                """
+                UPDATE paper_documents SET status = 'failed', error = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE paper_id = ? AND source_hash = ?
+                  AND EXISTS (
+                      SELECT 1 FROM papers p
+                      WHERE p.id = paper_documents.paper_id AND p.asset_id = ?
+                  )
+                """,
+                (str(exc)[:1000], paper_id, source_hash, f"sha256:{source_hash}"),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
         raise RuntimeError(f"Docling 解析失败：{exc}") from exc
 
     return get_paper_document(conn, paper_id) or {}

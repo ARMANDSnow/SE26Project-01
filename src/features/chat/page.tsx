@@ -66,13 +66,13 @@ export function ChatPage() {
           {latestThreadRun ? <Button size="sm" variant="outline" className="min-h-11" onClick={(event) => openRun(latestThreadRun.id, event.currentTarget)}><FlaskConical className="size-4" />Workflow</Button> : null}
         </div>
         {threadsQuery.isLoading || createThread.isPending ? <div className="m-auto inline-flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin motion-reduce:animate-none" />加载对话</div> : selected ? (
-          <ChatThread key={selected.id} thread={selected} emptyTitle="今天想研究什么？" emptyDescription="可以普通问答，也可以选择“深度研究”启动可恢复的三步 Harness。" placeholder="输入问题，Enter 发送…" hero onOpenRun={openRun} onResearchRunCreated={selectRun} runBar={runBar} initialMode={initialMode} routingEnabled />
+          <ChatThread key={selected.id} thread={selected} emptyTitle="今天想研究什么？" emptyDescription="可以普通问答，也可以选择“深度研究”启动真实、可恢复的主题论文调研。" placeholder="输入问题，Enter 发送…" hero onOpenRun={openRun} onResearchRunCreated={selectRun} runBar={runBar} initialMode={initialMode} routingEnabled />
         ) : (
           <div className="m-auto grid gap-3 text-center"><strong>暂时无法创建对话</strong><Button variant="outline" onClick={() => threadsQuery.refetch()}><MessageSquarePlus className="size-4" />重试</Button></div>
         )}
       </div>
       <aside className="hidden min-h-0 border-l min-[1200px]:flex">
-        {runQuery.data ? <WorkflowPanel run={runQuery.data} /> : <div className="m-auto max-w-xs p-8 text-center"><FlaskConical className="mx-auto size-8 text-muted-foreground" /><h2 className="mt-3 font-semibold">Workflow</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">从 Run 卡片打开工作流；这里只展示数据库中的真实三步 Harness 状态。</p></div>}
+        {runQuery.data ? <WorkflowPanel run={runQuery.data} /> : <div className="m-auto max-w-xs p-8 text-center"><FlaskConical className="mx-auto size-8 text-muted-foreground" /><h2 className="mt-3 font-semibold">Workflow</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">从 Run 卡片打开工作流；这里只展示数据库中的真实步骤、论文、工具摘要和预算。</p></div>}
       </aside>
       <Sheet open={workflowOpen} onOpenChange={(open) => open ? setWorkflowOpen(true) : closeWorkflow()}>
         <SheetContent className="w-full gap-0 p-0 sm:max-w-[460px] max-md:h-[100dvh] max-md:!w-screen max-md:max-w-none" showCloseButton={false}>

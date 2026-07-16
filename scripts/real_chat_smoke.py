@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend.app.config import get_settings
 from backend.app.database import init_schema
+from backend.app.repositories.users import create_user
 from backend.app.services.conversations import create_thread, prepare_run, stream_run
 
 
@@ -30,7 +31,8 @@ def main() -> int:
     conn.execute("PRAGMA foreign_keys = ON")
     init_schema(conn)
     try:
-        thread = create_thread(conn, None, title="real-chat-smoke")
+        user = create_user(conn, "real-chat-smoke", "not-used")
+        thread = create_thread(conn, None, int(user["id"]), title="real-chat-smoke")
         run = prepare_run(
             conn,
             thread_id=thread["id"],
@@ -43,6 +45,7 @@ def main() -> int:
             assistant_message_id="real-chat-assistant-1",
             source_message_id=None,
             message_token_limit=12000,
+            user_id=int(user["id"]),
         )
         events = list(stream_run(conn, run))
         failed = next((data for event, data in events if event == "run.failed"), None)
