@@ -55,6 +55,7 @@ git diff --check
 - 公开上传目前只记录 `unreviewed/approved/rejected` 状态，没有管理员审核、内容扫描、举报或下架工作流；用户显式 public 后立即对登录用户可见。
 - 尚未实现分享链接、团队空间、上传删除和对象存储级 ACL；相同 PDF blob 可物理去重，但逻辑权限仍绑定各自 paper/upload 记录。
 - Research SSE 当前每连接 1 秒短读轮询，尚未加入用户级 SSE/Run 创建配额；长任务公开前需补资源限制。
+- 当前没有前端 LLM 配置页；真实模型只能在启动后端前通过 `LLM_API_KEY`、`LLM_BASE_URL` 和 `LLM_CHAT_MODEL` 环境变量配置，修改后需重启后端。前端只能读取“是否已配置”和模型名，不得读取或持久化真实 Key。
 - 仓库现存默认 `backend/data/arxiv_wiki.sqlite3` 是用户旧 v0 库（116 篇），本轮没有修改或重建；验证全部用独立 `DATABASE_PATH`。如需承接该数据，必须另立 legacy v0 迁移任务。
 - `database.py` 仍作为兼容 facade；`conversations.py`、`documents.py`、`search.py` 和 `paper_tools.py` 仍包含历史领域 SQL。
 - Docling 解析与远程 PDF 下载仍是同步长任务；大批量使用需要任务队列。
@@ -64,7 +65,8 @@ git diff --check
 1. Iter12：为 `chat_messages` 增加 `content_parts_json`，实现 `/api/chat/route` 与原子 Run 卡消息。
 2. Iter12：建立单一 Research SSE/React Query 实时桥接，完成 Chat/Workflow 桌面三栏、平板 Drawer 和 390px 全屏交互。
 3. 为 Research SSE 和 Run 创建增加用户级连接/速率限制，并扩展 pause/resume/cancel/retry 的慢步骤 Playwright。
-4. 如需使用旧 116 篇本地论文，先设计可审查、不破坏的 v0 legacy 迁移，不要直接 reset。
+4. 增加安全的“模型配置与可用性”管理界面：可配置 provider/base URL/model 并以 write-only 方式提交 Key；后端仅保存到操作系统 Keychain/部署 secret manager，API 永不回传 Key，仅返回 masked/configured 状态。上线前需明确全局管理员配置还是用户自带 Key，并补权限、CSRF、密钥清洗、日志脱敏和 Playwright 测试。
+5. 如需使用旧 116 篇本地论文，先设计可审查、不破坏的 v0 legacy 迁移，不要直接 reset。
 
 ## Git Notes
 
