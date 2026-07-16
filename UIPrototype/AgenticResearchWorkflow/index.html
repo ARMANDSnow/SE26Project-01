@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="PaperWiki Agentic Research Workflow 高保真交互原型" />
+    <title>PaperWiki · Agentic Research Prototype</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23a74e2b'/%3E%3Cpath d='M24 17c-8 0-12 9-7 15-5 7 1 15 8 14 4 5 11 2 11-4V21c0-2-5-4-12-4Zm16 0c8 0 12 9 7 15 5 7-1 15-8 14-4 5-11 2-11-4V21c0-2 5-4 12-4Z' fill='none' stroke='%23fffaf5' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+    <svg aria-hidden="true" class="icon-sprite">
+      <symbol id="i-brain" viewBox="0 0 24 24"><path d="M9.5 4.5a3 3 0 0 0-5.4 1.8 3.3 3.3 0 0 0 .4 1.6 3.2 3.2 0 0 0-1.1 5.9 3.1 3.1 0 0 0 2.2 4.9A3 3 0 0 0 11 20.5v-17a3 3 0 0 0-1.5 1Z"/><path d="M14.5 4.5a3 3 0 0 1 5.4 1.8 3.3 3.3 0 0 1-.4 1.6 3.2 3.2 0 0 1 1.1 5.9 3.1 3.1 0 0 1-2.2 4.9 3 3 0 0 1-5.4 1.8v-17a3 3 0 0 1 1.5 1Z"/><path d="M7 8.5h4M13 15.5h4M7.5 16.5a3 3 0 0 0 3.5-3M13 9.5a3 3 0 0 0 3.5-3"/></symbol>
+      <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/></symbol>
+      <symbol id="i-library" viewBox="0 0 24 24"><path d="m4 19.5 5-1.5 6 2 5-1.5V4.5L15 6 9 4 4 5.5Z"/><path d="M9 4v14M15 6v14"/></symbol>
+      <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1Z"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+      <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="m12 3 1.2 3.4L16.5 8l-3.3 1.6L12 13l-1.2-3.4L7.5 8l3.3-1.6Z"/><path d="m19 14 .8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8ZM5 13l.7 1.8L7.5 16l-1.8.7L5 18.5l-.7-1.8L2.5 16l1.8-1.2Z"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5H6v14h3ZM18 5h-3v14h3Z"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="m7 4 13 8-13 8Z"/></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 2h8l4 4v16H6Z"/><path d="M14 2v5h5M9 12h6M9 16h6"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.2"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+      <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m21.4 11.6-8.8 8.8a6 6 0 0 1-8.5-8.5l9.5-9.5a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+      <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h7"/></symbol>
+    </svg>
+
+    <div class="scrim" data-close-overlays></div>
+
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="主导航">
+        <div class="sidebar-top">
+          <a class="brand" href="#" aria-label="PaperWiki 首页">
+            <span class="brand-mark"><svg><use href="#i-brain"></use></svg></span>
+            <span><strong>PaperWiki</strong><small>Agentic Research</small></span>
+          </a>
+
+          <button class="button primary new-research" type="button" data-action="new-research">
+            <svg><use href="#i-plus"></use></svg>
+            新建研究
+            <kbd>⌘ K</kbd>
+          </button>
+
+          <nav class="primary-nav">
+            <button class="nav-item active" type="button" data-nav="Chat">
+              <svg><use href="#i-chat"></use></svg><span>Chat</span><span class="nav-indicator"></span>
+            </button>
+            <button class="nav-item" type="button" data-nav="论文库">
+              <svg><use href="#i-library"></use></svg><span>论文库</span><span class="count">128</span>
+            </button>
+            <button class="nav-item" type="button" data-nav="我的资料库">
+              <svg><use href="#i-bookmark"></use></svg><span>我的资料库</span><span class="count">24</span>
+            </button>
+          </nav>
+        </div>
+
+        <div class="conversation-section">
+          <div class="section-label"><span>最近对话</span><button type="button" aria-label="搜索对话"><svg><use href="#i-search"></use></svg></button></div>
+          <div class="conversation-list">
+            <button class="conversation active" type="button">
+              <span class="conversation-state running"></span>
+              <span><strong>RAG 检索优化调研</strong><small>正在解析正文 · 刚刚</small></span>
+            </button>
+            <button class="conversation" type="button">
+              <span class="conversation-state waiting"></span>
+              <span><strong>Agent Memory 研究</strong><small>需要你确认 · 12 分钟前</small></span>
+            </button>
+            <button class="conversation" type="button">
+              <span class="conversation-state done"></span>
+              <span><strong>多模态 RAG 对比</strong><small>报告已完成 · 昨天</small></span>
+            </button>
+            <button class="conversation" type="button">
+              <span class="conversation-state idle"></span>
+              <span><strong>解释 FTS5 trigram</strong><small>普通对话 · 7 月 15 日</small></span>
+            </button>
+          </div>
+        </div>
+
+        <div class="sidebar-footer">
+          <div class="model-status"><span class="online-dot"></span><span><strong>DeepSeek V4 Flash</strong><small>模型与网络正常</small></span></div>
+          <button class="profile" type="button"><span class="avatar">DY</span><span><strong>dingyuxuan</strong><small>个人工作区</small></span><svg><use href="#i-more"></use></svg></button>
+        </div>
+      </aside>
+
+      <div class="app-area">
+        <header class="topbar">
+          <div class="topbar-title">
+            <button class="icon-button mobile-menu" type="button" aria-label="打开导航" data-action="open-sidebar"><svg><use href="#i-menu"></use></svg></button>
+            <div><strong>RAG 检索优化调研</strong><span><span class="status-dot running"></span>Research Run 正在执行</span></div>
+          </div>
+          <div class="topbar-actions">
+            <button class="quiet-chip" type="button" data-action="open-command"><svg><use href="#i-search"></use></svg><span>搜索或执行命令</span><kbd>⌘ K</kbd></button>
+            <button class="icon-button task-button" type="button" aria-label="打开任务中心" data-action="open-tasks"><svg><use href="#i-bell"></use></svg><span class="notification-badge">1</span></button>
+            <button class="icon-button" type="button" aria-label="切换主题" data-action="toggle-theme"><svg class="moon-icon"><use href="#i-moon"></use></svg><svg class="sun-icon"><use href="#i-sun"></use></svg></button>
+          </div>
+        </header>
+
+        <main id="main-content" class="workspace">
+          <section class="chat-panel" aria-label="研究对话">
+            <div class="chat-context-bar">
+              <div class="context-copy"><span class="context-icon"><svg><use href="#i-sparkles"></use></svg></span><span><strong>深度调研模式</strong><small>Agent 默认自动执行，仅在关键问题时请求确认</small></span></div>
+              <button class="subtle-button" type="button" data-action="open-workflow">查看 Workflow</button>
+            </div>
+
+            <div class="messages" id="messages" aria-live="polite">
+              <div class="message user-message">
+                <div class="message-bubble">帮我调研 2023 年以来 RAG 检索优化相关的论文，重点比较召回策略、评测数据集和主要局限，最后生成一份带出处的调研报告。</div>
+                <div class="message-meta">你 · 10:24</div>
+              </div>
+
+              <div class="message assistant-message">
+                <div class="assistant-avatar"><svg><use href="#i-brain"></use></svg></div>
+                <div class="assistant-body">
+                  <div class="assistant-name">PaperWiki Agent <span>Research Coordinator</span></div>
+                  <p>目标已经足够明确。我会优先覆盖 2023 年以来的代表工作，比较稀疏/稠密/混合召回、重排序方法、常用评测集与局限。</p>
+                  <p>我已制定 10 步计划并开始执行。普通检索、抓取、解析和私有保存会自动完成；只有范围冲突或预算明显超出时才会询问你。</p>
+
+                  <button class="run-card" type="button" data-action="open-workflow">
+                    <span class="run-card-icon"><svg><use href="#i-sparkles"></use></svg></span>
+                    <span class="run-card-copy"><strong>RAG 检索优化调研</strong><small><span class="live-pulse"></span>正在解析正文 · 5/10 步完成</small></span>
+                    <span class="run-card-metrics"><span><strong>42</strong><small>候选</small></span><span><strong>12</strong><small>入选</small></span><span><strong>7</strong><small>已解析</small></span></span>
+                    <svg class="run-card-chevron"><use href="#i-chevron"></use></svg>
+                  </button>
+                </div>
+              </div>
+
+              <div class="checkpoint-message">
+                <span class="checkpoint-icon"><svg><use href="#i-check"></use></svg></span>
+                <span><strong>已完成检索与筛选</strong><small>从 42 篇候选中选出 12 篇，排除 9 篇重复项与 21 篇低相关论文。</small></span>
+                <button type="button" data-step-target="screening">查看依据</button>
+              </div>
+
+              <div class="message assistant-message compact">
+                <div class="assistant-avatar"><svg><use href="#i-brain"></use></svg></div>
+                <div class="assistant-body">
+                  <div class="assistant-name">PaperWiki Agent <span>Reader Agent</span></div>
+                  <p>正在并行处理 12 篇论文。7 篇全文已可用，其中 2 篇复用了资料库中相同 source hash 的解析结果。</p>
+                  <div class="activity-line"><span class="activity-spinner"></span><span>解析《RAG-Fusion: a New Take on Retrieval-Augmented Generation》</span><code>7 / 12</code></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="composer-wrap">
+              <form class="composer" id="composer-form">
+                <label class="sr-only" for="composer-input">输入后续要求</label>
+                <textarea id="composer-input" rows="1" placeholder="补充要求，或让 Agent 调整当前计划……"></textarea>
+                <div class="composer-toolbar">
+                  <div class="composer-left">
+                    <button class="icon-button compact" type="button" aria-label="添加附件"><svg><use href="#i-paperclip"></use></svg></button>
+                    <button class="mode-pill" type="button"><svg><use href="#i-sparkles"></use></svg>自动模式<svg class="mini-chevron"><use href="#i-chevron"></use></svg></button>
+                    <span class="auto-hint"><span></span>关键问题再确认</span>
+                  </div>
+                  <button class="send-button" type="submit" aria-label="发送"><svg><use href="#i-send"></use></svg></button>
+                </div>
+              </form>
+              <p class="composer-note">Agent 可能犯错，重要研究结论请通过引用证据核验。</p>
+            </div>
+          </section>
+
+          <aside class="workflow-panel" aria-label="调研 Workflow" id="workflow-panel">
+            <div class="workflow-header">
+              <div class="workflow-title-row">
+                <div><span class="eyebrow">RESEARCH WORKFLOW</span><h2>调研执行过程</h2></div>
+                <button class="icon-button close-workflow" type="button" aria-label="关闭 Workflow" data-action="close-workflow"><svg><use href="#i-x"></use></svg></button>
+              </div>
+              <div class="run-status-row"><span class="run-status running"><span></span>正在执行</span><span class="run-time"><svg><use href="#i-clock"></use></svg>08:42</span></div>
+              <div class="progress-track" aria-label="任务完成 50%"><span style="width: 50%"></span></div>
+              <div class="workflow-metrics"><span><strong>5 / 10</strong><small>步骤</small></span><span><strong>12</strong><small>入选论文</small></span><span><strong>18</strong><small>工具调用</small></span></div>
+              <div class="workflow-actions">
+                <button class="button secondary" type="button" data-action="pause-run"><svg><use href="#i-pause"></use></svg><span>暂停</span></button>
+                <button class="button ghost-danger" type="button" data-action="stop-run"><svg><use href="#i-stop"></use></svg>停止</button>
+                <button class="icon-button" type="button" aria-label="更多任务操作"><svg><use href="#i-more"></use></svg></button>
+              </div>
+            </div>
+
+            <div class="workflow-scroll">
+              <ol class="workflow-steps">
+                <li class="workflow-step completed" data-step="brief">
+                  <button class="step-summary" type="button" aria-expanded="false">
+                    <span class="step-node"><svg><use href="#i-check"></use></svg></span>
+                    <span class="step-copy"><strong>理解研究目标</strong><small>范围、重点与交付物已明确</small></span>
+                    <span class="step-duration">0.8s</span><svg class="step-chevron"><use href="#i-chevron"></use></svg>
+                  </button>
+                  <div class="step-detail"><div class="detail-agent">Research Coordinator</div><p>限定 2023 年以来，覆盖召回策略、评测数据集和局限，最终生成带证据引用的中文调研报告。</p></div>
+                </li>
+
+                <li class="workflow-step completed" data-step="plan">
+                  <button class="step-summary" type="button" aria-expanded="false">
+                    <span class="step-node"><svg><use href="#i-check"></use></svg></span>
+                    <span class="step-copy"><strong>制定调研计划</strong><small>10 个步骤 · 预算内自动执行</small></span>
+                    <span class="step-duration">2.1s</span><svg class="step-chevron"><use href="#i-chevron"></use></svg>
+                  </button>
+                  <div class="step-detail"><div class="detail-agent">Planner</div><p>候选上限 50 篇，全文精读上限 12 篇；仅在费用越界、公开发布或范围冲突时请求确认。</p></div>
+                </li>
+
+                <li class="workflow-step completed" data-step="search">
+                  <button class="step-summary" type="button" aria-expanded="false">
+                    <span class="step-node"><svg><use href="#i-check"></use></svg></span>
+                    <span class="step-copy"><strong>搜索候选论文</strong><small>arXiv + 已有论文库 · 42 篇</small></span>
+                    <span class="step-duration">18.4s</span><svg class="step-chevron"><use href="#i-chevron"></use></svg>
+                  </button>
+                  <div class="step-detail terminal-detail">
+                    <div class="tool-line"><span>TOOL</span><code>search_metadata</code><b>32 results</b></div>
+                    <div class="tool-line"><span>TOOL</span><code>search_library</code><b>14 results</b></div>
+                    <p>合并去重后保留 42 篇候选论文。</p>
+                  </div>
+                </li>
+
+                <li class="workflow-step completed expanded" data-step="screening" id="step-screening">
+                  <button class="step-summary" type="button" aria-expanded="true">
+                    <span class="step-node"><svg><use href="#i-check"></use></svg></span>
+                    <span class="step-copy"><strong>筛选与去重</strong><small>入选 12 篇 · 排除 30 篇</small></span>
+                    <span class="step-duration">23.7s</span><svg class="step-chevron"><use href="#i-chevron"></use></svg>
+                  </button>
+                  <div class="step-detail screening-detail">
+                    <div class="detail-agent">Screening Agent</div>
+                    <div class="screening-bars"><span><i style="width: 72%"></i><b>相关性</b><em>12</em></span><span><i style="width: 54%"></i><b>重复项</b><em>9</em></span><span><i style="width: 42%"></i><b>范围外</b><em>21</em></span></div>
+                    <button type="button" class="detail-link">查看 12 篇入选论文 <svg><use href="#i-external"></use></svg></button>
+                  </div>
+                </li>
+
+                <li class="workflow-step running expanded" data-step="parse">
+                  <button class="step-summary" type="button" aria-expanded="true">
+                    <span class="step-node"><span class="node-spinner"></span></span>
+                    <span class="step-copy"><strong>抓取与解析全文</strong><small>Docling 正在处理 · 7 / 12</small></span>
+                    <span class="step-duration live">LIVE</span><svg class="step-chevron"><use href="#i-chevron"></use></svg>
+                  </button>
+                  <div class="step-detail parse-detail">
+                    <div class="current-paper"><span class="paper-icon"><svg><use href="#i-file"></use></svg></span><span><strong>RAG-Fusion</strong><small>PDF · 18 页 · 正在识别章节</small></span><em>67%</em></div>
+                    <div class="mini-progress"><span style="width: 67%"></span></div>
+                    <div class="parse-stats"><span><i class="success"></i>完成 7</span><span><i class="reuse"></i>复用 2</span><span><i></i>等待 3</span></div>
+                  </div>
+                </li>
+
+                <li class="workflow-step queued"><div class="step-summary static"><span class="step-node"></span><span class="step-copy"><strong>阅读与结构化抽取</strong><small>等待全文解析完成</small></span></div></li>
+                <li class="workflow-step queued"><div class="step-summary static"><span class="step-node"></span><span class="step-copy"><strong>跨论文比较与研究脉络</strong><small>等待 Paper Brief</small></span></div></li>
+                <li class="workflow-step queued"><div class="step-summary static"><span class="step-node"></span><span class="step-copy"><strong>撰写调研报告</strong><small>等待综合结果</small></span></div></li>
+                <li class="workflow-step queued"><div class="step-summary static"><span class="step-node"></span><span class="step-copy"><strong>引用与质量校验</strong><small>等待报告草稿</small></span></div></li>
+                <li class="workflow-step queued"><div class="step-summary static"><span class="step-node"></span><span class="step-copy"><strong>保存到资料库</strong><small>默认保存为私有项目</small></span></div></li>
+              </ol>
+            </div>
+          </aside>
+        </main>
+      </div>
+    </div>
+
+    <button class="mobile-run-bar" type="button" data-action="open-workflow">
+      <span class="live-pulse"></span><span><strong>正在解析正文</strong><small>5 / 10 步 · 7 / 12 篇</small></span><svg><use href="#i-chevron"></use></svg>
+    </button>
+
+    <aside class="task-drawer" aria-label="任务中心" aria-hidden="true" inert>
+      <div class="drawer-header"><div><span class="eyebrow">AGENT CENTER</span><h2>任务中心</h2></div><button class="icon-button" type="button" aria-label="关闭任务中心" data-action="close-tasks"><svg><use href="#i-x"></use></svg></button></div>
+      <div class="drawer-body">
+        <section class="task-group needs-input">
+          <div class="task-group-title"><span>需要你确认</span><b>1</b></div>
+          <button class="task-card waiting" type="button" data-action="open-decision">
+            <span class="task-state-icon">?</span>
+            <span class="task-copy"><strong>Agent Memory 研究</strong><small>“Agent Memory”存在两个合理研究口径</small><em>已等待 12 分钟</em></span>
+            <svg><use href="#i-chevron"></use></svg>
+          </button>
+        </section>
+        <section class="task-group">
+          <div class="task-group-title"><span>正在执行</span><b>2</b></div>
+          <button class="task-card" type="button" data-action="focus-current-run"><span class="task-state-icon active"><span></span></span><span class="task-copy"><strong>RAG 检索优化调研</strong><small>正在解析正文 · 7 / 12 篇</small><em>运行 8 分钟</em></span><svg><use href="#i-chevron"></use></svg></button>
+          <button class="task-card" type="button"><span class="task-state-icon active"><span></span></span><span class="task-copy"><strong>视觉语言模型论文同步</strong><small>正在搜索 arXiv · 18 篇候选</small><em>运行 2 分钟</em></span><svg><use href="#i-chevron"></use></svg></button>
+        </section>
+        <section class="task-group completed-tasks">
+          <div class="task-group-title"><span>最近完成</span><button type="button">查看全部</button></div>
+          <button class="task-card done" type="button"><span class="task-state-icon"><svg><use href="#i-check"></use></svg></span><span class="task-copy"><strong>多模态 RAG 对比</strong><small>报告已生成 · 8 篇论文</small><em>昨天完成</em></span><svg><use href="#i-chevron"></use></svg></button>
+        </section>
+      </div>
+    </aside>
+
+    <div class="decision-dialog" role="dialog" aria-modal="true" aria-labelledby="decision-title" aria-hidden="true" inert>
+      <div class="dialog-header"><span class="decision-mark">?</span><div><span class="eyebrow">NEEDS INPUT</span><h2 id="decision-title">确认研究范围</h2></div><button class="icon-button" type="button" aria-label="关闭" data-action="close-decision"><svg><use href="#i-x"></use></svg></button></div>
+      <p>“Agent Memory”可以指模型上下文记忆，也可以指跨会话长期用户记忆。本次调研重点是哪一种？</p>
+      <div class="decision-options">
+        <button type="button" class="decision-option recommended" data-decision="长期用户记忆"><span><strong>长期用户记忆</strong><em>推荐</em></span><small>关注记忆写入、检索、遗忘和用户偏好。</small></button>
+        <button type="button" class="decision-option" data-decision="模型上下文与压缩"><strong>模型上下文与压缩</strong><small>关注 context window、摘要压缩与缓存。</small></button>
+        <button type="button" class="decision-option" data-decision="两者都覆盖"><strong>两者都覆盖</strong><small>论文范围更广，预计增加约 8 篇全文解析。</small></button>
+      </div>
+      <button class="text-danger" type="button" data-action="close-decision">暂不继续这个任务</button>
+    </div>
+
+    <div class="command-dialog" role="dialog" aria-modal="true" aria-label="搜索或执行命令" aria-hidden="true" inert>
+      <div class="command-input-wrap"><svg><use href="#i-search"></use></svg><input type="search" placeholder="搜索论文、报告、任务，或输入命令……" aria-label="搜索内容" /><kbd>ESC</kbd></div>
+      <div class="command-content"><span class="command-label">快捷操作</span><button type="button" data-action="new-research"><span><svg><use href="#i-sparkles"></use></svg>开始新的深度调研</span><kbd>↵</kbd></button><button type="button"><span><svg><use href="#i-library"></use></svg>搜索论文库</span><kbd>⌘ P</kbd></button><button type="button" data-action="open-tasks"><span><svg><use href="#i-bell"></use></svg>打开任务中心</span><kbd>⌘ J</kbd></button></div>
+    </div>
+
+    <div class="toast" role="status" aria-live="polite"><span class="toast-icon"><svg><use href="#i-check"></use></svg></span><span class="toast-copy"><strong>操作已完成</strong><small></small></span></div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
