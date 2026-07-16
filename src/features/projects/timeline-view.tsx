@@ -11,6 +11,18 @@ function eventDate(event: ResearchTimeline["events"][number]) {
   return "日期未确定"
 }
 
+const eventTypeLabel: Record<string, string> = {
+  publication: "论文发表",
+  proposal: "提出方法",
+  improvement: "方法改进",
+  contradiction: "反驳",
+  turning_point: "关键转折",
+}
+
+function eventSortValue(event: ResearchTimeline["events"][number]) {
+  return event.date_range?.start ?? event.date ?? event.date_range?.end ?? ""
+}
+
 export function TimelineView({ projectId, artifact }: { projectId: string; artifact?: ResearchProjectArtifact<ResearchTimeline> | null }) {
   const [showAllEvents, setShowAllEvents] = useState(false)
   const content = artifact?.content
@@ -19,7 +31,9 @@ export function TimelineView({ projectId, artifact }: { projectId: string; artif
     ...events.filter((event) => event.citation_keys.length > 0).map((event) => event.event_id),
     ...events.filter((event) => event.citation_keys.length === 0).slice(-7).map((event) => event.event_id),
   ])
-  const visibleEvents = showAllEvents ? events : events.filter((event) => previewEventIds.has(event.event_id))
+  const visibleEvents = (showAllEvents ? events : events.filter((event) => previewEventIds.has(event.event_id)))
+    .slice()
+    .sort((left, right) => eventSortValue(right).localeCompare(eventSortValue(left)))
   return <section aria-labelledby="project-timeline-heading">
     <div className="mb-4"><h2 id="project-timeline-heading" className="text-lg font-semibold">研究时间线</h2><p className="mt-1 text-sm text-muted-foreground">发布日期表示时间排序；提出、改进、反驳等演进描述必须有引用依据。</p></div>
     <ArtifactState artifact={artifact} empty="尚未生成研究时间线。">
@@ -28,7 +42,7 @@ export function TimelineView({ projectId, artifact }: { projectId: string; artif
         {visibleEvents.map((event) => (
           <li key={event.event_id} className="grid min-w-0 gap-3 rounded-xl border p-4 sm:grid-cols-[9rem_minmax(0,1fr)]">
             <div className="flex items-start gap-2 text-sm text-muted-foreground"><CalendarDays className="mt-0.5 size-4 shrink-0" /><time className="break-words">{eventDate(event)}</time></div>
-            <article className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="break-words font-semibold [overflow-wrap:anywhere]">{event.title}</h3><span className="rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">{event.event_type}</span></div><p className="mt-2 break-words text-sm leading-6 [overflow-wrap:anywhere]">{event.description}</p><div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span>置信度 {Math.round(event.confidence * 100)}%</span>{event.paper_ids.map((paperId) => <Link key={paperId} to={`/papers/${paperId}`} className="inline-flex min-h-11 items-center rounded-lg border px-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">论文 {paperId}</Link>)}<CitationLabels keys={event.citation_keys} /></div>{!event.citation_keys.length ? <p className="mt-2 text-xs text-muted-foreground">仅表达已验证元数据中的时间位置。</p> : null}</article>
+            <article className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="break-words font-semibold [overflow-wrap:anywhere]">{event.title}</h3><span className="rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">{eventTypeLabel[event.event_type] ?? "研究事件"}</span></div><p className="mt-2 break-words text-sm leading-6 [overflow-wrap:anywhere]">{event.description}</p><div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span>置信度 {Math.round(event.confidence * 100)}%</span>{event.paper_ids.map((paperId, index) => <Link key={paperId} to={`/papers/${paperId}`} aria-label={`查看该事件关联的第 ${index + 1} 篇论文`} className="inline-flex min-h-11 items-center rounded-lg border px-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">查看论文{event.paper_ids.length > 1 ? ` ${index + 1}` : ""}</Link>)}<CitationLabels keys={event.citation_keys} /></div>{!event.citation_keys.length ? <p className="mt-2 text-xs text-muted-foreground">仅表达已验证元数据中的时间位置。</p> : null}</article>
           </li>
         ))}
       </ol>

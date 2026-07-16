@@ -368,7 +368,9 @@ class TimelineAgent:
                 "Do not infer influence from publication order. For each publication event, copy exactly one supplied "
                 "paper_id and its published_at into date; use no claim_ids or citation_keys. For every other event, "
                 "each claim_id must equal the claim_id of at least one citation alias on that same event. Periods and "
-                "turning points require supplied citation aliases; omit them when the evidence is insufficient."
+                "turning points require supplied citation aliases; omit them when the evidence is insufficient. "
+                "Write every user-facing narrative field in Simplified Chinese, while preserving paper titles, "
+                "proper names, metrics, and technical terms when translation would reduce precision."
             ),
             input_data={"plan": plan.model_dump(mode="json"), **inputs},
         )

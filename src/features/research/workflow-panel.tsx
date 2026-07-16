@@ -238,19 +238,21 @@ function BudgetSummary({ run }: { run: ResearchRun }) {
 
 function PaperList({ papers }: { papers: ResearchRunPaper[] }) {
   const [filter, setFilter] = useState<"all" | ResearchRunPaper["stage"]>("all")
+  const [showAll, setShowAll] = useState(false)
   const stageSets: Partial<Record<ResearchRunPaper["stage"], ResearchRunPaper["stage"][]>> = {
     selected: ["selected", "fulltext_ready", "read", "extracted"],
     fulltext_ready: ["fulltext_ready", "read", "extracted"],
     read: ["read", "extracted"],
   }
   const visible = papers.filter((paper) => filter === "all" || (stageSets[filter] ?? [filter]).includes(paper.stage))
+  const displayed = showAll ? visible : visible.slice(0, 8)
   return (
     <section aria-label="调研论文列表">
       <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
-        {(["all", "candidate", "selected", "excluded", "fulltext_ready", "read", "extracted"] as const).map((value) => <Button key={value} size="sm" variant={filter === value ? "default" : "outline"} aria-pressed={filter === value} className="min-h-11 shrink-0" onClick={() => setFilter(value)}>{value === "all" ? `全部 ${papers.length}` : stageLabel[value]}</Button>)}
+        {(["all", "candidate", "selected", "excluded", "fulltext_ready", "read", "extracted"] as const).map((value) => <Button key={value} size="sm" variant={filter === value ? "default" : "outline"} aria-pressed={filter === value} className="min-h-11 shrink-0" onClick={() => { setFilter(value); setShowAll(false) }}>{value === "all" ? `全部 ${papers.length}` : stageLabel[value]}</Button>)}
       </div>
       <div className="grid gap-2">
-        {visible.map((paper) => (
+        {displayed.map((paper) => (
           <article key={paper.paper_id} className="min-w-0 rounded-xl border bg-card p-3">
             <div className="flex min-w-0 items-start gap-2"><span className="shrink-0 font-mono text-xs text-muted-foreground">{paper.rank ? `#${paper.rank}` : "—"}</span><div className="min-w-0 flex-1"><h3 className="break-words text-sm font-medium [overflow-wrap:anywhere]">{paper.title}</h3><p className="mt-1 break-all text-xs text-muted-foreground">{paper.source}:{paper.source_id} · {paper.published_at.slice(0, 4)}</p></div><Badge variant="outline">{stageLabel[paper.stage]}</Badge></div>
             {paper.score != null ? <p className="mt-2 text-xs">评分：<span className="font-mono">{paper.score}</span></p> : null}
@@ -260,6 +262,7 @@ function PaperList({ papers }: { papers: ResearchRunPaper[] }) {
         ))}
         {!visible.length ? <p className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">当前筛选没有数据库记录。</p> : null}
       </div>
+      {visible.length > 8 ? <Button type="button" variant="outline" className="mt-3 min-h-11" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}>{showAll ? "收起论文列表" : `再显示 ${visible.length - displayed.length} 篇论文`}</Button> : null}
     </section>
   )
 }

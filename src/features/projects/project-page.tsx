@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { formatLocalDateTime } from "@/lib/date-time"
 import {
   useControlResearchProjectAnalysisMutation, useDeleteResearchProjectMutation,
   useRemoveResearchProjectItemMutation, useReorderResearchProjectItemsMutation,
@@ -148,5 +149,5 @@ function VersionPicker({ type, selected, versions, onChange }: { type: ResearchP
 }
 
 function VersionHistory({ groups }: { groups: Array<{ label: string; items?: Array<{ id: string; version: number; status: string; is_current: boolean; created_at: string }> }> }) {
-  return <section aria-labelledby="project-versions-heading"><h2 id="project-versions-heading" className="text-lg font-semibold">版本记录</h2><p className="mt-1 text-sm text-muted-foreground">历史版本仅用于安全审计；失效事实不会伪装成当前结论。</p><div className="mt-4 grid gap-4 md:grid-cols-2">{groups.map((group) => <section key={group.label} className="rounded-xl border p-4"><h3 className="font-semibold">{group.label}</h3><div className="mt-2 grid gap-2">{group.items?.length ? group.items.map((item) => <div key={item.id} className="flex min-h-11 items-center justify-between gap-2 rounded-lg bg-muted/50 px-3 text-sm"><span>v{item.version} · {item.created_at}</span><Badge variant="outline">{item.is_current ? "当前" : item.status === "stale" ? "已失效" : "历史"}</Badge></div>) : <p className="text-sm text-muted-foreground">暂无版本</p>}</div></section>)}</div></section>
+  return <section aria-labelledby="project-versions-heading"><h2 id="project-versions-heading" className="text-lg font-semibold">版本记录</h2><p className="mt-1 text-sm text-muted-foreground">历史版本仅用于安全审计；失效事实不会伪装成当前结论。</p><div className="mt-4 grid gap-4 md:grid-cols-2">{groups.map((group) => <section key={group.label} className="rounded-xl border p-4"><h3 className="font-semibold">{group.label}</h3><div className="mt-2 grid gap-2">{group.items?.length ? group.items.map((item) => <div key={item.id} className="flex min-h-11 items-center justify-between gap-2 rounded-lg bg-muted/50 px-3 text-sm"><span>v{item.version} · {formatLocalDateTime(item.created_at)}</span><Badge variant="outline">{item.is_current ? "当前" : item.status === "stale" ? "已失效" : "历史"}</Badge></div>) : <p className="text-sm text-muted-foreground">暂无版本</p>}</div></section>)}</div></section>
 }

@@ -38,6 +38,7 @@ import {
   useResearchProjectBacklinksQuery,
 } from "@/lib/query-hooks"
 import { cn } from "@/lib/utils"
+import { formatLocalDateTime } from "@/lib/date-time"
 import { PaperChat } from "./paper-chat"
 
 type LayoutMode = "reading" | "split" | "chat"
@@ -145,7 +146,7 @@ export function PaperDetailPage() {
           <div className="min-w-0 space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <Badge className="rounded-full bg-primary/10 text-primary hover:bg-primary/10">{paper.primary_category}</Badge>
-              <ProcessingBadge status={paper.processing_status} />
+              <ProcessingBadge status={documentReady ? "processed" : paper.processing_status} />
               <Badge variant={documentReady ? "secondary" : "outline"} className="rounded-full">
                 {paper.document?.status === "processing" ? "正在解析全文" : documentReady ? `全文 ${paper.document?.token_count.toLocaleString()} tokens` : paper.document?.status === "failed" ? "全文解析失败" : "尚未解析全文"}
               </Badge>
@@ -198,7 +199,7 @@ export function PaperDetailPage() {
                 {workspaceTab === "source" && sourceView === "pdf" && pdfUrl ? <iframe title={paper.title} src={pdfUrl} className="h-[720px] w-full bg-muted" /> : documentReady ? <div className="p-5">{hasEvidenceTarget ? chunksQuery.isLoading ? <p className="mb-4 text-sm text-muted-foreground" aria-live="polite">正在定位 Citation Evidence…</p> : chunksQuery.isError ? <p className="mb-4 text-sm text-destructive" role="alert">Evidence 定位失败；未用全文缓存伪装定位结果。</p> : evidenceChunk ? <section ref={evidenceRef} tabIndex={-1} className="mb-5 min-w-0 rounded-xl border border-primary/35 bg-primary/5 p-4 outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Citation Evidence 定位" role="status"><p className="text-xs font-semibold text-primary">Citation Evidence · Chunk {evidenceChunk.id}</p><h2 className="mt-1 break-words text-sm font-semibold [overflow-wrap:anywhere]">{evidenceChunk.heading || "未命名章节"}</h2><p className="mt-1 text-xs text-muted-foreground">字符 {evidenceChunk.char_start}–{evidenceChunk.char_end}</p><blockquote className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"><mark className="rounded bg-[var(--status-waiting-bg)] px-0.5 text-foreground">{evidenceChunk.content}</mark></blockquote></section> : <p className="mb-4 text-sm text-destructive" role="alert">当前论文与 source hash 下不存在该 Evidence Chunk。</p> : null}<MarkdownBlock content={paper.document?.content_markdown ?? ""} className="max-w-none" /></div> : <AppEmptyState title="尚未生成可阅读的全文" description="点击“解析全文”，使用 Docling 读取完整 PDF。" />}
               </TabsContent>
               <TabsContent value="summary" className="mt-0 min-h-0 flex-1 overflow-auto p-5">
-                {currentSummary ? <div className="grid gap-4"><div className="text-xs text-muted-foreground">{currentSummary.model} · {currentSummary.created_at}</div><MarkdownBlock content={currentSummary.content} className="max-w-none" /></div> : <AppEmptyState title="还没有全文概要" description={documentReady ? "点击顶部“生成概要”。" : "请先完成论文全文解析。"} />}
+                {currentSummary ? <div className="grid gap-4"><div className="text-xs text-muted-foreground">{currentSummary.model} · {formatLocalDateTime(currentSummary.created_at)}</div><MarkdownBlock content={currentSummary.content} className="max-w-none" /></div> : <AppEmptyState title="还没有全文概要" description={documentReady ? "点击顶部“生成概要”。" : "请先完成论文全文解析。"} />}
               </TabsContent>
               <TabsContent value="notes" className="mt-0 min-h-0 flex-1 overflow-auto p-5">
                 <div className="mx-auto grid max-w-3xl gap-5">

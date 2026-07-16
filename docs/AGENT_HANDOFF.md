@@ -1,8 +1,10 @@
 # Agent Handoff
 
-最后更新：2026-07-16，iter15 closeout。
+最后更新：2026-07-17，前端真实网页走查与 Bug 修复 closeout。
 
 ## Current Status
+
+- 2026-07-17 完成 fresh v9 与 iter15 真实数据副本的三视口网页走查；真实普通 Chat 和 7,406-token 全文 Paper Chat 成功。修复 UTC 时间误显示、全文就绪仍标待处理、Select 32px 触点、时间线乱序/英文类型、论文内部 ID 暴露和 30 篇候选一次铺满，并约束后续 Timeline Agent 使用中文叙述。验证为 122 tests、strict mypy、build、9 Playwright passed / 6 skipped；详见 `docs/frontend-audit-2026-07-17.md`。
 
 - 当前分支：`codex/agentic-research-refactor`；iter15 已完成本地提交，未 push。
 - iter15 已在隔离数据库副本上完成真实 `gpt-5.5-medium` 项目分析：成功 Run 为 7/7 步、3/3 provider 调用，五类项目 Artifact 全部完成；另完成普通 Chat 和约 22k token 全文 Paper Chat。桌面凭据只注入隔离进程，未打印或写入仓库。

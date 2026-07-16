@@ -13,14 +13,14 @@ export function TopicClustersView({ projectId, artifact }: { projectId: string; 
           <article key={cluster.cluster_id} className="min-w-0 rounded-xl border p-4">
             <div className="flex min-w-0 items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted"><Layers3 className="size-4" /></span><div className="min-w-0 flex-1"><h3 className="break-words font-semibold [overflow-wrap:anywhere]">{cluster.label}</h3><p className="mt-1 text-xs text-muted-foreground">{cluster.paper_ids.length} 篇论文 · {cluster.claim_ids.length} 条主张</p></div></div>
             <p className="mt-3 break-words text-sm leading-6 [overflow-wrap:anywhere]">{cluster.summary}</p>
-            <div className="mt-3 flex flex-wrap gap-2">{cluster.paper_ids.map((paperId) => <Link key={paperId} to={`/papers/${paperId}`} className="inline-flex min-h-11 items-center rounded-lg border px-3 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">打开论文 {paperId}</Link>)}{cluster.claim_ids.map((claimId, index) => <span key={claimId} className="inline-flex min-h-11 items-center rounded-lg bg-muted px-3 text-xs">研究主张 {index + 1}</span>)}</div>
+            <div className="mt-3 flex flex-wrap gap-2">{cluster.paper_ids.map((paperId, index) => <Link key={paperId} to={`/papers/${paperId}`} aria-label={`打开主题簇中的第 ${index + 1} 篇论文`} className="inline-flex min-h-11 items-center rounded-lg border px-3 text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">查看论文 {index + 1}</Link>)}{cluster.claim_ids.map((claimId, index) => <span key={claimId} className="inline-flex min-h-11 items-center rounded-lg bg-muted px-3 text-xs">研究主张 {index + 1}</span>)}</div>
             {cluster.distinguishing_features.length ? <div className="mt-3"><h4 className="text-xs font-semibold">区分特征</h4><ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-muted-foreground">{cluster.distinguishing_features.map((feature, index) => <li key={`${cluster.cluster_id}-feature-${index}`} className="break-words">{feature.text} <CitationLabels keys={feature.citation_keys} /></li>)}</ul></div> : null}
             {cluster.uncertainties.length ? <div className="mt-3"><h4 className="text-xs font-semibold">不确定项</h4><ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-muted-foreground">{cluster.uncertainties.map((item) => <li key={item} className="break-words">{item}</li>)}</ul></div> : null}
             <div className="mt-3"><CitationLabels keys={cluster.citation_keys} /></div>
           </article>
         ))}
       </div>
-      {content?.unclassified_paper_ids.length ? <section className="mt-4 rounded-xl border border-dashed p-4"><h3 className="font-semibold">依据不足 / 未分类</h3><p className="mt-1 break-words text-sm text-muted-foreground">论文 {content.unclassified_paper_ids.join("、")} 暂无足够的有效引用支持稳定归类。</p></section> : null}
+      {content?.unclassified_paper_ids.length ? <section className="mt-4 rounded-xl border border-dashed p-4"><h3 className="font-semibold">依据不足 / 未分类</h3><p className="mt-1 break-words text-sm text-muted-foreground">另有 {content.unclassified_paper_ids.length} 篇论文暂无足够的有效引用支持稳定归类，可在项目资料范围中查看。</p></section> : null}
     </ArtifactState>
     <span className="sr-only">项目 {projectId}</span>
   </section>
