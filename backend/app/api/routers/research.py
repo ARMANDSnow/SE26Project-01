@@ -48,6 +48,11 @@ def create_research_run(
     request: Request,
     user: CurrentUser,
 ) -> dict[str, Any]:
+    if payload.thread_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Chat-associated Research Runs must be created through /api/chat/route",
+        )
     with connect() as conn:
         try:
             result = create_harness_run(

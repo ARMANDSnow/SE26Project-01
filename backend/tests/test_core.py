@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from io import BytesIO
 from types import SimpleNamespace
@@ -33,6 +34,7 @@ from backend.app.db.migrations import (
     V3_MIGRATION,
     V4_MIGRATION,
     V5_MIGRATION,
+    V6_MIGRATION,
     apply_migrations,
 )
 from backend.app.main import app
@@ -73,6 +75,11 @@ from backend.app.services.conversations import (
     list_threads,
     prepare_run,
     stream_run,
+)
+from backend.app.services.chat_routing import (
+    ChatRoutingUnavailable,
+    LLMChatRouteClassifier,
+    get_chat_route_classifier,
 )
 from backend.tests.fixtures import add_test_paper, populate_test_library
 
@@ -254,12 +261,86 @@ def test_v5_migration_matches_fresh_research_tables_and_rolls_back_on_failure() 
     ).fetchone() is None
 
 
-def test_init_schema_rejects_forged_v5_without_research_tables() -> None:
+def test_v5_chat_messages_migrate_to_v6_content_parts_and_roll_back() -> None:
     conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE papers(id INTEGER PRIMARY KEY)")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE chat_messages(
+            id TEXT PRIMARY KEY,
+            content TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    values = [("plain", "hello"), ("unicode", "论文\n引号：\"RAG\""), ("empty", "")]
+    conn.executemany("INSERT INTO chat_messages(id, content) VALUES (?, ?)", values)
     conn.execute("PRAGMA user_version = 5")
 
-    with pytest.raises(IncompatibleSchemaError, match="schema"):
+    assert apply_migrations(conn, [V6_MIGRATION], target_version=6) == [6]
+    migrated = {
+        row["id"]: json.loads(row["content_parts_json"])
+        for row in conn.execute("SELECT id, content_parts_json FROM chat_messages")
+    }
+    assert migrated == {
+        message_id: [{"type": "text", "text": content}]
+        for message_id, content in values
+    }
+
+    fresh = sqlite3.connect(":memory:")
+    fresh.row_factory = sqlite3.Row
+    init_schema(fresh)
+    full_legacy = sqlite3.connect(":memory:")
+    full_legacy.row_factory = sqlite3.Row
+    full_legacy.execute("CREATE TABLE chat_threads(id TEXT PRIMARY KEY)")
+    full_legacy.execute(
+        """
+        CREATE TABLE chat_messages (
+            id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            parent_id TEXT REFERENCES chat_messages(id),
+            source_message_id TEXT REFERENCES chat_messages(id),
+            role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
+            content TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'complete',
+            token_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT
+        )
+        """
+    )
+    full_legacy.execute("PRAGMA user_version = 5")
+    apply_migrations(full_legacy, [V6_MIGRATION], target_version=6)
+    assert [tuple(row) for row in full_legacy.execute("PRAGMA table_info(chat_messages)")] == [
+        tuple(row) for row in fresh.execute("PRAGMA table_info(chat_messages)")
+    ]
+
+    rollback = sqlite3.connect(":memory:")
+    rollback.row_factory = sqlite3.Row
+    rollback.execute("CREATE TABLE chat_messages(id TEXT PRIMARY KEY, content TEXT NOT NULL)")
+    rollback.execute("INSERT INTO chat_messages VALUES ('one', 'before')")
+    rollback.execute("PRAGMA user_version = 5")
+
+    def fail_v7(db: sqlite3.Connection) -> None:
+        db.execute("CREATE TABLE must_rollback_v7(id INTEGER)")
+        raise RuntimeError("injected v7 failure")
+
+    with pytest.raises(RuntimeError, match="injected v7"):
+        apply_migrations(
+            rollback,
+            [V6_MIGRATION, Migration(version=7, name="fail", apply=fail_v7)],
+            target_version=7,
+        )
+    assert rollback.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert "content_parts_json" not in {
+        row["name"] for row in rollback.execute("PRAGMA table_info(chat_messages)")
+    }
+
+
+def test_init_schema_rejects_forged_v6_without_content_parts() -> None:
+    conn = memory_db()
+    conn.execute("ALTER TABLE chat_messages DROP COLUMN content_parts_json")
+
+    with pytest.raises(IncompatibleSchemaError, match="chat message schema"):
         init_schema(conn)
 
 
@@ -1653,7 +1734,253 @@ def test_api_streams_and_persists_general_chat(api_client, monkeypatch):
         ("user", "请打招呼"),
         ("assistant", "你好，世界"),
     ]
+    assert repository["messages"][1]["content_parts"] == [
+        {"type": "text", "text": "你好，世界"}
+    ]
     get_settings.cache_clear()
+
+
+def test_chat_route_explicit_research_is_atomic_idempotent_and_persists_parts(api_client):
+    thread = api_client.post("/api/chat/threads", json={}).json()
+    payload = {
+        "thread_id": thread["id"],
+        "mode": "deep_research",
+        "user_message": {"id": "route-u1", "content": "调研 RAG 检索优化论文"},
+        "assistant_message_id": "route-a1",
+    }
+    first = api_client.post("/api/chat/route", json=payload)
+    assert first.status_code == 200
+    assert first.json()["route"] == "research_run"
+    run_id = first.json()["run"]["id"]
+    assert first.json()["reason"] == "explicit"
+
+    replay = api_client.post("/api/chat/route", json=payload)
+    assert replay.status_code == 200
+    assert replay.json()["run"]["id"] == run_id
+    with connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM research_runs WHERE thread_id = ?", (thread["id"],)).fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM chat_messages WHERE thread_id = ?", (thread["id"],)).fetchone()[0] == 2
+    repository = api_client.get(f"/api/chat/threads/{thread['id']}/messages").json()
+    assert repository["headId"] == "route-a1"
+    assert repository["messages"][0]["content_parts"] == [
+        {"type": "text", "text": "调研 RAG 检索优化论文"}
+    ]
+    card_parts = repository["messages"][1]["content_parts"]
+    assert card_parts[-1] == {
+        "type": "data",
+        "name": "research-run",
+        "data": {"run_id": run_id},
+    }
+    assert "content_parts_json" not in repository["messages"][1]
+
+    conflict = api_client.post(
+        "/api/chat/route",
+        json={**payload, "user_message": {"id": "route-u1", "content": "different"}},
+    )
+    assert conflict.status_code == 409
+
+
+def test_chat_route_replay_skips_unstable_auto_classifier(api_client):
+    class UnstableClassifier:
+        calls = 0
+
+        def classify(self, _content: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return "research_run"
+            raise ChatRoutingUnavailable("routing_unavailable")
+
+    classifier = UnstableClassifier()
+    app.dependency_overrides[get_chat_route_classifier] = lambda: classifier
+    try:
+        thread = api_client.post("/api/chat/threads", json={}).json()
+        payload = {
+            "thread_id": thread["id"],
+            "mode": "auto",
+            "user_message": {"id": "auto-replay-u", "content": "RAG 最近有什么值得关注的方向"},
+            "assistant_message_id": "auto-replay-a",
+        }
+        first = api_client.post("/api/chat/route", json=payload)
+        replay = api_client.post("/api/chat/route", json=payload)
+        assert first.status_code == replay.status_code == 200
+        assert replay.json()["run"]["id"] == first.json()["run"]["id"]
+        assert replay.json()["reason"] == "model"
+        assert classifier.calls == 1
+    finally:
+        app.dependency_overrides.pop(get_chat_route_classifier, None)
+
+
+def test_chat_route_rolls_back_every_write_when_run_insert_fails(api_client, monkeypatch):
+    thread = api_client.post("/api/chat/threads", json={}).json()
+
+    def injected_failure(*_args, **_kwargs):
+        raise RuntimeError("injected after user message")
+
+    monkeypatch.setattr("backend.app.services.chat_routing.insert_harness_run", injected_failure)
+    with pytest.raises(RuntimeError, match="injected"):
+        api_client.post(
+            "/api/chat/route",
+            json={
+                "thread_id": thread["id"],
+                "mode": "deep_research",
+                "user_message": {"id": "rollback-u", "content": "调研事务回滚"},
+                "assistant_message_id": "rollback-a",
+            },
+        )
+    with connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM chat_messages WHERE thread_id = ?", (thread["id"],)
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM research_runs WHERE thread_id = ?", (thread["id"],)
+        ).fetchone()[0] == 0
+
+
+def test_chat_stream_redacts_provider_exception_from_sse_and_database(api_client, monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "configured-test-key")
+    get_settings.cache_clear()
+
+    def failing_stream(_self, _messages):
+        raise RuntimeError("Authorization: Bearer secret-value /Users/private provider-body")
+        yield "unreachable"
+
+    monkeypatch.setattr("backend.app.services.conversations.LLMClient.stream", failing_stream)
+    thread = api_client.post("/api/chat/threads", json={}).json()
+    response = api_client.post(
+        "/api/chat/runs",
+        json={
+            "thread_id": thread["id"],
+            "operation": "append",
+            "user_message": {"id": "redact-u", "content": "safe prompt"},
+            "assistant_message_id": "redact-a",
+        },
+    )
+    assert response.status_code == 200
+    assert "secret-value" not in response.text
+    assert "/Users/private" not in response.text
+    assert "回答生成失败" in response.text
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT m.content, r.error FROM chat_messages m
+            JOIN chat_runs r ON r.output_message_id = m.id
+            WHERE m.id = 'redact-a'
+            """
+        ).fetchone()
+        assert "secret-value" not in str(dict(row))
+        assert row["error"] == "chat_generation_failed"
+    get_settings.cache_clear()
+
+
+def test_chat_route_modes_and_unavailable_classifier_do_not_write(api_client):
+    thread = api_client.post("/api/chat/threads", json={}).json()
+    normal = api_client.post(
+        "/api/chat/route",
+        json={
+            "thread_id": thread["id"],
+            "mode": "normal",
+            "user_message": {"id": "normal-u", "content": "任何内容"},
+            "assistant_message_id": "normal-a",
+        },
+    )
+    assert normal.json() == {"route": "normal_chat", "reason": "explicit"}
+    deterministic = api_client.post(
+        "/api/chat/route",
+        json={
+            "thread_id": thread["id"],
+            "mode": "auto",
+            "user_message": {"id": "research-u", "content": "请帮我做一份论文综述"},
+            "assistant_message_id": "research-a",
+        },
+    )
+    assert deterministic.status_code == 200
+    assert deterministic.json()["reason"] == "deterministic"
+
+    ambiguous_thread = api_client.post("/api/chat/threads", json={}).json()
+    unavailable = api_client.post(
+        "/api/chat/route",
+        json={
+            "thread_id": ambiguous_thread["id"],
+            "mode": "auto",
+            "user_message": {"id": "ambiguous-u", "content": "RAG 最近怎么样"},
+            "assistant_message_id": "ambiguous-a",
+        },
+    )
+    assert unavailable.status_code == 503
+    with connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM chat_messages WHERE thread_id = ?", (ambiguous_thread["id"],)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM research_runs WHERE thread_id = ?", (ambiguous_thread["id"],)).fetchone()[0] == 0
+
+
+def test_chat_route_hides_another_users_thread(api_client):
+    owner_session = api_client.cookies.get("paperwiki_session")
+    thread = api_client.post("/api/chat/threads", json={}).json()
+    registered = api_client.post(
+        "/api/auth/register",
+        json={"username": "route_other", "password": "other-password"},
+    )
+    assert registered.status_code == 201
+    other_session = api_client.cookies.get("paperwiki_session")
+    assert owner_session and other_session
+    for mode in ("normal", "deep_research", "auto"):
+        response = api_client.post(
+            "/api/chat/route",
+            headers={"Cookie": f"paperwiki_session={other_session}"},
+            json={
+                "thread_id": thread["id"],
+                "mode": mode,
+                "user_message": {"id": f"other-{mode}-u", "content": "调研私有线程"},
+                "assistant_message_id": f"other-{mode}-a",
+            },
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Research object not found"
+    with connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM chat_messages WHERE thread_id = ?", (thread["id"],)
+        ).fetchone()[0] == 0
+
+
+def test_chat_route_model_classifier_uses_dependency_override(api_client):
+    class FakeClassifier:
+        def classify(self, content: str) -> str:
+            assert content == "一个需要判断的请求"
+            return "normal_chat"
+
+    app.dependency_overrides[get_chat_route_classifier] = lambda: FakeClassifier()
+    try:
+        thread = api_client.post("/api/chat/threads", json={}).json()
+        response = api_client.post(
+            "/api/chat/route",
+            json={
+                "thread_id": thread["id"],
+                "mode": "auto",
+                "user_message": {"id": "model-u", "content": "一个需要判断的请求"},
+                "assistant_message_id": "model-a",
+            },
+        )
+        assert response.json() == {"route": "normal_chat", "reason": "model"}
+    finally:
+        app.dependency_overrides.pop(get_chat_route_classifier, None)
+
+
+@pytest.mark.parametrize("invalid_output", ["not-json", "{}", '{"route":"other"}'])
+def test_chat_route_classifier_rejects_invalid_structured_output(monkeypatch, invalid_output):
+    monkeypatch.setattr(
+        "backend.app.services.chat_routing.LLMClient.complete",
+        lambda *_args, **_kwargs: invalid_output,
+    )
+    with pytest.raises(ChatRoutingUnavailable, match="routing_unavailable"):
+        LLMChatRouteClassifier().classify("ambiguous request")
+
+
+def test_standalone_research_run_rejects_chat_association(api_client):
+    thread = api_client.post("/api/chat/threads", json={}).json()
+    response = api_client.post(
+        "/api/research/runs",
+        json={"title": "invalid", "goal": "must use chat route", "thread_id": thread["id"]},
+    )
+    assert response.status_code == 422
 
 
 def test_chat_context_always_contains_full_paper():

@@ -1,3 +1,4 @@
+import { useEffect } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   addNote,
@@ -29,7 +30,11 @@ import {
   fetchResearchRuns,
   createResearchRun,
   controlResearchRun,
+  resolveResearchDecision,
+  fetchGeneralChatThreads,
+  createGeneralChatThread,
 } from "@/api"
+import type { ResearchRun } from "@/types"
 
 export type PaperFilters = {
   q?: string
@@ -63,6 +68,24 @@ export const queryKeys = {
   libraryItems: (folderId?: number) => ["library-items", folderId ?? "all"] as const,
   researchRuns: ["research-runs"] as const,
   researchRun: (id: string) => ["research-run", id] as const,
+  chatThreads: ["chat-threads"] as const,
+}
+
+export function useGeneralChatThreadsQuery() {
+  return useQuery({ queryKey: queryKeys.chatThreads, queryFn: fetchGeneralChatThreads })
+}
+
+export function useCreateGeneralChatThreadMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (title?: string) => createGeneralChatThread(title),
+    onSuccess: (thread) => {
+      queryClient.setQueryData(queryKeys.chatThreads, (current: typeof thread[] | undefined) => [
+        thread,
+        ...(current ?? []).filter((item) => item.id !== thread.id),
+      ])
+    },
+  })
 }
 
 export function useCurrentUserQuery() {
@@ -76,7 +99,8 @@ export function useCurrentUserQuery() {
 }
 
 export function useResearchRunsQuery() {
-  return useQuery({
+  const queryClient = useQueryClient()
+  const query = useQuery({
     queryKey: queryKeys.researchRuns,
     queryFn: fetchResearchRuns,
     refetchInterval: (query) =>
@@ -84,17 +108,27 @@ export function useResearchRunsQuery() {
         ? 1_000
         : false,
   })
+  useEffect(() => {
+    for (const run of query.data ?? []) {
+      const current = queryClient.getQueryData<ResearchRun>(queryKeys.researchRun(run.id))
+      if (current && current.state_version < run.state_version) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.researchRun(run.id) })
+      }
+    }
+  }, [query.data, queryClient])
+  return query
 }
 
 export function useResearchRunQuery(id: string) {
-  return useQuery({
+  return useQuery<ResearchRun>({
     queryKey: queryKeys.researchRun(id),
     queryFn: () => fetchResearchRun(id),
     enabled: id.length > 0,
-    refetchInterval: (query) =>
-      query.state.data && ["queued", "running", "cancelling"].includes(query.state.data.status)
-        ? 500
-        : false,
+    structuralSharing: (previous: unknown, incoming: unknown) => {
+      const current = previous as ResearchRun | undefined
+      const next = incoming as ResearchRun
+      return current && current.state_version > next.state_version ? current : next
+    },
   })
 }
 
@@ -116,6 +150,19 @@ export function useResearchRunControlMutation(runId: string) {
       controlResearchRun(runId, action),
     onSuccess: (run) => {
       queryClient.setQueryData(queryKeys.researchRun(run.id), run)
+      queryClient.invalidateQueries({ queryKey: queryKeys.researchRuns })
+    },
+  })
+}
+
+export function useResolveResearchDecisionMutation(runId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ decisionId, optionId }: { decisionId: string; optionId: string }) =>
+      resolveResearchDecision(decisionId, optionId),
+    onSuccess: (run) => {
+      queryClient.setQueryData(queryKeys.researchRun(runId), (previous: typeof run | undefined) =>
+        previous && previous.state_version > run.state_version ? previous : run)
       queryClient.invalidateQueries({ queryKey: queryKeys.researchRuns })
     },
   })

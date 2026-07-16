@@ -122,9 +122,27 @@ export type ChatMessageRow = {
   source_message_id?: string;
   role: "user" | "assistant" | "system";
   content: string;
+  content_parts: ChatContentPart[];
   status: "running" | "complete" | "failed";
   created_at: string;
 };
+
+export type ChatTextPart = { type: "text"; text: string };
+export type ResearchRunDataPart = {
+  type: "data";
+  name: "research-run";
+  data: { run_id: string };
+};
+export type ChatContentPart = ChatTextPart | ResearchRunDataPart;
+
+export type ChatRouteMode = "auto" | "normal" | "deep_research";
+export type ChatRouteResponse =
+  | { route: "normal_chat"; reason: "explicit" | "deterministic" | "model" }
+  | {
+      route: "research_run";
+      reason: "explicit" | "deterministic" | "model";
+      run: ResearchRun;
+    };
 
 export type ChatMessageRepository = {
   headId?: string;

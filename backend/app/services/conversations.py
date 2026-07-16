@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from ..config import get_settings
 from ..repositories.uploads import paper_is_accessible
+from .chat_parts import decode_parts, encode_parts, text_parts
 from .documents import estimate_tokens
 from .llm import LLMClient
 
@@ -20,6 +21,13 @@ GENERAL_SYSTEM_PROMPT = """你是严谨、清晰的通用研究助手。
 你只能使用当前对话中提供的信息和模型自身已有知识回答。
 当前对话没有接入论文库、用户资料、文件、联网搜索或其他工具；不要声称读取或调用了这些内容。
 默认使用中文回答；信息不足或不确定时应明确说明。"""
+
+
+def _message_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    raw_parts = str(result.pop("content_parts_json", "[]"))
+    result["content_parts"] = decode_parts(raw_parts, str(result["content"]))
+    return result
 
 
 def create_thread(
@@ -102,14 +110,15 @@ def get_message_repository(conn: sqlite3.Connection, thread_id: str, user_id: in
         raise ValueError("thread not found")
     rows = conn.execute(
         """
-        SELECT id, parent_id, source_message_id, role, content, status, created_at
+        SELECT id, parent_id, source_message_id, role, content, content_parts_json,
+               status, created_at
         FROM chat_messages WHERE thread_id = ? ORDER BY created_at, rowid
         """,
         (thread_id,),
     ).fetchall()
     return {
         "headId": thread["active_leaf_id"],
-        "messages": [dict(row) for row in rows],
+        "messages": [_message_row(row) for row in rows],
     }
 
 
@@ -171,8 +180,9 @@ def prepare_run(
             conn.execute(
                 """
                 INSERT INTO chat_messages
-                    (id, thread_id, parent_id, source_message_id, role, content, status, token_count, completed_at)
-                VALUES (?, ?, ?, ?, 'user', ?, 'complete', ?, CURRENT_TIMESTAMP)
+                    (id, thread_id, parent_id, source_message_id, role, content,
+                     content_parts_json, status, token_count, completed_at)
+                VALUES (?, ?, ?, ?, 'user', ?, ?, 'complete', ?, CURRENT_TIMESTAMP)
                 """,
                 (
                     input_message_id,
@@ -180,6 +190,7 @@ def prepare_run(
                     parent_id,
                     user_source_id,
                     content,
+                    encode_parts(text_parts(content)),
                     estimate_tokens(content),
                 ),
             )
@@ -197,10 +208,17 @@ def prepare_run(
         conn.execute(
             """
             INSERT INTO chat_messages
-                (id, thread_id, parent_id, source_message_id, role, content, status)
-            VALUES (?, ?, ?, ?, 'assistant', '', 'running')
+                (id, thread_id, parent_id, source_message_id, role, content,
+                 content_parts_json, status)
+            VALUES (?, ?, ?, ?, 'assistant', '', ?, 'running')
             """,
-            (assistant_message_id, thread_id, input_message_id, source_message_id),
+            (
+                assistant_message_id,
+                thread_id,
+                input_message_id,
+                source_message_id,
+                encode_parts(text_parts("")),
+            ),
         )
         run_id = f"run_{uuid4().hex}"
         settings = get_settings()
@@ -348,7 +366,7 @@ def _update_running_output(
 ) -> None:
     cursor = conn.execute(
         """
-        UPDATE chat_messages SET content = ?, token_count = ?
+        UPDATE chat_messages SET content = ?, content_parts_json = ?, token_count = ?
         WHERE id = ? AND thread_id = ? AND status = 'running'
           AND EXISTS (
               SELECT 1 FROM chat_runs
@@ -358,6 +376,7 @@ def _update_running_output(
         """,
         (
             content,
+            encode_parts(text_parts(content)),
             estimate_tokens(content),
             run["assistant_message_id"],
             run["thread_id"],
@@ -436,7 +455,7 @@ def stream_run(conn: sqlite3.Connection, run: dict[str, Any]) -> Iterator[tuple[
         conn.commit()
         completed = True
         yield "message.completed", {"message_id": run["assistant_message_id"], "content": accumulated}
-    except Exception as exc:
+    except Exception:
         _fail_running_output(conn, run)
         conn.execute(
             """
@@ -444,14 +463,14 @@ def stream_run(conn: sqlite3.Connection, run: dict[str, Any]) -> Iterator[tuple[
             WHERE id = ? AND thread_id = ? AND output_message_id = ?
             """,
             (
-                str(exc)[:1000],
+                "chat_generation_failed",
                 run["run_id"],
                 run["thread_id"],
                 run["assistant_message_id"],
             ),
         )
         conn.commit()
-        yield "run.failed", {"message": str(exc)}
+        yield "run.failed", {"message": "回答生成失败，请检查模型配置或稍后重试。"}
     finally:
         if not completed:
             _fail_running_output(conn, run)

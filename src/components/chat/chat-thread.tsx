@@ -13,6 +13,7 @@ import {
   useLocalRuntime,
 } from "@assistant-ui/react"
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown"
+import { useQueryClient } from "@tanstack/react-query"
 import {
   Check,
   ChevronLeft,
@@ -25,13 +26,13 @@ import {
   Square,
   X,
 } from "lucide-react"
-import { createContext, type FormEvent, useContext, useMemo, useRef, useState } from "react"
+import { createContext, type FormEvent, type ReactNode, useContext, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
-import { fetchChatMessages, updateChatThreadHead } from "@/api"
+import { API_BASE, fetchChatMessages, routeChatMessage, updateChatThreadHead } from "@/api"
 import { Button } from "@/components/ui/button"
-import type { ChatThread } from "@/types"
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ""
+import { ResearchRunDataUI, ResearchRunUiContext } from "@/components/chat/research-run-message"
+import { queryKeys } from "@/lib/query-hooks"
+import type { ChatContentPart, ChatRouteMode, ChatThread, ResearchRun } from "@/types"
 
 type ChatThreadProps = {
   thread: ChatThread
@@ -39,6 +40,11 @@ type ChatThreadProps = {
   emptyDescription: string
   placeholder: string
   hero?: boolean
+  onOpenRun?: (runId: string, opener?: HTMLElement | null) => void
+  runBar?: ReactNode
+  initialMode?: ChatRouteMode
+  routingEnabled?: boolean
+  onResearchRunCreated?: (runId: string) => void
 }
 
 type ChatScope = {
@@ -46,6 +52,7 @@ type ChatScope = {
 }
 
 const ChatScopeContext = createContext<ChatScope | null>(null)
+const noop = () => undefined
 
 function messageText(message: ThreadMessage): string {
   return message.content
@@ -57,18 +64,20 @@ function messageText(message: ThreadMessage): string {
 async function responseError(response: Response): Promise<string> {
   const raw = await response.text()
   try {
-    const parsed = JSON.parse(raw) as { detail?: string }
-    return parsed.detail || raw || `HTTP ${response.status}`
+    const parsed = JSON.parse(raw) as { detail?: string | { message?: string; code?: string } }
+    if (typeof parsed.detail === "string") return parsed.detail
+    if (parsed.detail?.message) return parsed.detail.message
+    return raw || `HTTP ${response.status}`
   } catch {
     return raw || `HTTP ${response.status}`
   }
 }
 
-async function* streamChat(
+async function* streamNormalChat(
   threadId: string,
   persistedIds: Set<string>,
   options: Parameters<ChatModelAdapter["run"]>[0],
-): AsyncGenerator<{ content: Array<{ type: "text"; text: string }> }> {
+): AsyncGenerator<{ content: ChatContentPart[] }> {
   const messages = options.messages
   const current = messages[messages.length - 1]
   if (!current || current.role !== "user") throw new Error("缺少用户问题")
@@ -130,6 +139,43 @@ async function* streamChat(
   }
 }
 
+async function* routeAndStreamChat(
+  threadId: string,
+  mode: ChatRouteMode,
+  persistedIds: Set<string>,
+  options: Parameters<ChatModelAdapter["run"]>[0],
+  onResearchRun: (run: ResearchRun) => void,
+): AsyncGenerator<{ content: ChatContentPart[] }> {
+  const messages = options.messages
+  const current = messages[messages.length - 1]
+  if (!current || current.role !== "user") throw new Error("缺少用户问题")
+  const regenerate = persistedIds.has(current.id)
+  if (regenerate) {
+    yield* streamNormalChat(threadId, persistedIds, options)
+    return
+  }
+  const previous = messages[messages.length - 2]
+  const assistantMessageId = options.unstable_assistantMessageId ?? `msg_${crypto.randomUUID()}`
+  const routed = await routeChatMessage({
+    thread_id: threadId,
+    mode,
+    user_message: { id: current.id, parent_id: previous?.id ?? null, content: messageText(current) },
+    assistant_message_id: assistantMessageId,
+    message_token_limit: 12000,
+  })
+  if (routed.route === "normal_chat") {
+    yield* streamNormalChat(threadId, persistedIds, options)
+    return
+  }
+  persistedIds.add(current.id)
+  persistedIds.add(assistantMessageId)
+  onResearchRun(routed.run)
+  yield { content: [
+    { type: "text", text: `已创建调研任务「${routed.run.title}」。当前仅执行可恢复 Harness 骨架，尚未检索论文。` },
+    { type: "data", name: "research-run", data: { run_id: routed.run.id } },
+  ] }
+}
+
 function BranchPicker() {
   const scope = useContext(ChatScopeContext)
   const aui = useAui()
@@ -148,7 +194,7 @@ function BranchPicker() {
   return (
     <BranchPickerPrimitive.Root hideWhenSingleBranch className="inline-flex items-center gap-1 text-xs text-muted-foreground">
       <BranchPickerPrimitive.Previous
-        className="rounded p-1 hover:bg-muted disabled:opacity-35"
+        className="rounded p-1 hover:bg-muted disabled:opacity-35 max-md:min-h-11 max-md:min-w-11"
         aria-label="上一个分支"
         onClick={persistAfterSwitch}
       >
@@ -156,7 +202,7 @@ function BranchPicker() {
       </BranchPickerPrimitive.Previous>
       <span className="tabular-nums"><BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count /></span>
       <BranchPickerPrimitive.Next
-        className="rounded p-1 hover:bg-muted disabled:opacity-35"
+        className="rounded p-1 hover:bg-muted disabled:opacity-35 max-md:min-h-11 max-md:min-w-11"
         aria-label="下一个分支"
         onClick={persistAfterSwitch}
       >
@@ -175,10 +221,10 @@ function UserMessage() {
       <div className="flex items-center gap-1">
         <BranchPicker />
         <ActionBarPrimitive.Root className="flex items-center gap-1" hideWhenRunning>
-          <ActionBarPrimitive.Edit className="rounded p-1 text-muted-foreground hover:bg-muted" aria-label="编辑并分叉" title="编辑并分叉">
+          <ActionBarPrimitive.Edit className="rounded p-1 text-muted-foreground hover:bg-muted max-md:min-h-11 max-md:min-w-11" aria-label="编辑并分叉" title="编辑并分叉">
             <Edit3 className="size-3.5" />
           </ActionBarPrimitive.Edit>
-          <ActionBarPrimitive.Copy className="rounded p-1 text-muted-foreground hover:bg-muted" aria-label="复制消息" title="复制消息">
+          <ActionBarPrimitive.Copy className="rounded p-1 text-muted-foreground hover:bg-muted max-md:min-h-11 max-md:min-w-11" aria-label="复制消息" title="复制消息">
             <MessagePrimitive.If copied><Check className="size-3.5" /></MessagePrimitive.If>
             <MessagePrimitive.If copied={false}><Copy className="size-3.5" /></MessagePrimitive.If>
           </ActionBarPrimitive.Copy>
@@ -221,8 +267,8 @@ function ForkAction() {
           placeholder="输入新分支中的下一条问题…"
         />
         <div className="flex justify-end gap-2">
-          <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(false)}><X className="size-4" />取消</Button>
-          <Button type="submit" size="sm" disabled={!text.trim()}><GitFork className="size-4" />创建分支</Button>
+          <Button type="button" size="sm" variant="ghost" className="max-md:min-h-11" onClick={() => setOpen(false)}><X className="size-4" />取消</Button>
+          <Button type="submit" size="sm" className="max-md:min-h-11" disabled={!text.trim()}><GitFork className="size-4" />创建分支</Button>
         </div>
       </form>
     )
@@ -231,7 +277,7 @@ function ForkAction() {
   return (
     <button
       type="button"
-      className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+      className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground max-md:min-h-11"
       onClick={() => setOpen(true)}
       title="从这里分叉"
     >
@@ -243,6 +289,7 @@ function ForkAction() {
 
 function AssistantMessage() {
   const MarkdownText = () => <MarkdownTextPrimitive />
+  const hasResearchRun = useAuiState((state) => state.message.content.some((part) => part.type === "data" && part.name === "research-run"))
   return (
     <MessagePrimitive.Root className="group mx-auto grid w-full max-w-3xl gap-2 px-3 py-3">
       <div className="rounded-2xl rounded-bl-md border bg-card px-4 py-3 text-sm leading-7">
@@ -255,10 +302,10 @@ function AssistantMessage() {
       <div className="flex items-center gap-1">
         <BranchPicker />
         <ActionBarPrimitive.Root className="flex items-center gap-1" hideWhenRunning>
-          <ActionBarPrimitive.Reload className="rounded p-1 text-muted-foreground hover:bg-muted" aria-label="重新生成一个分支" title="重新生成一个分支">
+          {!hasResearchRun ? <ActionBarPrimitive.Reload className="rounded p-1 text-muted-foreground hover:bg-muted max-md:min-h-11 max-md:min-w-11" aria-label="重新生成一个分支" title="重新生成一个分支">
             <RefreshCw className="size-3.5" />
-          </ActionBarPrimitive.Reload>
-          <ActionBarPrimitive.Copy className="rounded p-1 text-muted-foreground hover:bg-muted" aria-label="复制回答" title="复制回答">
+          </ActionBarPrimitive.Reload> : null}
+          <ActionBarPrimitive.Copy className="rounded p-1 text-muted-foreground hover:bg-muted max-md:min-h-11 max-md:min-w-11" aria-label="复制回答" title="复制回答">
             <Copy className="size-3.5" />
           </ActionBarPrimitive.Copy>
         </ActionBarPrimitive.Root>
@@ -274,10 +321,10 @@ function EditComposer() {
         <ComposerPrimitive.Input className="min-h-24 resize-none bg-transparent text-sm outline-none" />
         <div className="flex justify-end gap-2">
           <ComposerPrimitive.Cancel asChild>
-            <Button type="button" size="sm" variant="ghost"><X className="size-4" />取消</Button>
+            <Button type="button" size="sm" variant="ghost" className="max-md:min-h-11"><X className="size-4" />取消</Button>
           </ComposerPrimitive.Cancel>
           <ComposerPrimitive.Send asChild>
-            <Button type="submit" size="sm"><GitFork className="size-4" />保存为新分支</Button>
+            <Button type="submit" size="sm" className="max-md:min-h-11"><GitFork className="size-4" />保存为新分支</Button>
           </ComposerPrimitive.Send>
         </div>
       </ComposerPrimitive.Root>
@@ -285,33 +332,25 @@ function EditComposer() {
   )
 }
 
-function Composer({ placeholder, hero = false }: { placeholder: string; hero?: boolean }) {
+function Composer({ placeholder, hero = false, mode, onModeChange, routingEnabled }: { placeholder: string; hero?: boolean; mode: ChatRouteMode; onModeChange: (mode: ChatRouteMode) => void; routingEnabled: boolean }) {
   return (
-    <ComposerPrimitive.Root className={hero
-      ? "mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border bg-card p-3 shadow-lg"
-      : "mx-auto flex w-full max-w-3xl items-end gap-2 rounded-xl border bg-background p-2 shadow-sm"}
-    >
+    <ComposerPrimitive.Root className={hero ? "mx-auto grid w-full max-w-3xl gap-2 rounded-2xl border bg-card p-3 shadow-lg" : "mx-auto grid w-full max-w-3xl gap-2 rounded-xl border bg-background p-2 shadow-sm"}>
       <ComposerPrimitive.Input
         className={hero
           ? "max-h-64 min-h-28 flex-1 resize-none bg-transparent px-2 py-2 text-base leading-7 outline-none"
-          : "max-h-40 min-h-11 flex-1 resize-none bg-transparent px-2 py-2 text-sm outline-none"}
+          : "max-h-40 min-h-11 w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"}
         placeholder={placeholder}
       />
-      <ThreadPrimitive.If running={false}>
-        <ComposerPrimitive.Send asChild>
-          <Button type="submit" size="icon" className="size-10 shrink-0" aria-label="发送"><Send className="size-4" /></Button>
-        </ComposerPrimitive.Send>
-      </ThreadPrimitive.If>
-      <ThreadPrimitive.If running>
-        <ComposerPrimitive.Cancel asChild>
-          <Button type="button" size="icon" variant="destructive" className="size-10 shrink-0" aria-label="停止"><Square className="size-4" /></Button>
-        </ComposerPrimitive.Cancel>
-      </ThreadPrimitive.If>
+      <div className="flex items-center justify-between gap-2">
+        {routingEnabled ? <><label className="sr-only" htmlFor="chat-route-mode">回答模式</label><select id="chat-route-mode" value={mode} onChange={(event) => onModeChange(event.target.value as ChatRouteMode)} className="min-h-11 rounded-lg border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"><option value="auto">自动判断</option><option value="normal">普通对话</option><option value="deep_research">深度研究</option></select></> : <span />}
+        <ThreadPrimitive.If running={false}><ComposerPrimitive.Send asChild><Button type="submit" size="icon" className="size-11 shrink-0" aria-label="发送"><Send className="size-4" /></Button></ComposerPrimitive.Send></ThreadPrimitive.If>
+        <ThreadPrimitive.If running><ComposerPrimitive.Cancel asChild><Button type="button" size="icon" variant="destructive" className="size-11 shrink-0" aria-label="停止"><Square className="size-4" /></Button></ComposerPrimitive.Cancel></ThreadPrimitive.If>
+      </div>
     </ComposerPrimitive.Root>
   )
 }
 
-function ChatSurface({ emptyTitle, emptyDescription, placeholder, hero }: Omit<ChatThreadProps, "thread">) {
+function ChatSurface({ emptyTitle, emptyDescription, placeholder, hero, runBar, mode, onModeChange, routingEnabled = false }: Omit<ChatThreadProps, "thread" | "onOpenRun" | "initialMode"> & { mode: ChatRouteMode; onModeChange: (mode: ChatRouteMode) => void }) {
   const messageCount = useAuiState((state) => state.thread.messages.length)
 
   if (hero && messageCount === 0) {
@@ -322,8 +361,8 @@ function ChatSurface({ emptyTitle, emptyDescription, placeholder, hero }: Omit<C
             <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">{emptyTitle}</h1>
             <p className="text-sm leading-6 text-muted-foreground md:text-base">{emptyDescription}</p>
           </div>
-          <Composer placeholder={placeholder} hero />
-          <p className="text-center text-xs text-muted-foreground">当前仅发送本对话历史，不接入论文、资料库、联网搜索或 Agent 工具。</p>
+          <Composer placeholder={placeholder} hero mode={mode} onModeChange={onModeChange} routingEnabled={routingEnabled} />
+          <p className="text-center text-xs text-muted-foreground">{routingEnabled ? "深度研究当前仅启动可恢复三步 Harness；尚不检索论文或调用研究 Agent。" : "当前对话使用原有上下文契约。"}</p>
         </div>
       </ThreadPrimitive.Root>
     )
@@ -341,14 +380,17 @@ function ChatSurface({ emptyTitle, emptyDescription, placeholder, hero }: Omit<C
         <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage, UserEditComposer: EditComposer }} />
       </ThreadPrimitive.Viewport>
       <div className="border-t bg-card/80 p-3 backdrop-blur">
-        <Composer placeholder={placeholder} />
+        {runBar}
+        <Composer placeholder={placeholder} mode={mode} onModeChange={onModeChange} routingEnabled={routingEnabled} />
       </div>
     </ThreadPrimitive.Root>
   )
 }
 
-export function ChatThread({ thread, emptyTitle, emptyDescription, placeholder, hero = false }: ChatThreadProps) {
+export function ChatThread({ thread, emptyTitle, emptyDescription, placeholder, hero = false, onOpenRun = noop, runBar, initialMode = "auto", routingEnabled = false, onResearchRunCreated = noop }: ChatThreadProps) {
   const persistedIdsRef = useRef(new Set<string>())
+  const [mode, setMode] = useState<ChatRouteMode>(initialMode)
+  const queryClient = useQueryClient()
   const history = useMemo<ThreadHistoryAdapter>(() => ({
     async load() {
       const repository = await fetchChatMessages(thread.id)
@@ -360,13 +402,13 @@ export function ChatThread({ thread, emptyTitle, emptyDescription, placeholder, 
           message: {
             id: row.id,
             role: row.role,
-            content: [{ type: "text" as const, text: row.content }],
+            content: row.content_parts,
             createdAt: new Date(row.created_at),
             metadata: { custom: {} },
             ...(row.role === "assistant"
               ? { status: row.status === "complete" ? { type: "complete" as const } : { type: "incomplete" as const, reason: "error" as const } }
               : {}),
-          } as ThreadMessage,
+          } as unknown as ThreadMessage,
         })),
       }
     },
@@ -377,21 +419,37 @@ export function ChatThread({ thread, emptyTitle, emptyDescription, placeholder, 
 
   const adapter = useMemo<ChatModelAdapter>(() => ({
     async *run(options) {
-      yield* streamChat(thread.id, persistedIdsRef.current, options)
+      if (routingEnabled) {
+        yield* routeAndStreamChat(thread.id, mode, persistedIdsRef.current, options, (run) => {
+          queryClient.setQueryData(queryKeys.researchRun(run.id), run)
+          void queryClient.invalidateQueries({ queryKey: queryKeys.researchRuns })
+          onResearchRunCreated(run.id)
+        })
+      } else {
+        yield* streamNormalChat(thread.id, persistedIdsRef.current, options)
+      }
+      void queryClient.invalidateQueries({ queryKey: queryKeys.chatThreads })
     },
-  }), [thread.id])
+  }), [mode, onResearchRunCreated, queryClient, routingEnabled, thread.id])
   const runtime = useLocalRuntime(adapter, { adapters: { history } })
 
   return (
     <ChatScopeContext.Provider value={{ threadId: thread.id }}>
+      <ResearchRunUiContext.Provider value={{ openRun: onOpenRun }}>
       <AssistantRuntimeProvider runtime={runtime}>
+        <ResearchRunDataUI />
         <ChatSurface
           emptyTitle={emptyTitle}
           emptyDescription={emptyDescription}
           placeholder={placeholder}
           hero={hero}
+          runBar={runBar}
+          mode={mode}
+          onModeChange={setMode}
+          routingEnabled={routingEnabled}
         />
       </AssistantRuntimeProvider>
+      </ResearchRunUiContext.Provider>
     </ChatScopeContext.Provider>
   )
 }

@@ -5,10 +5,12 @@ import {
   Menu,
   MessageSquareText,
   LogOut,
+  Plus,
+  MessageSquare,
 } from "lucide-react"
 import { useQueryClient } from "@tanstack/react-query"
-import type { ComponentType, SVGProps } from "react"
-import { Link, NavLink, Outlet, useLocation } from "react-router"
+import type { ComponentType, CSSProperties, SVGProps } from "react"
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router"
 import { ThemeToggle } from "@/components/app/theme-toggle"
 import { TaskCenter } from "@/features/research/task-center"
 import { Button } from "@/components/ui/button"
@@ -30,7 +32,7 @@ import {
 } from "@/components/ui/sidebar"
 import { cn } from "@/lib/utils"
 import { logout } from "@/api"
-import { queryKeys, useCurrentUserQuery } from "@/lib/query-hooks"
+import { queryKeys, useCreateGeneralChatThreadMutation, useCurrentUserQuery, useGeneralChatThreadsQuery } from "@/lib/query-hooks"
 
 type NavItem = {
   path: string
@@ -93,6 +95,36 @@ function NavigationMenu() {
   )
 }
 
+function RecentChats() {
+  const { setOpenMobile } = useSidebar()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const threads = useGeneralChatThreadsQuery()
+  const createThread = useCreateGeneralChatThreadMutation()
+  const currentId = new URLSearchParams(location.search).get("thread")
+  const createResearchChat = () => createThread.mutate("新研究", {
+    onSuccess: (thread) => {
+      setOpenMobile(false)
+      navigate(`/?thread=${encodeURIComponent(thread.id)}&mode=deep_research`)
+    },
+  })
+  return (
+    <SidebarGroup className="min-h-0 flex-1">
+      <SidebarGroupContent className="flex min-h-0 flex-col gap-2">
+        <Button className="min-h-11 w-full justify-start" onClick={createResearchChat} disabled={createThread.isPending}><Plus className="size-4" />新建研究</Button>
+        <div className="flex items-center justify-between px-2 pt-2"><p className="text-xs font-medium text-sidebar-foreground/60">最近对话</p><span className="text-[11px] text-sidebar-foreground/50">{threads.data?.length ?? 0}</span></div>
+        <div className="grid min-h-0 gap-1 overflow-y-auto">
+          {(threads.data ?? []).slice(0, 12).map((thread) => (
+            <Link key={thread.id} to={`/?thread=${encodeURIComponent(thread.id)}`} onClick={() => setOpenMobile(false)} className={cn("flex min-h-11 items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-sidebar-accent", currentId === thread.id && location.pathname === "/" && "bg-sidebar-accent font-medium")}>
+              <MessageSquare className="size-3.5 shrink-0" /><span className="truncate">{thread.title}</span>
+            </Link>
+          ))}
+        </div>
+      </SidebarGroupContent>
+    </SidebarGroup>
+  )
+}
+
 export function AppShell() {
   const queryClient = useQueryClient()
   const userQuery = useCurrentUserQuery()
@@ -114,7 +146,7 @@ export function AppShell() {
   }
 
   return (
-    <SidebarProvider>
+    <SidebarProvider style={{ "--sidebar-width": "17rem" } as CSSProperties}>
       <a
         href="#main-content"
         className="sr-only z-50 rounded-md bg-background px-3 py-2 text-sm font-medium text-foreground focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:ring-2 focus:ring-ring"
@@ -133,6 +165,7 @@ export function AppShell() {
               <NavigationMenu />
             </SidebarGroupContent>
           </SidebarGroup>
+          <RecentChats />
         </SidebarContent>
         <SidebarFooter className="p-3">
           <div className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2">
@@ -168,8 +201,8 @@ export function AppShell() {
           </div>
         </header>
 
-        <main id="main-content" className="min-w-0 flex-1 px-3 py-3 lg:px-5 lg:py-4">
-          <div className="mx-auto grid w-full max-w-[1480px] gap-5">
+        <main id="main-content" className={cn("min-w-0 flex-1", location.pathname === "/" ? "p-0" : "px-3 py-3 lg:px-5 lg:py-4")}>
+          <div className={cn("mx-auto grid w-full gap-5", location.pathname === "/" ? "max-w-none" : "max-w-[1480px]")}>
             <Outlet />
           </div>
         </main>

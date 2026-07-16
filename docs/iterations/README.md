@@ -7,6 +7,7 @@ Agent 续写入口：
 
 | Iteration | Title | Status | Notes |
 | --- | --- | --- | --- |
+| [iter12](iteration_iter12_chat-run-workflow.md) | Chat 接入 Research Run 与 Workflow UI | Complete | schema v6、原子 Chat 路由、assistant-ui Run data part、实时 Workflow；92 tests、strict mypy、build 和三视口 Playwright 通过。 |
 | [iter11](iteration_iter11_research-run-harness.md) | Research Run 与可恢复 Harness | Complete | schema v5、fenced lease 单 worker、SSE 续传、Decision、任务中心与 Run 页；80 tests、strict mypy、build 和 2 Playwright 通过。 |
 | [iter10](iteration_iter10_upload-visibility.md) | 用户上传归属与可见性 | Complete | schema v4、默认私有/显式公开上传、全读取链路访问控制；70 tests、strict mypy 和前端 build 通过。 |
 | [iter09](iteration_iter09_session-user-isolation.md) | Session 登录与跨用户数据隔离 | Complete | 内存 SessionStore、Argon2 登录、CurrentUser、schema v3 migration 与跨用户隔离；67 tests、strict mypy 和前端 build 通过。 |

@@ -119,6 +119,33 @@ def create_harness_run(
     goal: str,
     thread_id: str | None = None,
 ) -> dict[str, Any]:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        run_id = insert_harness_run(
+            conn,
+            user_id=user_id,
+            title=title,
+            goal=goal,
+            thread_id=thread_id,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return get_run_snapshot(conn, run_id, user_id)
+
+
+def insert_harness_run(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    title: str,
+    goal: str,
+    thread_id: str | None = None,
+    run_id: str | None = None,
+) -> str:
+    """Insert a Harness and its initial event inside the caller's transaction."""
+
     if thread_id is not None:
         owner = conn.execute(
             "SELECT 1 FROM chat_threads WHERE id = ? AND user_id = ?",
@@ -126,62 +153,56 @@ def create_harness_run(
         ).fetchone()
         if owner is None:
             raise ResearchNotFoundError("conversation not found")
-    run_id = str(uuid.uuid4())
+    run_id = run_id or str(uuid.uuid4())
     steps: tuple[tuple[str, str, str, str, list[str]], ...] = (
         ("normalize", "harness.normalize", "规范化任务", "Harness", []),
         ("plan", "harness.plan", "创建骨架计划", "Harness", ["normalize"]),
         ("finalize", "harness.finalize", "确认 Harness 就绪", "Harness", ["plan"]),
     )
-    conn.execute("BEGIN IMMEDIATE")
-    try:
+    conn.execute(
+        """
+        INSERT INTO research_runs(id, user_id, thread_id, title, goal, budget_json, usage_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            user_id,
+            thread_id,
+            title,
+            goal,
+            _json({"kind": "harness", "external_calls": 0}),
+            _json({"external_calls": 0}),
+        ),
+    )
+    for position, (key, step_type, step_title, agent, dependencies) in enumerate(steps):
         conn.execute(
             """
-            INSERT INTO research_runs(id, user_id, thread_id, title, goal, budget_json, usage_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO research_steps(
+                id, run_id, step_key, step_type, title, agent_name, position,
+                depends_on_json, input_json, idempotency_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                str(uuid.uuid4()),
                 run_id,
-                user_id,
-                thread_id,
-                title,
-                goal,
-                _json({"kind": "harness", "external_calls": 0}),
-                _json({"external_calls": 0}),
+                key,
+                step_type,
+                step_title,
+                agent,
+                position,
+                _json(dependencies),
+                _json({"goal": goal} if position == 0 else {}),
+                f"harness:{key}:v1",
             ),
         )
-        for position, (key, step_type, step_title, agent, dependencies) in enumerate(steps):
-            conn.execute(
-                """
-                INSERT INTO research_steps(
-                    id, run_id, step_key, step_type, title, agent_name, position,
-                    depends_on_json, input_json, idempotency_key
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(uuid.uuid4()),
-                    run_id,
-                    key,
-                    step_type,
-                    step_title,
-                    agent,
-                    position,
-                    _json(dependencies),
-                    _json({"goal": goal} if position == 0 else {}),
-                    f"harness:{key}:v1",
-                ),
-            )
-        _insert_event(
-            conn,
-            run_id,
-            "run.created",
-            "Research Harness 已创建",
-            payload={"mode": "harness", "external_calls": 0},
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    return get_run_snapshot(conn, run_id, user_id)
+    _insert_event(
+        conn,
+        run_id,
+        "run.created",
+        "Research Harness 已创建",
+        payload={"mode": "harness", "external_calls": 0},
+    )
+    return run_id
 
 
 def list_runs(conn: sqlite3.Connection, user_id: int, *, limit: int = 100) -> list[dict[str, Any]]:

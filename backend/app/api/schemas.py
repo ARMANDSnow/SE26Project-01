@@ -103,6 +103,14 @@ class ChatRunRequest(BaseModel):
     message_token_limit: int = Field(default=12000, ge=0, le=100000)
 
 
+class ChatRouteRequest(BaseModel):
+    thread_id: str = Field(min_length=1, max_length=100)
+    mode: Literal["auto", "normal", "deep_research"] = "auto"
+    user_message: ChatUserMessage
+    assistant_message_id: str = Field(min_length=1, max_length=100)
+    message_token_limit: int = Field(default=12000, ge=0, le=100000)
+
+
 class ResearchRunCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     goal: str = Field(min_length=1, max_length=20_000)

@@ -1,6 +1,6 @@
-import type { ChatMessageRepository, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, ResearchRun, Stats, Subscription, User, WikiSearchResult } from "./types";
+import type { ChatMessageRepository, ChatRouteMode, ChatRouteResponse, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, ResearchRun, Stats, Subscription, User, WikiSearchResult } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers ?? {})
@@ -66,6 +66,13 @@ export async function controlResearchRun(
   action: "pause" | "resume" | "cancel" | "retry",
 ): Promise<ResearchRun> {
   return request<ResearchRun>(`/api/research/runs/${runId}/${action}`, { method: "POST" })
+}
+
+export async function resolveResearchDecision(decisionId: string, optionId: string): Promise<ResearchRun> {
+  return request<ResearchRun>(`/api/research/decisions/${decisionId}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ option_id: optionId }),
+  })
 }
 
 export async function fetchStats(): Promise<Stats> {
@@ -138,6 +145,24 @@ export async function updateChatThreadHead(threadId: string, headId?: string): P
     method: "PATCH",
     body: JSON.stringify({ head_id: headId ?? null }),
   });
+}
+
+export async function routeChatMessage(payload: {
+  thread_id: string
+  mode: ChatRouteMode
+  user_message: {
+    id: string
+    parent_id?: string | null
+    source_message_id?: string | null
+    content: string
+  }
+  assistant_message_id: string
+  message_token_limit?: number
+}): Promise<ChatRouteResponse> {
+  return request<ChatRouteResponse>("/api/chat/route", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function ingestArxiv(payload: { categories: string[]; keywords: string[]; max_results: number }) {

@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from .connection import connect
-from .migrations import V3_MIGRATION, V4_MIGRATION, V5_MIGRATION, apply_migrations
+from .migrations import V3_MIGRATION, V4_MIGRATION, V5_MIGRATION, V6_MIGRATION, apply_migrations
 from .migrations.v5 import RESEARCH_SCHEMA_SQL
 
 
 PAPER_CHUNKS_FTS_TABLE = "paper_chunks_fts"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class IncompatibleSchemaError(RuntimeError):
@@ -59,6 +59,9 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
     upload_columns = {
         str(row[1]) for row in conn.execute("PRAGMA table_info(paper_uploads)").fetchall()
     }
+    chat_message_column_rows = conn.execute("PRAGMA table_info(chat_messages)").fetchall()
+    chat_message_columns = {str(row[1]) for row in chat_message_column_rows}
+    chat_message_specs = {str(row[1]): (str(row[2]).upper(), int(row[3]), row[4]) for row in chat_message_column_rows}
     research_run_columns = {
         str(row[1]) for row in conn.execute("PRAGMA table_info(research_runs)").fetchall()
     }
@@ -111,6 +114,13 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
     }.issubset(upload_columns):
         raise IncompatibleSchemaError(
             f"Database upload schema does not match version {SCHEMA_VERSION}; rebuild it with: "
+            f"{_schema_reset_command(conn)}"
+        )
+    if "content_parts_json" not in chat_message_columns or chat_message_specs.get(
+        "content_parts_json"
+    ) != ("TEXT", 1, "'[]'"):
+        raise IncompatibleSchemaError(
+            f"Database chat message schema does not match version {SCHEMA_VERSION}; rebuild it with: "
             f"{_schema_reset_command(conn)}"
         )
     if not {
@@ -267,10 +277,10 @@ def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = No
 def init_schema(conn: sqlite3.Connection) -> None:
     tables = _schema_tables(conn)
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    if tables and version in {2, 3, 4}:
+    if tables and version in {2, 3, 4, 5}:
         apply_migrations(
             conn,
-            [V3_MIGRATION, V4_MIGRATION, V5_MIGRATION],
+            [V3_MIGRATION, V4_MIGRATION, V5_MIGRATION, V6_MIGRATION],
             target_version=SCHEMA_VERSION,
         )
     _assert_schema_compatible(conn)
@@ -421,7 +431,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'complete',
             token_count INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            completed_at TEXT
+            completed_at TEXT,
+            content_parts_json TEXT NOT NULL DEFAULT '[]'
         );
 
         CREATE TABLE IF NOT EXISTS chat_runs (

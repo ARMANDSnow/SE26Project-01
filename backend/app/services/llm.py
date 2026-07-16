@@ -75,6 +75,7 @@ class LLMClient:
         *,
         timeout_seconds: float = 120,
         json_mode: bool = False,
+        max_attempts: int = 3,
     ) -> dict[str, Any]:
         self._require_configured()
         payload = self._payload(
@@ -84,12 +85,13 @@ class LLMClient:
             json_mode=json_mode,
         )
         url = f"{self.settings.llm_base_url}/chat/completions"
-        for attempt in range(3):
+        attempts = max(1, max_attempts)
+        for attempt in range(attempts):
             try:
                 with httpx.Client(timeout=timeout_seconds, follow_redirects=False) as client:
                     response = client.post(url, headers=self._headers(), json=payload)
                 if response.status_code in {408, 409, 429} or response.status_code >= 500:
-                    if attempt < 2:
+                    if attempt < attempts - 1:
                         time.sleep(2**attempt)
                         continue
                 response.raise_for_status()
@@ -101,7 +103,7 @@ class LLMClient:
             except httpx.HTTPStatusError as exc:
                 raise LLMProviderError(f"provider_http_{exc.response.status_code}") from exc
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
-                if attempt < 2:
+                if attempt < attempts - 1:
                     time.sleep(2**attempt)
                     continue
                 raise LLMProviderError("provider_unreachable") from exc
@@ -109,13 +111,23 @@ class LLMClient:
                 raise LLMProviderError("provider_invalid_response") from exc
         raise LLMProviderError("provider_unreachable")
 
-    def complete(self, system_prompt: str, user_prompt: str, json_mode: bool = False) -> str:
+    def complete(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        json_mode: bool = False,
+        *,
+        timeout_seconds: float = 120,
+        max_attempts: int = 3,
+    ) -> str:
         message = self.chat(
             [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             json_mode=json_mode,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
         )
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
