@@ -8,6 +8,7 @@ Agent 续写入口：
 | Iteration | Title | Status | Notes |
 | --- | --- | --- | --- |
 | [iter15](iteration_iter15_research-landscape-projects.md) | 可追溯研究脉络、主题簇与项目化资料库 | Complete | schema v9、owner-only 研究项目、项目级版本 Artifact/DAG、七步 Project workflow、主题簇/时间线/图谱、资料库 UI 与 Workflow 降噪；120 tests、mypy、build、9 项 Playwright 通过。 |
+| [iter15 前端审计](iteration_frontend-audit-2026-07-17.md) | 真实网页走查与 Bug 修复 | Complete | fresh v9 与 iter15 真实数据副本三视口走查、普通 Chat/全文 Paper Chat 真模型验证；修复时间、状态、触点、时间线、内部 ID 和长列表体验；122 tests、mypy、build、9 项 Playwright 通过。 |
 | [iter14](iteration_iter14_cited-research-synthesis.md) | 可追溯调研综合与研究报告 | Complete | schema v8、durable Evidence/Citation/model ledger、17 步综合、严格引用验证、版本化报告与响应式引用交互；112 tests、mypy、build、6 项 Playwright 和真实 arXiv/PDF/Docling/模型 smoke 通过。 |
 | [iter13](iteration_iter13_topic-research-pipeline.md) | 主题调研数据链路 | Complete | schema v7、版本化 Artifact/Run Paper、Tool Registry、五 Agent、十步 topic workflow、预算 Decision 与真实数据 UI；102 tests、mypy、build、6 项 Playwright 和真实 arXiv smoke 通过。 |
 | [iter12](iteration_iter12_chat-run-workflow.md) | Chat 接入 Research Run 与 Workflow UI | Complete | schema v6、原子 Chat 路由、assistant-ui Run data part、实时 Workflow；92 tests、strict mypy、build 和三视口 Playwright 通过。 |
