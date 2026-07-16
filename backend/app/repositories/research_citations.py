@@ -272,7 +272,7 @@ def list_citations(conn: sqlite3.Connection, run_id: str, user_id: int) -> list[
         if status != str(row["status"]):
             conn.execute(f"UPDATE research_citations SET status = ?, updated_at = {_NOW} WHERE id = ?", (status, str(row["id"])))
         if status == "inaccessible":
-            result.append({"id": str(row["id"]), "run_id": run_id, "artifact_id": str(row["artifact_id"]), "artifact_version": int(row["artifact_version"]), "citation_key": str(row["citation_key"]), "status": status})
+            result.append({"id": str(row["id"]), "status": status})
         else:
             item = dict(row)
             item["status"] = status

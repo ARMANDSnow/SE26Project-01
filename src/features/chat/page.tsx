@@ -49,7 +49,11 @@ export function ChatPage() {
   const selectRun = useCallback((runId: string) => setParams((current) => { current.set("run", runId); return current }), [setParams])
   const closeWorkflow = () => {
     setWorkflowOpen(false)
-    requestAnimationFrame(() => workflowOpener.current?.focus())
+    requestAnimationFrame(() => {
+      const fallback = Array.from(document.querySelectorAll<HTMLElement>("[data-workflow-run]"))
+        .find((element) => element.dataset.workflowRun === activeRunId)
+      ;(workflowOpener.current ?? fallback)?.focus()
+    })
   }
 
   const runBar = latestThreadRun ? (

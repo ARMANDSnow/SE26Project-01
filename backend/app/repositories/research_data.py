@@ -524,12 +524,12 @@ def _artifact_for_user(
             registry = conn.execute("SELECT id FROM research_artifacts WHERE run_id = ? AND artifact_type = 'citation_registry' AND version = ?", (str(result["run_id"]), registry_version)).fetchone()
             citation_rows = conn.execute("SELECT * FROM research_citations WHERE artifact_id = ?", (str(registry["id"]),)).fetchall() if registry else []
         status_by_key = {str(item["citation_key"]): _citation_status(conn, item, user_id) for item in citation_rows}
-        inaccessible = {key for key, status in status_by_key.items() if status == "inaccessible"}
+        nonvalid = {key for key, status in status_by_key.items() if status != "valid"}
         if artifact_type == "citation_registry":
-            content["entries"] = [item for item in content.get("entries", []) if isinstance(item, dict) and item.get("citation_key") not in inaccessible]
-        elif inaccessible:
+            content["entries"] = [item for item in content.get("entries", []) if isinstance(item, dict) and item.get("citation_key") not in nonvalid]
+        elif nonvalid:
             for field in ("executive_summary", "findings", "agreements", "disagreements", "conclusion"):
-                content[field] = [item for item in content.get(field, []) if isinstance(item, dict) and not inaccessible.intersection(item.get("citation_keys", []))]
+                content[field] = []
             content["limitations"] = []
             content["research_gaps"] = []
             result["is_current"] = False
@@ -538,6 +538,21 @@ def _artifact_for_user(
         if run is not None and str(run["status"]) in {"completed", "failed", "cancelled"}:
             conn.execute(f"UPDATE research_artifacts SET status = 'stale', updated_at = {_NOW} WHERE id = ? AND status = 'completed'", (str(result["id"]),))
             result["status"] = "stale"
+    if artifact_type == "research_report" and not result.get("is_current"):
+        content["title"] = "历史报告（内容已隐藏）"
+        content["topic"] = ""
+        for field in (
+            "executive_summary",
+            "research_questions",
+            "findings",
+            "agreements",
+            "disagreements",
+            "limitations",
+            "research_gaps",
+            "conclusion",
+            "citation_keys",
+        ):
+            content[field] = []
     return result
 
 
@@ -1157,6 +1172,54 @@ def complete_model_call(
         )
         if cursor.rowcount != 1:
             raise ResearchConflictError("model call slot is no longer writable")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def complete_model_call_and_settle(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    step_id: str,
+    worker_id: str,
+    lease_generation: int,
+    idempotency_key: str,
+    result: dict[str, Any] | None,
+    succeeded: bool,
+) -> None:
+    """Commit provider outcome and its one budget settlement atomically."""
+    if result is not None:
+        assert_safe_research_payload(result)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        lease = _active_lease(
+            conn,
+            run_id=run_id,
+            step_id=step_id,
+            worker_id=worker_id,
+            lease_generation=lease_generation,
+        )
+        cursor = conn.execute(
+            f"UPDATE research_model_calls SET status = ?, result_json = ?, updated_at = {_NOW} "
+            "WHERE run_id = ? AND idempotency_key = ? AND status = 'started'",
+            (
+                "completed" if succeeded else "failed",
+                _json(result) if result is not None else None,
+                run_id,
+                idempotency_key,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ResearchConflictError("model call slot is no longer writable")
+        usage = _decoded(str(lease["usage_json"]), dict(DEFAULT_TOPIC_USAGE))
+        key = "successful_calls" if succeeded else "failed_calls"
+        usage[key] = int(usage.get(key, 0)) + 1
+        conn.execute(
+            f"UPDATE research_runs SET usage_json = ?, state_version = state_version + 1, updated_at = {_NOW} WHERE id = ?",
+            (_json(usage), run_id),
+        )
         conn.commit()
     except Exception:
         conn.rollback()

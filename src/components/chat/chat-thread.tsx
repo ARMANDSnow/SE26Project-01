@@ -21,8 +21,11 @@ import {
   Copy,
   Edit3,
   GitFork,
+  FlaskConical,
+  MessageSquare,
   RefreshCw,
   Send,
+  Sparkles,
   Square,
   X,
 } from "lucide-react"
@@ -30,6 +33,7 @@ import { createContext, type FormEvent, type ReactNode, useContext, useMemo, use
 import { toast } from "sonner"
 import { API_BASE, fetchChatMessages, routeChatMessage, updateChatThreadHead } from "@/api"
 import { Button } from "@/components/ui/button"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ResearchRunDataUI, ResearchRunUiContext } from "@/components/chat/research-run-message"
 import { queryKeys } from "@/lib/query-hooks"
 import type { ChatContentPart, ChatRouteMode, ChatThread, ResearchRun } from "@/types"
@@ -333,6 +337,7 @@ function EditComposer() {
 }
 
 function Composer({ placeholder, hero = false, mode, onModeChange, routingEnabled }: { placeholder: string; hero?: boolean; mode: ChatRouteMode; onModeChange: (mode: ChatRouteMode) => void; routingEnabled: boolean }) {
+  const ModeIcon = mode === "deep_research" ? FlaskConical : mode === "normal" ? MessageSquare : Sparkles
   return (
     <ComposerPrimitive.Root className={hero ? "mx-auto grid w-full max-w-3xl gap-2 rounded-2xl border bg-card p-3 shadow-lg" : "mx-auto grid w-full max-w-3xl gap-2 rounded-xl border bg-background p-2 shadow-sm"}>
       <ComposerPrimitive.Input
@@ -342,7 +347,19 @@ function Composer({ placeholder, hero = false, mode, onModeChange, routingEnable
         placeholder={placeholder}
       />
       <div className="flex items-center justify-between gap-2">
-        {routingEnabled ? <><label className="sr-only" htmlFor="chat-route-mode">回答模式</label><select id="chat-route-mode" value={mode} onChange={(event) => onModeChange(event.target.value as ChatRouteMode)} className="min-h-11 rounded-lg border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"><option value="auto">自动判断</option><option value="normal">普通对话</option><option value="deep_research">深度研究</option></select></> : <span />}
+        {routingEnabled ? (
+          <Select value={mode} onValueChange={(value) => onModeChange(value as ChatRouteMode)}>
+            <SelectTrigger id="chat-route-mode" aria-label="回答模式" className="min-h-11 rounded-xl bg-background px-2.5">
+              <span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground" aria-hidden="true"><ModeIcon className="size-3.5" /></span>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="popper" align="start">
+              <SelectItem value="auto" className="min-h-11"><Sparkles />自动判断</SelectItem>
+              <SelectItem value="normal" className="min-h-11"><MessageSquare />普通对话</SelectItem>
+              <SelectItem value="deep_research" className="min-h-11"><FlaskConical />深度研究</SelectItem>
+            </SelectContent>
+          </Select>
+        ) : <span />}
         <ThreadPrimitive.If running={false}><ComposerPrimitive.Send asChild><Button type="submit" size="icon" className="size-11 shrink-0" aria-label="发送"><Send className="size-4" /></Button></ComposerPrimitive.Send></ThreadPrimitive.If>
         <ThreadPrimitive.If running><ComposerPrimitive.Cancel asChild><Button type="button" size="icon" variant="destructive" className="size-11 shrink-0" aria-label="停止"><Square className="size-4" /></Button></ComposerPrimitive.Cancel></ThreadPrimitive.If>
       </div>

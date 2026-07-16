@@ -11,12 +11,18 @@ from .research_contracts import (
     CitationValidationResult,
     ComparisonMatrix,
     PaperBrief,
+    ProjectAnalysisValidation,
+    ProjectCoverageSummary,
     ResearchBrief,
+    ResearchGraph,
+    ResearchLandscapePlan,
+    ResearchTimeline,
     ResearchStepError,
     ScreeningResult,
     SearchQueries,
     SynthesisClaims,
     SynthesisPlan,
+    TopicClusters,
     ResearchReport,
     StrictResearchModel,
 )
@@ -303,4 +309,122 @@ class ReportAgent:
                 "valid_citation_keys": valid_citation_keys,
                 "generated_from_artifact_versions": generated_from_artifact_versions,
             },
+        )
+
+
+class LandscapePlannerAgent:
+    name = "Landscape Planner Agent"
+
+    def __init__(self, model: StructuredResearchModel) -> None:
+        self.model = model
+
+    def plan(self, *, project_id: str, inputs: dict[str, Any]) -> ResearchLandscapePlan:
+        return self.model.generate(
+            ResearchLandscapePlan,
+            system_prompt=(
+                "Create a project research-landscape plan using only the supplied server-authorized items. "
+                "Copy project_id and selected_item_ids exactly from the whitelist. Do not add database IDs, "
+                "facts, papers, claims, citations, or relation types that are not supplied."
+            ),
+            input_data={"project_id": project_id, **inputs},
+        )
+
+
+class TopicClusteringAgent:
+    name = "Topic Clustering Agent"
+
+    def __init__(self, model: StructuredResearchModel) -> None:
+        self.model = model
+
+    def cluster(self, *, plan: ResearchLandscapePlan, inputs: dict[str, Any]) -> TopicClusters:
+        return self.model.generate(
+            TopicClusters,
+            system_prompt=(
+                "Build topic clusters using only the supplied paper, claim, and citation aliases. Every factual "
+                "summary and distinguishing feature must cite one or more supplied valid citation aliases. A paper "
+                "may belong to multiple clusters only when citations support the membership. Put unsupported papers "
+                "in unclassified_paper_ids and uncertainty text; never infer relationships from title similarity."
+            ),
+            input_data={"plan": plan.model_dump(mode="json"), **inputs},
+        )
+
+
+class TimelineAgent:
+    name = "Timeline Agent"
+
+    def __init__(self, model: StructuredResearchModel) -> None:
+        self.model = model
+
+    def build(self, *, plan: ResearchLandscapePlan, inputs: dict[str, Any]) -> ResearchTimeline:
+        return self.model.generate(
+            ResearchTimeline,
+            system_prompt=(
+                "Build a research timeline using only supplied publication metadata and valid citation aliases. "
+                "Publication events may use authoritative dates without a citation. Claims that work proposed, "
+                "improved, contradicted, continued, influenced, or became a turning point require supplied citations. "
+                "Do not infer influence from publication order."
+            ),
+            input_data={"plan": plan.model_dump(mode="json"), **inputs},
+        )
+
+
+class GraphValidationAgent:
+    """Deterministic post-validator; it never asks a model to authorize relations."""
+
+    name = "Graph Validation Agent"
+
+    @staticmethod
+    def validate(
+        graph: ResearchGraph,
+        *,
+        allowed_node_ids: set[str],
+        allowed_citation_keys: set[str],
+        allowed_paper_ids: set[int],
+        allowed_claim_ids: set[str],
+        clusters: TopicClusters,
+        timeline: ResearchTimeline,
+        coverage_summary: ProjectCoverageSummary,
+        stale_dependencies: list[str] | None = None,
+        inaccessible_dependencies: list[str] | None = None,
+    ) -> ProjectAnalysisValidation:
+        actual_node_ids = {node.node_id for node in graph.nodes}
+        if not actual_node_ids.issubset(allowed_node_ids):
+            raise ResearchStepError("project_graph_node_invalid", "研究图谱包含未授权节点。")
+        cluster_ids = {cluster.cluster_id for cluster in clusters.clusters}
+        timeline_ids = {event.event_id for event in timeline.events}
+        if any(not set(cluster.paper_ids).issubset(allowed_paper_ids) for cluster in clusters.clusters):
+            raise ResearchStepError("project_cluster_paper_invalid", "主题簇包含未授权论文。")
+        if any(not set(cluster.claim_ids).issubset(allowed_claim_ids) for cluster in clusters.clusters):
+            raise ResearchStepError("project_cluster_claim_invalid", "主题簇包含未授权主张。")
+        if any(not set(event.paper_ids).issubset(allowed_paper_ids) for event in timeline.events):
+            raise ResearchStepError("project_timeline_paper_invalid", "研究时间线包含未授权论文。")
+        if any(not set(event.claim_ids).issubset(allowed_claim_ids) for event in timeline.events):
+            raise ResearchStepError("project_timeline_claim_invalid", "研究时间线包含未授权主张。")
+        referenced_citations = {
+            *graph.citation_keys,
+            *clusters.citation_keys,
+            *timeline.citation_keys,
+        }
+        if not referenced_citations.issubset(allowed_citation_keys):
+            raise ResearchStepError("project_citation_invalid", "项目分析包含未授权引用。")
+        semantic_types = {"supports", "contradicts", "belongs_to_cluster", "influences"}
+        for edge in graph.edges:
+            if edge.source_node_id not in actual_node_ids or edge.target_node_id not in actual_node_ids:
+                raise ResearchStepError("project_graph_edge_invalid", "研究图谱边指向未授权节点。")
+            if edge.relation_type in semantic_types and not edge.citation_keys:
+                raise ResearchStepError("project_graph_citation_required", "语义图谱边缺少引用。")
+            if not set(edge.citation_keys).issubset(allowed_citation_keys):
+                raise ResearchStepError("project_graph_citation_invalid", "研究图谱边引用未通过校验。")
+        return ProjectAnalysisValidation(
+            validated_cluster_ids=sorted(cluster_ids),
+            validated_timeline_event_ids=sorted(timeline_ids),
+            validated_edge_ids=sorted(edge.edge_id for edge in graph.edges),
+            stale_dependencies=sorted(set(stale_dependencies or [])),
+            inaccessible_dependencies=sorted(set(inaccessible_dependencies or [])),
+            coverage_summary=coverage_summary,
+            warnings=(
+                ["当前研究脉络仅覆盖项目中当前有效资料。"]
+                if coverage_summary.limited
+                else []
+            ),
         )

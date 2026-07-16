@@ -1,10 +1,15 @@
 # Agent Handoff
 
-最后更新：2026-07-16，iter14 closeout。
+最后更新：2026-07-16，iter15 closeout。
 
 ## Current Status
 
-- 当前分支：`codex/agentic-research-refactor`；Agentic Research 产品基线和 iter11 均在本分支，尚未 push。
+- 当前分支：`codex/agentic-research-refactor`；iter15 已完成本地提交，未 push。
+- iter15 将 schema 升至 v9：新增 owner-only 研究项目/项目成员、`mode='project'` 七步 Run、项目级追加版本 Artifact、dependency ledger 和项目 Citation reference。fresh、v8→v9、v2→v9、失败回滚与伪造 v9 fail-closed 已覆盖。
+- “我的资料库”现可建立/编辑/归档/恢复项目，加入当前可访问的 Run、论文和固定 Report version，生成主题簇、时间线、可追溯关系图和验证结果。项目关系不扩大底层资源权限。
+- 项目 Artifact 写入事务内重验 project revision/fingerprint、active lease 与每条 dependency；读取时递归验证 DAG。新上游版本、item/Citation/Evidence/ACL/source hash 变化会 stale/inaccessible，不回退旧 completed；项目变更会在同一事务内 fence 活跃分析。
+- `LandscapePlannerAgent`、`TopicClusteringAgent`、`TimelineAgent` 只接收服务端 Paper/Claim/Citation 白名单；Graph construction/validation 为确定性服务。Cluster 事实、Timeline 语义事件和 Graph 语义边必须有当前有效 Citation。
+- topic 仍为真实 17 步，UI 默认聚合为 7 个用户阶段；standalone Harness 仍是真实三步。完整报告使用固定版本独立路由与分节视图，历史/stale 报告事实文本不再展示。
 - iter14 将 schema 升至 v8，新增 durable `research_model_calls`、`research_evidence`、`research_citations`；fresh、v7→v8、v2→v8、失败回滚与伪造 v8 fail-closed 已覆盖。
 - topic Run 现为 17 步：Iter13 十步 dataset 后追加 Synthesis Plan、Comparison Matrix、cross-paper Claims、Citation Registry、Citation Verification、Research Report 和 finalize。standalone Harness 仍为三步确定性流程，未伪装成完整调研。
 - `open_evidence` 在 active lease 下登记服务器生成 Evidence ID 与 quote hash；PaperBrief/Citation/报告写入和读取均重新校验 Run Paper、ACL、asset/document/chunk/source hash、document relation、heading、offset 与内容 hash。
@@ -36,7 +41,7 @@
 - iter08 已建立 `api -> services -> repositories -> db` 外层分层；`main.py` 只负责生命周期、中间件、内存 SessionStore 和 Router 挂载。
 - iter09 已加入用户名/密码认证：Argon2id 哈希、内存 Session、HttpOnly SameSite=Lax Cookie，以及注册、登录、登出和当前用户 API。
 - 业务 Router 统一通过 `CurrentUser` 解析身份，不再信任 `X-User-ID`；除 health/auth 入口外，35 个业务 API method/path 全部要求登录。
-- SQLite schema version 为 8；启动时支持 v2→v3→v4→v5→v6→v7→v8 连续前迁，失败 DDL 回滚且伪造/缺约束 v8 fail closed。
+- SQLite schema version 为 9；启动时支持 v2→v3→v4→v5→v6→v7→v8→v9 连续前迁，失败 DDL 回滚且伪造/缺约束 v9 fail closed。
 - arXiv/USENIX/SIGOPS 等论文继续全局共享；用户上传通过独立 `paper_uploads` 记录 owner、visibility、provenance、moderation status 与原始文件名，新上传默认 private。
 - 私有上传访问控制覆盖目录、详情、PDF、Chunk、处理/解析/概要、资料库、历史、论文 Chat、Wiki/FTS/Graph、classic/agentic QA 与只读论文工具；缺失授权元数据的 upload 默认不可见。
 - 资料库/收藏、笔记、阅读历史、订阅、统计和聊天继续按用户隔离；公开上传收回为 private 后，其他用户遗留关联数据保留但立即从读取视图隐藏。
@@ -67,7 +72,7 @@ npm run build
 git diff --check
 ```
 
-结果：112 个后端测试通过；strict mypy 覆盖 54 个源文件并通过；前端生产构建通过。Playwright 为 6 passed、6 skipped：1440px、1024px、390px cited-research flagship 覆盖 Brief/PaperBrief/Matrix/Claims/Registry/Report、四种 Citation 状态、版本/stale、键盘焦点、重生成入口、无溢出与 44px；桌面继续覆盖 Budget Decision、暂停/继续/停止/重试、普通 Chat 分支和 Paper Chat 路由隔离。主入口约 467 kB、Chat 约 433 kB，低于 Vite 500 kB 建议线。真实付费 topic smoke 使用两篇 2026 arXiv 论文完成 PDF/Docling 与 17/17 步，并验证 strict Report fail-closed、UI regeneration、v1/v2 切换和 Citation→Evidence 定位；最终为 17 model calls、21 tool calls。
+结果：120 个后端测试通过；strict mypy 覆盖 57 个源文件并通过；前端生产构建通过。隔离端口 Playwright 为 9 passed、6 skipped：1440px、1024px、390px 覆盖项目创建/恢复、Coverage/Decision、主题簇/时间线/图谱、Citation→Evidence、版本、键盘/焦点、reduced-motion、无溢出与 44px，并保留 topic 17→7、Harness、Chat/Paper Chat 回归。iter15 未改动 arXiv/PDF/Docling 获取路径，未重复网络 smoke；本轮未获得新的付费调用授权，因此未运行项目分析真实模型 smoke。iter14 的两篇论文 17/17 真实基线仍保留。
 
 ## Known Risks
 
@@ -89,8 +94,8 @@ git diff --check
 
 ## Next Candidates
 
-1. Iter15：研究脉络/主题簇/时间线 Artifact、资料库项目化，以及 Run/论文/报告/图谱反向链接。
-2. 建立 Citation entailment/覆盖率 gold set、人工复核队列和报告导出前再验证。
+1. 获得单独付费授权后，对 `gpt-5.5-medium` 项目七步分析运行一次可追溯真实 smoke。
+2. 建立 Cluster/Timeline/Graph Citation entailment/覆盖率 gold set、人工复核队列和报告导出前再验证。
 3. 引入可取消进程 worker/任务队列、ambiguous-call Decision、Redis Session 与用户级 Run/SSE/模型配额。
 4. 如需使用旧 116 篇本地论文，先设计可审查、不破坏的 v0 legacy 迁移，不要直接 reset。
 
@@ -103,4 +108,5 @@ git diff --check
 - iter12：`docs/iterations/iteration_iter12_chat-run-workflow.md`。
 - iter13：`docs/iterations/iteration_iter13_topic-research-pipeline.md`。
 - iter14：`docs/iterations/iteration_iter14_cited-research-synthesis.md`。
+- iter15：`docs/iterations/iteration_iter15_research-landscape-projects.md`。
 - 尚未 push；推送前先 fetch/rebase 并保留远端用户改动。

@@ -48,7 +48,11 @@ def _executor(request: Request) -> ResearchExecutor:
 
 
 def _not_found(exc: ResearchNotFoundError) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research object not found")
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Research object not found",
+        headers={"Cache-Control": PRIVATE_NO_STORE},
+    )
 
 
 def _conflict(exc: ResearchConflictError) -> HTTPException:
@@ -83,15 +87,18 @@ def create_research_run(
 
 @router.get("/runs")
 def research_runs(
+    response: Response,
     user: CurrentUser,
     limit: int = Query(default=100, ge=1, le=200),
 ) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
     with connect() as conn:
         return {"items": list_runs(conn, user.id, limit=limit)}
 
 
 @router.get("/runs/{run_id}")
-def research_run(run_id: str, user: CurrentUser) -> dict[str, Any]:
+def research_run(run_id: str, response: Response, user: CurrentUser) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
     with connect() as conn:
         try:
             return get_run_snapshot(conn, run_id, user.id)
@@ -127,9 +134,11 @@ def research_artifact(run_id: str, artifact_id: str, response: Response, user: C
 @router.get("/runs/{run_id}/papers")
 def research_run_papers(
     run_id: str,
+    response: Response,
     user: CurrentUser,
     stage: str | None = Query(default=None, max_length=40),
 ) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
     allowed = {"candidate", "selected", "excluded", "fulltext_ready", "read", "extracted"}
     if stage is not None and stage not in allowed:
         raise HTTPException(status_code=422, detail="unknown research paper stage")
@@ -188,6 +197,52 @@ def research_report_versions(run_id: str, response: Response, user: CurrentUser)
             return {"items": list_artifacts(conn, run_id, user.id, artifact_type="research_report")}
         except ResearchNotFoundError as exc:
             raise _not_found(exc) from exc
+
+
+@router.get("/reports")
+def research_report_library(response: Response, user: CurrentUser) -> dict[str, Any]:
+    """List pinned report versions without exposing stale report facts."""
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
+    with connect() as conn:
+        run_rows = conn.execute(
+            """
+            SELECT DISTINCT r.id, r.title
+            FROM research_runs r JOIN research_artifacts a ON a.run_id = r.id
+            WHERE r.user_id = ? AND a.artifact_type = 'research_report'
+            ORDER BY r.updated_at DESC, r.id DESC
+            """,
+            (user.id,),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for run_row in run_rows:
+            for artifact in list_artifacts(
+                conn,
+                str(run_row["id"]),
+                user.id,
+                artifact_type="research_report",
+            ):
+                current = bool(artifact.get("is_current")) and artifact.get("status") == "completed"
+                content: dict[str, Any] = (
+                    artifact["content"]
+                    if current and isinstance(artifact.get("content"), dict)
+                    else {}
+                )
+                result.append(
+                    {
+                        "artifact_id": str(artifact["id"]),
+                        "artifact_version": int(artifact["version"]),
+                        "run_id": str(run_row["id"]),
+                        "run_title": str(run_row["title"]),
+                        "title": str(content.get("title", "历史报告（内容已失效）")),
+                        "topic": str(content.get("topic", "")),
+                        "status": "completed" if current else "stale",
+                        "is_current": current,
+                        "created_at": str(artifact.get("created_at", "")),
+                        "updated_at": str(artifact.get("updated_at", "")),
+                    }
+                )
+    result.sort(key=lambda item: (item["updated_at"], item["artifact_version"]), reverse=True)
+    return {"items": result}
 
 
 @router.get("/runs/{run_id}/reports/{version}")

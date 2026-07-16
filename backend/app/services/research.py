@@ -17,6 +17,7 @@ from ..repositories.research import (
     recover_expired_leases,
 )
 from .research_contracts import ResearchStepError, ResearchWaitingInput
+from .project_research import ProjectResearchPipeline
 from .topic_research import TopicResearchPipeline
 
 
@@ -63,18 +64,22 @@ class ResearchExecutor:
         poll_seconds: float = 1.0,
         handler: HarnessHandler | None = None,
         topic_pipeline: TopicResearchPipeline | None = None,
+        project_pipeline: ProjectResearchPipeline | None = None,
     ) -> None:
         self.worker_id = f"research-{uuid.uuid4()}"
         self.lease_seconds = lease_seconds
         self.heartbeat_seconds = heartbeat_seconds
         self.poll_seconds = poll_seconds
         self.topic_pipeline = topic_pipeline or TopicResearchPipeline()
+        self.project_pipeline = project_pipeline or ProjectResearchPipeline()
         self.handler = handler or self._dispatch_step
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._supervisor: threading.Thread | None = None
 
     def _dispatch_step(self, step: dict[str, Any]) -> dict[str, Any]:
+        if str(step.get("step_type", "")).startswith("project."):
+            return self.project_pipeline.handle(step)
         if str(step.get("step_type", "")).startswith("topic."):
             return self.topic_pipeline.handle(step)
         return run_harness_step(step)

@@ -25,7 +25,7 @@ Router -> Service -> Repository -> SQLite
 - Repository 接受显式数据库连接和领域参数；为了兼容 iter08 之前的调用，部分写方法暂时保留 `commit=True`，新 Service 应传入 `commit=False` 并统一提交。
 - `auth/` 从 HttpOnly Cookie 读取不透明 Session ID，并在每次请求时确认数据库用户仍然有效；业务 Router 不接受客户端用户 ID 作为身份来源。
 - `MemorySessionStore` 只适用于当前单进程部署；多 worker/多实例部署时应保持接口不变并替换为 Redis 实现。
-- `db/migrations/runner.py` 提供连续版本迁移和事务回滚；当前 schema v8 支持 v2→v8 连续前迁并对 Artifact、model-call、Evidence、Citation 的列、FK、索引、唯一约束和 CHECK fail closed。
+- `db/migrations/runner.py` 提供连续版本迁移和事务回滚；当前 schema v9 支持 v2→v9 连续前迁，并对 Project/Item/Run/Artifact/dependency/Citation 的列、FK、partial index、唯一约束、JSON/hash 和 CHECK fail closed。
 
 ## Topic Research Data Pipeline
 
@@ -39,6 +39,14 @@ Router -> Service -> Repository -> SQLite
 - 结构化模型调用把目标 Pydantic JSON Schema 写入系统提示；默认请求 provider JSON mode。不支持 `response_format` 的兼容 provider 必须显式配置 `LLM_JSON_RESPONSE_FORMAT=false`，返回值仍使用同一 strict schema fail closed。模型层不做隐藏 provider retry，确保每个持久化预算槽只对应一次真实调用。
 - topic budget 在数据库中持久化；模型调用预算预占与 durable operation ledger 原子创建，canonical input hash 决定安全复用，`started/ambiguous` 不自动重复付费。工具调用同样预占/结算，候选/全文按实际唯一 Run Paper 计数。越界或 Evidence coverage 不足前转为 `waiting_input` 并创建服务端受控 Decision。
 - PaperBrief/Evidence/source hash/ACL 变化会把下游综合 Artifact/Citation 持久化为 stale；旧版本仍可审计，但 API/UI 不把它投影成当前有效报告。inaccessible Citation 仅列表返回安全 tombstone，详情与 Evidence 统一 404。
+
+## Research Project Landscape Pipeline
+
+- `research_projects` 与严格 one-of `research_project_items` 仅对 owner 可见；Report item 固定 `artifact_id + version`。项目关系不扩大底层资源权限，item、反向链接、图节点/边和 Evidence 每次读取都重新校验 Session/ACL/source hash。
+- `mode='project'` 使用独立七步 `project.*` namespace，复用 Run/Step/Event/Decision/lease/SSE 状态机，不落入 Harness 或改变 topic 17 步。项目 title/item/order/status 变更在事务内递增 revision 并设置 `requested_action=cancel`，使旧 lease 立即失去写权。
+- 项目 Artifact 按 `(project_id, artifact_type)` 追加版本，`research_artifact_dependencies` 固定 project item、upstream Artifact/version/content hash、Citation/Evidence UUID 和 paper/source hash。写入事务内重算 revision/fingerprint 并逐条复验 dependency；读取时递归校验整个 DAG。最高版本 stale/inaccessible 时不回退旧 completed。
+- `LandscapePlannerAgent`、`TopicClusteringAgent`、`TimelineAgent` 只接收服务端编制的 Paper/Claim/Citation 白名单；Graph construction 与 `GraphValidationAgent` 为确定性服务。Cluster 事实、Timeline 语义事件、Graph 语义边必须有当前有效 Citation；publication/precedes 仅表达已验证日期和时间排序。
+- 项目模型 operation identity 绑定 project revision、input fingerprint、step idempotency 和 schema/model；provider 结果与该次预算结算在一个事务内完成。`started/ambiguous` 仍 fail closed，不隐式发出第二次付费请求。
 
 ## Transitional Compatibility
 

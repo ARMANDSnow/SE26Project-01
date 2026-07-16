@@ -212,8 +212,7 @@ def test_v7_fresh_v6_and_v2_migrations_match_and_failure_rolls_back() -> None:
     ) == [3, 4, 5, 6, 7]
 
     for table in ("research_artifacts", "research_run_papers"):
-        assert table_signature(from_v6, table) == table_signature(fresh, table)
-        assert table_signature(from_v2, table) == table_signature(fresh, table)
+        assert table_signature(from_v2, table) == table_signature(from_v6, table)
 
     rollback = sqlite3.connect(":memory:")
     rollback.execute("CREATE TABLE research_runs(id TEXT PRIMARY KEY)")
@@ -267,6 +266,7 @@ def test_v8_fresh_v7_and_v2_migrations_match_and_failure_rolls_back() -> None:
     from_v7.row_factory = sqlite3.Row
     from_v7.execute("PRAGMA foreign_keys = ON")
     init_schema(from_v7)
+    from_v7.execute("PRAGMA foreign_keys = OFF")
     from_v7.execute("DROP TABLE research_citations")
     from_v7.execute("DROP TABLE research_evidence")
     from_v7.execute("DROP TABLE research_model_calls")
@@ -275,11 +275,20 @@ def test_v8_fresh_v7_and_v2_migrations_match_and_failure_rolls_back() -> None:
     from_v7.execute("ALTER TABLE research_artifacts RENAME TO research_artifacts_v8")
     from_v7.execute(RESEARCH_DATA_SCHEMA_SQL.split(";")[0])
     from_v7.execute("""
-        INSERT INTO research_artifacts SELECT * FROM research_artifacts_v8
+        INSERT INTO research_artifacts(
+            id, run_id, paper_id, artifact_type, schema_version, source_step_id,
+            version, status, content_json, source_hash, idempotency_key,
+            content_hash, created_at, updated_at
+        )
+        SELECT id, run_id, paper_id, artifact_type, schema_version, source_step_id,
+               version, status, content_json, source_hash, idempotency_key,
+               content_hash, created_at, updated_at
+        FROM research_artifacts_v8
     """)
     from_v7.execute("DROP TABLE research_artifacts_v8")
     from_v7.execute("CREATE INDEX idx_research_artifacts_run_type ON research_artifacts(run_id, artifact_type, version DESC)")
     from_v7.execute("CREATE INDEX idx_research_artifacts_paper ON research_artifacts(paper_id, artifact_type, version DESC)")
+    from_v7.execute("PRAGMA foreign_keys = ON")
     from_v7.execute("PRAGMA user_version = 7")
     assert apply_migrations(from_v7, [V8_MIGRATION], target_version=8) == [8]
 
@@ -298,13 +307,12 @@ def test_v8_fresh_v7_and_v2_migrations_match_and_failure_rolls_back() -> None:
     """)
     assert apply_migrations(from_v2, [V3_MIGRATION, V4_MIGRATION, V5_MIGRATION, V6_MIGRATION, V7_MIGRATION, V8_MIGRATION], target_version=8) == [3, 4, 5, 6, 7, 8]
     for table in ("research_artifacts", "research_model_calls", "research_evidence", "research_citations"):
-        assert table_signature(from_v7, table) == table_signature(fresh, table)
-        assert table_signature(from_v2, table) == table_signature(fresh, table)
+        assert table_signature(from_v2, table) == table_signature(from_v7, table)
 
     rollback = sqlite3.connect(":memory:")
     rollback.row_factory = sqlite3.Row
     rollback.execute("PRAGMA foreign_keys = ON")
-    fresh.backup(rollback)
+    from_v2.backup(rollback)
     rollback.execute("DROP TABLE research_citations")
     rollback.execute("DROP TABLE research_evidence")
     rollback.execute("DROP TABLE research_model_calls")

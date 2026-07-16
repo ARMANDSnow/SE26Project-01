@@ -308,6 +308,287 @@ class ResearchReport(StrictResearchModel):
     schema_version: Literal[1] = 1
 
 
+class LandscapeCitedStatement(StrictResearchModel):
+    """A project-level fact whose support can be redacted independently."""
+
+    text: str = Field(min_length=1, max_length=12_000)
+    citation_keys: list[str] = Field(min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def unique_citations(self) -> LandscapeCitedStatement:
+        if len(self.citation_keys) != len(set(self.citation_keys)):
+            raise ValueError("landscape statement citation identities must be unique")
+        return self
+
+
+class ResearchLandscapePlan(StrictResearchModel):
+    project_id: str = Field(min_length=1, max_length=100)
+    topic: str = Field(min_length=1, max_length=500)
+    research_questions: list[str] = Field(min_length=1, max_length=12)
+    selected_item_ids: list[str] = Field(min_length=1, max_length=200)
+    clustering_dimensions: list[str] = Field(min_length=1, max_length=12)
+    timeline_dimensions: list[str] = Field(min_length=1, max_length=12)
+    graph_relation_types: list[
+        Literal[
+            "contains",
+            "generated_from",
+            "cites",
+            "supports",
+            "contradicts",
+            "belongs_to_cluster",
+            "precedes",
+            "influences",
+        ]
+    ] = Field(min_length=1, max_length=8)
+    constraints: list[str] = Field(default_factory=list, max_length=30)
+    schema_version: Literal[1] = 1
+
+    @model_validator(mode="after")
+    def unique_plan_identity(self) -> ResearchLandscapePlan:
+        for values in (
+            self.selected_item_ids,
+            self.clustering_dimensions,
+            self.timeline_dimensions,
+            self.graph_relation_types,
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError("landscape plan identities and dimensions must be unique")
+        return self
+
+
+class TopicCluster(StrictResearchModel):
+    cluster_id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,99}$")
+    label: str = Field(min_length=1, max_length=500)
+    summary: str = Field(min_length=1, max_length=12_000)
+    summary_citation_keys: list[str] = Field(min_length=1, max_length=80)
+    paper_ids: list[int] = Field(default_factory=list, max_length=200)
+    claim_ids: list[str] = Field(default_factory=list, max_length=200)
+    citation_keys: list[str] = Field(default_factory=list, max_length=200)
+    distinguishing_features: list[LandscapeCitedStatement] = Field(default_factory=list, max_length=40)
+    uncertainties: list[str] = Field(default_factory=list, max_length=40)
+    schema_version: Literal[1] = 1
+
+    @model_validator(mode="after")
+    def complete_cluster_support(self) -> TopicCluster:
+        if not self.paper_ids and not self.claim_ids:
+            raise ValueError("topic cluster requires at least one paper or claim")
+        for values in (
+            self.summary_citation_keys,
+            self.paper_ids,
+            self.claim_ids,
+            self.citation_keys,
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError("topic cluster identities must be unique")
+        used = {
+            *self.summary_citation_keys,
+            *(key for feature in self.distinguishing_features for key in feature.citation_keys),
+        }
+        if not used.issubset(set(self.citation_keys)):
+            raise ValueError("topic cluster factual statements must use declared citations")
+        return self
+
+
+class TopicClusters(StrictResearchModel):
+    clusters: list[TopicCluster] = Field(default_factory=list, max_length=80)
+    unclassified_paper_ids: list[int] = Field(default_factory=list, max_length=200)
+    uncertainties: list[str] = Field(default_factory=list, max_length=100)
+    citation_keys: list[str] = Field(default_factory=list, max_length=480)
+    schema_version: Literal[1] = 1
+
+    @model_validator(mode="after")
+    def consistent_clusters(self) -> TopicClusters:
+        cluster_ids = [item.cluster_id for item in self.clusters]
+        if len(cluster_ids) != len(set(cluster_ids)):
+            raise ValueError("topic cluster identities must be unique")
+        if len(self.unclassified_paper_ids) != len(set(self.unclassified_paper_ids)):
+            raise ValueError("unclassified paper identities must be unique")
+        if len(self.citation_keys) != len(set(self.citation_keys)):
+            raise ValueError("topic cluster citations must be unique")
+        used = {key for item in self.clusters for key in item.citation_keys}
+        if used != set(self.citation_keys):
+            raise ValueError("topic cluster citation summary is incomplete")
+        return self
+
+
+class TimelineDateRange(StrictResearchModel):
+    start: str = Field(min_length=4, max_length=40)
+    end: str = Field(min_length=4, max_length=40)
+
+
+class TimelineEvent(StrictResearchModel):
+    event_id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,99}$")
+    date: str | None = Field(default=None, min_length=4, max_length=40)
+    date_range: TimelineDateRange | None = None
+    event_type: Literal[
+        "publication",
+        "method_proposed",
+        "improvement",
+        "contradiction",
+        "continuation",
+        "turning_point",
+    ]
+    title: str = Field(min_length=1, max_length=2_000)
+    description: str = Field(min_length=1, max_length=12_000)
+    paper_ids: list[int] = Field(default_factory=list, max_length=200)
+    claim_ids: list[str] = Field(default_factory=list, max_length=200)
+    citation_keys: list[str] = Field(default_factory=list, max_length=200)
+    confidence: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def valid_event_support(self) -> TimelineEvent:
+        if (self.date is None) == (self.date_range is None):
+            raise ValueError("timeline event requires exactly one date or date_range")
+        for values in (self.paper_ids, self.claim_ids, self.citation_keys):
+            if len(values) != len(set(values)):
+                raise ValueError("timeline event identities must be unique")
+        semantic_types = {
+            "method_proposed",
+            "improvement",
+            "contradiction",
+            "continuation",
+            "turning_point",
+        }
+        if self.event_type in semantic_types and not self.citation_keys:
+            raise ValueError("semantic timeline event requires citations")
+        if self.event_type == "publication" and (len(self.paper_ids) != 1 or self.claim_ids):
+            raise ValueError("publication event must identify exactly one paper")
+        return self
+
+
+class TimelinePeriod(StrictResearchModel):
+    period_id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,99}$")
+    date_range: TimelineDateRange
+    title: str = Field(min_length=1, max_length=1_000)
+    description: str = Field(min_length=1, max_length=12_000)
+    event_ids: list[str] = Field(min_length=1, max_length=200)
+    citation_keys: list[str] = Field(min_length=1, max_length=200)
+
+
+class ResearchTimeline(StrictResearchModel):
+    events: list[TimelineEvent] = Field(min_length=1, max_length=300)
+    periods: list[TimelinePeriod] = Field(default_factory=list, max_length=80)
+    turning_points: list[LandscapeCitedStatement] = Field(default_factory=list, max_length=40)
+    unresolved_questions: list[str] = Field(default_factory=list, max_length=100)
+    citation_keys: list[str] = Field(default_factory=list, max_length=480)
+    schema_version: Literal[1] = 1
+
+    @model_validator(mode="after")
+    def consistent_timeline(self) -> ResearchTimeline:
+        event_ids = [item.event_id for item in self.events]
+        period_ids = [item.period_id for item in self.periods]
+        if len(event_ids) != len(set(event_ids)) or len(period_ids) != len(set(period_ids)):
+            raise ValueError("timeline identities must be unique")
+        known_events = set(event_ids)
+        if any(not set(period.event_ids).issubset(known_events) for period in self.periods):
+            raise ValueError("timeline period contains unknown events")
+        used = {
+            *(key for item in self.events for key in item.citation_keys),
+            *(key for item in self.periods for key in item.citation_keys),
+            *(key for item in self.turning_points for key in item.citation_keys),
+        }
+        if used != set(self.citation_keys):
+            raise ValueError("timeline citation summary is incomplete")
+        return self
+
+
+class ResearchGraphNode(StrictResearchModel):
+    node_id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9:_.-]{0,159}$")
+    node_type: Literal["project", "run", "paper", "report", "topic_cluster", "synthesis_claim"]
+    label: str = Field(min_length=1, max_length=2_000)
+    entity_ref: str = Field(min_length=1, max_length=240)
+    status: Literal["valid", "stale", "inaccessible"] = "valid"
+
+
+class ResearchGraphEdge(StrictResearchModel):
+    edge_id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9:_.-]{0,159}$")
+    source_node_id: str = Field(min_length=1, max_length=160)
+    target_node_id: str = Field(min_length=1, max_length=160)
+    relation_type: Literal[
+        "contains",
+        "generated_from",
+        "cites",
+        "supports",
+        "contradicts",
+        "belongs_to_cluster",
+        "precedes",
+        "influences",
+    ]
+    citation_keys: list[str] = Field(default_factory=list, max_length=200)
+    status: Literal["valid", "stale", "inaccessible"] = "valid"
+
+    @model_validator(mode="after")
+    def semantic_edges_are_cited(self) -> ResearchGraphEdge:
+        if self.source_node_id == self.target_node_id:
+            raise ValueError("research graph self edges are not allowed")
+        if self.relation_type in {
+            "supports",
+            "contradicts",
+            "belongs_to_cluster",
+            "influences",
+        } and not self.citation_keys:
+            raise ValueError("semantic graph edge requires citations")
+        if len(self.citation_keys) != len(set(self.citation_keys)):
+            raise ValueError("graph edge citations must be unique")
+        return self
+
+
+class ResearchGraph(StrictResearchModel):
+    nodes: list[ResearchGraphNode] = Field(min_length=1, max_length=500)
+    edges: list[ResearchGraphEdge] = Field(default_factory=list, max_length=1_000)
+    citation_keys: list[str] = Field(default_factory=list, max_length=480)
+    schema_version: Literal[1] = 1
+
+    @model_validator(mode="after")
+    def consistent_graph(self) -> ResearchGraph:
+        node_ids = [item.node_id for item in self.nodes]
+        edge_ids = [item.edge_id for item in self.edges]
+        if len(node_ids) != len(set(node_ids)) or len(edge_ids) != len(set(edge_ids)):
+            raise ValueError("research graph node and edge identities must be unique")
+        allowed_nodes = set(node_ids)
+        if any(
+            edge.source_node_id not in allowed_nodes or edge.target_node_id not in allowed_nodes
+            for edge in self.edges
+        ):
+            raise ValueError("research graph edge references an unknown node")
+        used = {key for edge in self.edges for key in edge.citation_keys}
+        if used != set(self.citation_keys):
+            raise ValueError("research graph citation summary is incomplete")
+        return self
+
+
+class ProjectCoverageSummary(StrictResearchModel):
+    accessible_item_count: int = Field(ge=0)
+    paper_count: int = Field(ge=0)
+    report_count: int = Field(ge=0)
+    valid_citation_count: int = Field(ge=0)
+    limited: bool
+
+
+class ProjectAnalysisValidation(StrictResearchModel):
+    validated_cluster_ids: list[str] = Field(default_factory=list, max_length=80)
+    validated_timeline_event_ids: list[str] = Field(default_factory=list, max_length=300)
+    validated_edge_ids: list[str] = Field(default_factory=list, max_length=2_000)
+    stale_dependencies: list[str] = Field(default_factory=list, max_length=500)
+    inaccessible_dependencies: list[str] = Field(default_factory=list, max_length=500)
+    coverage_summary: ProjectCoverageSummary
+    warnings: list[str] = Field(default_factory=list, max_length=100)
+    schema_version: Literal[1] = 1
+
+    @model_validator(mode="after")
+    def unique_validation_identity(self) -> ProjectAnalysisValidation:
+        for values in (
+            self.validated_cluster_ids,
+            self.validated_timeline_event_ids,
+            self.validated_edge_ids,
+            self.stale_dependencies,
+            self.inaccessible_dependencies,
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError("project validation identities must be unique")
+        return self
+
+
 ARTIFACT_MODELS: dict[str, type[StrictResearchModel]] = {
     "research_brief": ResearchBrief,
     "search_queries": SearchQueries,
@@ -321,6 +602,11 @@ ARTIFACT_MODELS: dict[str, type[StrictResearchModel]] = {
     "citation_registry": CitationRegistry,
     "citation_validation_result": CitationValidationResult,
     "research_report": ResearchReport,
+    "research_landscape_plan": ResearchLandscapePlan,
+    "topic_clusters": TopicClusters,
+    "research_timeline": ResearchTimeline,
+    "research_graph": ResearchGraph,
+    "project_analysis_validation": ProjectAnalysisValidation,
 }
 
 

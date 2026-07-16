@@ -17,10 +17,11 @@ from .migrations import (
 from .migrations.v5 import RESEARCH_SCHEMA_SQL
 from .migrations.v7 import RESEARCH_DATA_SCHEMA_SQL
 from .migrations.v8 import migrate_v7_to_v8
+from .migrations.v9 import MIGRATION as V9_MIGRATION, migrate_v8_to_v9
 
 
 PAPER_CHUNKS_FTS_TABLE = "paper_chunks_fts"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class IncompatibleSchemaError(RuntimeError):
@@ -73,6 +74,7 @@ def _assert_research_data_schema(conn: sqlite3.Connection) -> None:
     expected_artifact = {
         "id": ("TEXT", 0, 1),
         "run_id": ("TEXT", 1, 0),
+        "project_id": ("TEXT", 0, 0),
         "paper_id": ("INTEGER", 0, 0),
         "artifact_type": ("TEXT", 1, 0),
         "schema_version": ("INTEGER", 1, 0),
@@ -81,6 +83,9 @@ def _assert_research_data_schema(conn: sqlite3.Connection) -> None:
         "status": ("TEXT", 1, 0),
         "content_json": ("TEXT", 1, 0),
         "source_hash": ("TEXT", 0, 0),
+        "input_snapshot_json": ("TEXT", 1, 0),
+        "dependency_snapshot_json": ("TEXT", 1, 0),
+        "snapshot_hash": ("TEXT", 0, 0),
         "idempotency_key": ("TEXT", 1, 0),
         "content_hash": ("TEXT", 1, 0),
         "created_at": ("TEXT", 1, 0),
@@ -118,6 +123,7 @@ def _assert_research_data_schema(conn: sqlite3.Connection) -> None:
         or paper_specs != expected_paper
         or not {
             ("run_id", "research_runs", "id", "CASCADE"),
+            ("project_id", "research_projects", "id", "RESTRICT"),
             ("paper_id", "papers", "id", "CASCADE"),
             ("source_step_id", "research_steps", "id", "CASCADE"),
         }.issubset(artifact_fks)
@@ -134,6 +140,14 @@ def _assert_research_data_schema(conn: sqlite3.Connection) -> None:
             0,
             ("paper_id", "artifact_type", "version"),
         )
+        or artifact_indexes.get("idx_research_artifacts_project_type") != (
+            0,
+            ("project_id", "artifact_type", "version"),
+        )
+        or artifact_indexes.get("idx_research_artifacts_project_version") != (
+            1,
+            ("project_id", "artifact_type", "version"),
+        )
         or paper_indexes.get("idx_research_run_papers_stage") != (
             0,
             ("run_id", "stage", "rank", "paper_id"),
@@ -145,11 +159,14 @@ def _assert_research_data_schema(conn: sqlite3.Connection) -> None:
         or "unique(run_id, artifact_type, version)" not in artifact_sql
         or "unique(run_id, idempotency_key)" not in artifact_sql
         or "check(json_valid(content_json))" not in artifact_sql
-        or "check(artifact_type in ('research_brief', 'search_queries', 'candidate_papers', 'screening_result', 'paper_brief', 'extraction_result', 'synthesis_plan', 'comparison_matrix', 'synthesis_claims', 'citation_registry', 'research_report', 'citation_validation_result'))" not in artifact_sql
+        or "'research_landscape_plan', 'topic_clusters', 'research_timeline', 'research_graph', 'project_analysis_validation'" not in artifact_sql
         or "check(schema_version >= 1)" not in artifact_sql
         or "check(version >= 1)" not in artifact_sql
         or "check(status in ('draft', 'completed', 'failed', 'stale'))" not in artifact_sql
         or "check(artifact_type != 'paper_brief' or ( paper_id is not null and length(trim(coalesce(source_hash, ''))) = 64 ))" not in artifact_sql
+        or "check(json_valid(input_snapshot_json))" not in artifact_sql
+        or "check(json_valid(dependency_snapshot_json))" not in artifact_sql
+        or "snapshot_hash is not null" not in artifact_sql
         or "primary key(run_id, paper_id)" not in paper_sql
         or "unique(run_id, source, source_id)" not in paper_sql
         or "'candidate', 'selected', 'excluded', 'fulltext_ready', 'read', 'extracted'"
@@ -227,6 +244,145 @@ def _assert_citation_schema(conn: sqlite3.Connection) -> None:
     ):
         raise IncompatibleSchemaError(
             f"Database citation schema does not match version {SCHEMA_VERSION}; rebuild it with: {_schema_reset_command(conn)}"
+        )
+
+
+def _column_signature(conn: sqlite3.Connection, table: str) -> dict[str, tuple[str, int, int]]:
+    return {
+        str(row[1]): (str(row[2]).upper(), int(row[3]), int(row[5]))
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+
+
+def _foreign_key_signature(conn: sqlite3.Connection, table: str) -> set[tuple[str, str, str, str]]:
+    return {
+        (str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper())
+        for row in conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+    }
+
+
+def _assert_project_schema(conn: sqlite3.Connection) -> None:
+    projects = _column_signature(conn, "research_projects")
+    items = _column_signature(conn, "research_project_items")
+    dependencies = _column_signature(conn, "research_artifact_dependencies")
+    citation_refs = _column_signature(conn, "research_project_citation_refs")
+    runs = _column_signature(conn, "research_runs")
+    expected_projects = {
+        "id": ("TEXT", 0, 1),
+        "owner_user_id": ("INTEGER", 1, 0),
+        "title": ("TEXT", 1, 0),
+        "description": ("TEXT", 1, 0),
+        "status": ("TEXT", 1, 0),
+        "items_revision": ("INTEGER", 1, 0),
+        "created_at": ("TEXT", 1, 0),
+        "updated_at": ("TEXT", 1, 0),
+    }
+    expected_items = {
+        "id": ("TEXT", 0, 1),
+        "project_id": ("TEXT", 1, 0),
+        "item_type": ("TEXT", 1, 0),
+        "run_id": ("TEXT", 0, 0),
+        "paper_id": ("INTEGER", 0, 0),
+        "artifact_id": ("TEXT", 0, 0),
+        "artifact_version": ("INTEGER", 0, 0),
+        "source_hash_snapshot": ("TEXT", 1, 0),
+        "position": ("INTEGER", 1, 0),
+        "added_at": ("TEXT", 1, 0),
+        "updated_at": ("TEXT", 1, 0),
+    }
+    expected_dependencies = {
+        "id": ("TEXT", 0, 1),
+        "artifact_id": ("TEXT", 1, 0),
+        "dependency_type": ("TEXT", 1, 0),
+        "dependency_key": ("TEXT", 1, 0),
+        "project_item_id": ("TEXT", 0, 0),
+        "upstream_artifact_id": ("TEXT", 0, 0),
+        "upstream_artifact_version": ("INTEGER", 0, 0),
+        "citation_id": ("TEXT", 0, 0),
+        "evidence_id": ("TEXT", 0, 0),
+        "paper_id": ("INTEGER", 0, 0),
+        "source_hash_snapshot": ("TEXT", 0, 0),
+        "dependency_hash": ("TEXT", 1, 0),
+        "created_at": ("TEXT", 1, 0),
+    }
+    expected_refs = {
+        "id": ("TEXT", 0, 1),
+        "project_id": ("TEXT", 1, 0),
+        "analysis_run_id": ("TEXT", 1, 0),
+        "citation_key": ("TEXT", 1, 0),
+        "reference_type": ("TEXT", 1, 0),
+        "citation_id": ("TEXT", 0, 0),
+        "evidence_id": ("TEXT", 0, 0),
+        "paper_id": ("INTEGER", 1, 0),
+        "source_hash_snapshot": ("TEXT", 1, 0),
+        "created_at": ("TEXT", 1, 0),
+        "updated_at": ("TEXT", 1, 0),
+    }
+    project_fks = _foreign_key_signature(conn, "research_projects")
+    item_fks = _foreign_key_signature(conn, "research_project_items")
+    dependency_fks = _foreign_key_signature(conn, "research_artifact_dependencies")
+    ref_fks = _foreign_key_signature(conn, "research_project_citation_refs")
+    run_fks = _foreign_key_signature(conn, "research_runs")
+    project_indexes = _index_signature(conn, "research_projects")
+    item_indexes = _index_signature(conn, "research_project_items")
+    run_indexes = _index_signature(conn, "research_runs")
+    project_sql = _table_sql(conn, "research_projects")
+    item_sql = _table_sql(conn, "research_project_items")
+    dependency_sql = _table_sql(conn, "research_artifact_dependencies")
+    ref_sql = _table_sql(conn, "research_project_citation_refs")
+    run_sql = _table_sql(conn, "research_runs")
+    if (
+        projects != expected_projects
+        or items != expected_items
+        or dependencies != expected_dependencies
+        or citation_refs != expected_refs
+        or runs.get("project_id") != ("TEXT", 0, 0)
+        or runs.get("project_revision") != ("INTEGER", 0, 0)
+        or runs.get("input_fingerprint") != ("TEXT", 0, 0)
+        or ("owner_user_id", "users", "id", "CASCADE") not in project_fks
+        or not {
+            ("project_id", "research_projects", "id", "CASCADE"),
+            ("run_id", "research_runs", "id", "RESTRICT"),
+            ("paper_id", "papers", "id", "RESTRICT"),
+            ("artifact_id", "research_artifacts", "id", "RESTRICT"),
+        }.issubset(item_fks)
+        or not {
+            ("artifact_id", "research_artifacts", "id", "CASCADE"),
+            ("upstream_artifact_id", "research_artifacts", "id", "RESTRICT"),
+            ("citation_id", "research_citations", "id", "RESTRICT"),
+            ("evidence_id", "research_evidence", "id", "RESTRICT"),
+            ("paper_id", "papers", "id", "RESTRICT"),
+        }.issubset(dependency_fks)
+        or not {
+            ("project_id", "research_projects", "id", "CASCADE"),
+            ("analysis_run_id", "research_runs", "id", "CASCADE"),
+            ("citation_id", "research_citations", "id", "RESTRICT"),
+            ("evidence_id", "research_evidence", "id", "RESTRICT"),
+            ("paper_id", "papers", "id", "RESTRICT"),
+        }.issubset(ref_fks)
+        or ("project_id", "research_projects", "id", "RESTRICT") not in run_fks
+        or project_indexes.get("idx_research_projects_owner_status")
+        != (0, ("owner_user_id", "status", "updated_at"))
+        or item_indexes.get("idx_project_items_unique_run") != (1, ("project_id", "run_id"))
+        or item_indexes.get("idx_project_items_unique_paper") != (1, ("project_id", "paper_id"))
+        or item_indexes.get("idx_project_items_unique_report")
+        != (1, ("project_id", "artifact_id", "artifact_version"))
+        or run_indexes.get("idx_research_runs_one_active_project") != (1, ("project_id",))
+        or "length(trim(title)) between 1 and 200" not in project_sql
+        or "status in ('active', 'archived')" not in project_sql
+        or "item_type in ('run', 'paper', 'research_report')" not in item_sql
+        or "item_type = 'research_report'" not in item_sql
+        or "dependency_type = 'citation'" not in dependency_sql
+        or "unique(artifact_id, dependency_type, dependency_key)" not in dependency_sql
+        or "reference_type in ('citation', 'evidence')" not in ref_sql
+        or "unique(analysis_run_id, citation_key)" not in ref_sql
+        or "mode in ('harness', 'topic', 'paper', 'project')" not in run_sql
+        or "mode = 'project' and project_id is not null" not in run_sql
+        or "project_revision is not null and input_fingerprint is not null" not in run_sql
+    ):
+        raise IncompatibleSchemaError(
+            f"Database project schema does not match version {SCHEMA_VERSION}; "
+            f"rebuild it with: {_schema_reset_command(conn)}"
         )
 
 
@@ -360,6 +516,7 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
         )
     _assert_research_data_schema(conn)
     _assert_citation_schema(conn)
+    _assert_project_schema(conn)
 
 
 def supports_fts5(conn: sqlite3.Connection) -> bool:
@@ -477,10 +634,18 @@ def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = No
 def init_schema(conn: sqlite3.Connection) -> None:
     tables = _schema_tables(conn)
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    if tables and version in {2, 3, 4, 5, 6, 7}:
+    if tables and version in {2, 3, 4, 5, 6, 7, 8}:
         apply_migrations(
             conn,
-            [V3_MIGRATION, V4_MIGRATION, V5_MIGRATION, V6_MIGRATION, V7_MIGRATION, V8_MIGRATION],
+            [
+                V3_MIGRATION,
+                V4_MIGRATION,
+                V5_MIGRATION,
+                V6_MIGRATION,
+                V7_MIGRATION,
+                V8_MIGRATION,
+                V9_MIGRATION,
+            ],
             target_version=SCHEMA_VERSION,
         )
     _assert_schema_compatible(conn)
@@ -716,9 +881,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(RESEARCH_DATA_SCHEMA_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ").replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ").replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS "))
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'research_citations'").fetchone():
         migrate_v7_to_v8(conn)
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'research_projects'"
+    ).fetchone():
+        migrate_v8_to_v9(conn)
     init_paper_chunks_fts(conn)
     rebuild_paper_chunks_fts(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    _assert_schema_compatible(conn)
     conn.commit()
 
 

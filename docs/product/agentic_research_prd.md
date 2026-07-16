@@ -342,3 +342,11 @@ PaperWiki 是一个由 AI Agent 驱动的科研论文工作台：用户用自然
 8. 结果出现在“我的资料库”对应调研项目中。
 9. 用户刷新页面后 Run 和报告仍存在。
 10. 用户点击“基于此报告继续研究”可开启关联新 Run。
+
+## 14. Iter15 项目化研究脉络决策
+
+- 研究项目属于“我的资料库”，不新增第四个顶级导航。项目只能组织当前 Session 已可访问的 Run、论文和固定 Report version，不构成新的授权边界。
+- 项目分析输出是版本化主题簇、时间线和关系图。事实性节点/边必须绑定当前有效 Citation、PaperBrief Evidence 或已验证论文元数据；模型自由文本不是数据库关系真相。
+- publication/precedes 只表达已验证日期和时间排序；“改进、反驳、影响、转折”等语义必须有 Citation。当前无可靠 bibliography 数据，v1 不依标题相似度生成 `cites` 边。
+- 项目输入、Citation/Evidence、ACL 或 source hash 变化后，旧分析立即投影 stale/inaccessible；受影响事实文本被隐藏，历史版本只保留安全审计信息。
+- 资料不足时在付费调用前进入 Coverage Decision，允许添加资料、移除失效项、生成有限脉络、减少维度、仅确定性时间线、返回编辑或停止。有限模式必须明示 coverage 和缺失项。

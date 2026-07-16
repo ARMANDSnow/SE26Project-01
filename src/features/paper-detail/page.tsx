@@ -20,6 +20,7 @@ import { AppEmptyState } from "@/components/common/empty-state"
 import { LoadingState } from "@/components/common/loading-state"
 import { MarkdownBlock } from "@/components/common/markdown-block"
 import { ProcessingBadge } from "@/components/common/status-badge"
+import { AddToProjectDialog } from "@/components/research/add-to-project-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -34,6 +35,7 @@ import {
   usePaperChunksQuery,
   usePaperQuery,
   useParsePaperDocumentMutation,
+  useResearchProjectBacklinksQuery,
 } from "@/lib/query-hooks"
 import { cn } from "@/lib/utils"
 import { PaperChat } from "./paper-chat"
@@ -48,6 +50,7 @@ export function PaperDetailPage() {
   const evidenceChunkId = Number(searchParams.get("chunk"))
   const hasEvidenceTarget = Number.isInteger(evidenceChunkId) && evidenceChunkId > 0
   const paperQuery = usePaperQuery(id)
+  const projectBacklinks = useResearchProjectBacklinksQuery({ item_type: "paper", paper_id: id }, Number.isInteger(id) && id > 0)
   const chunksQuery = usePaperChunksQuery(id)
   const favoriteMutation = useFavoriteMutation()
   const parseMutation = useParsePaperDocumentMutation()
@@ -129,7 +132,7 @@ export function PaperDetailPage() {
   return (
     <section className="grid gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Button asChild variant="ghost" className="h-10 px-2"><Link to="/papers"><ArrowLeft className="size-4" />返回论文库</Link></Button>
+        <Button asChild variant="ghost" className="min-h-11 px-2"><Link to="/papers"><ArrowLeft className="size-4" />返回论文库</Link></Button>
         <div className="inline-flex rounded-lg border bg-card p-1" aria-label="工作台布局">
           <Button size="sm" variant={layout === "reading" ? "secondary" : "ghost"} onClick={() => setLayout("reading")}><PanelLeft className="size-4" />阅读</Button>
           <Button size="sm" variant={layout === "split" ? "secondary" : "ghost"} onClick={() => setLayout("split")}><Columns2 className="size-4" />并排</Button>
@@ -154,20 +157,23 @@ export function PaperDetailPage() {
             </div>
           </div>
           <div className="flex flex-wrap items-start gap-2 lg:justify-end">
-            <Button variant={paper.is_favorite ? "secondary" : "outline"} size="icon" className="size-10" onClick={onFavorite} disabled={busy} aria-label="收藏">
+            <AddToProjectDialog item={{ item_type: "paper", paper_id: paper.id }} />
+            <Button variant={paper.is_favorite ? "secondary" : "outline"} size="icon" className="size-11" onClick={onFavorite} disabled={busy} aria-label="收藏">
               <Star className={cn("size-4", paper.is_favorite && "fill-current")} />
             </Button>
-            <Button variant="outline" className="h-10" onClick={onParse} disabled={busy || !paper.pdf.available}>
+            <Button variant="outline" className="min-h-11" onClick={onParse} disabled={busy || !paper.pdf.available}>
               {parseMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />}{documentReady ? "重新解析全文" : "解析全文"}
             </Button>
-            <Button className="h-10" onClick={onSummary} disabled={busy || !documentReady}>
+            <Button className="min-h-11" onClick={onSummary} disabled={busy || !documentReady}>
               {summaryMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}{currentSummary ? "重新生成概要" : "生成概要"}
             </Button>
-            {paper.pdf.download_url ? <Button asChild variant="outline" size="icon" className="size-10"><a href={paper.pdf.download_url} aria-label="下载 PDF"><Download className="size-4" /></a></Button> : null}
-            {paper.source_url ? <Button asChild variant="outline" size="icon" className="size-10"><a href={paper.source_url} target="_blank" rel="noreferrer" aria-label="来源页面"><ExternalLink className="size-4" /></a></Button> : null}
+            {paper.pdf.download_url ? <Button asChild variant="outline" size="icon" className="size-11"><a href={paper.pdf.download_url} aria-label="下载 PDF"><Download className="size-4" /></a></Button> : null}
+            {paper.source_url ? <Button asChild variant="outline" size="icon" className="size-11"><a href={paper.source_url} target="_blank" rel="noreferrer" aria-label="来源页面"><ExternalLink className="size-4" /></a></Button> : null}
           </div>
         </CardContent>
       </Card>
+
+      <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground"><span>所属研究项目：</span>{projectBacklinks.isLoading ? <span>正在读取…</span> : (projectBacklinks.data ?? []).length ? projectBacklinks.data?.map((item) => <Button key={item.project_id} asChild variant="link" className="h-auto min-h-11 px-1"><Link to={`/library/projects/${item.project_id}`}>{item.project_title}</Link></Button>) : <span>尚未加入</span>}</div>
 
       {paper.document?.status === "failed" ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">Docling 解析失败：{paper.document.error}</div> : null}
 

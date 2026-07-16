@@ -52,6 +52,41 @@ function safeOutput(output: Record<string, unknown>) {
     .slice(0, 10)
 }
 
+const topicStages = [
+  { id: "define", label: "定义研究", keys: ["brief", "query_planning"] },
+  { id: "collect", label: "搜集论文", keys: ["local_search", "arxiv_search", "dedup_import"] },
+  { id: "screen", label: "筛选资料", keys: ["screening"] },
+  { id: "fulltext", label: "获取全文", keys: ["fulltext_acquisition"] },
+  { id: "read", label: "阅读与提取", keys: ["reading", "extraction", "finalize_dataset"] },
+  { id: "synthesize", label: "比较与综合", keys: ["synthesis_planning", "comparison_matrix", "cross_paper_claims"] },
+  { id: "verify", label: "核验与成稿", keys: ["citation_registry", "citation_verification", "report_generation", "finalize_cited_report"] },
+] as const
+
+const stageStatusPriority: ResearchStepStatus[] = ["failed", "waiting_input", "running", "paused", "cancelled", "queued", "completed", "skipped"]
+
+function aggregateStageStatus(steps: ResearchStep[]): ResearchStepStatus {
+  if (steps.length && steps.every((step) => ["completed", "skipped"].includes(step.status))) return "completed"
+  return stageStatusPriority.find((status) => steps.some((step) => step.status === status)) ?? "queued"
+}
+
+function TopicStage({ id, label, steps, expanded, onToggle, expandedStepId, onToggleStep, instanceId }: {
+  id: string; label: string; steps: ResearchStep[]; expanded: boolean; onToggle: () => void;
+  expandedStepId: string; onToggleStep: (id: string) => void; instanceId: string
+}) {
+  const status = aggregateStageStatus(steps)
+  const Icon = stepIcon[status] ?? Circle
+  const detailId = `${instanceId}-stage-${id}`
+  const done = steps.filter((step) => ["completed", "skipped"].includes(step.status)).length
+  return <section className="min-w-0 border-b py-1 last:border-b-0">
+    <button type="button" aria-expanded={expanded} aria-controls={detailId} onClick={onToggle} className="flex min-h-14 w-full items-center gap-3 rounded-lg px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted" aria-hidden="true"><Icon className={cn("size-4", status === "running" && "animate-spin motion-reduce:animate-none")} /></span>
+      <span className="min-w-0 flex-1"><span className="block text-sm font-medium">{label}</span><span className="text-xs text-muted-foreground">{researchStepStatusLabel[status]} · {done}/{steps.length} 项执行记录</span></span>
+      <ChevronDown className={cn("size-4 transition-transform motion-reduce:transition-none", expanded && "rotate-180")} />
+    </button>
+    {expanded ? <div id={detailId} className="grid gap-2 pb-3 pl-2 pt-1 md:pl-11">{steps.map((step) => <WorkflowStep key={step.id} step={step} instanceId={instanceId} expanded={expandedStepId === step.id} onToggle={() => onToggleStep(step.id)} />)}</div> : null}
+  </section>
+}
+
 function WorkflowStep({ step, expanded, onToggle, instanceId }: {
   step: ResearchStep; expanded: boolean; onToggle: () => void; instanceId: string
 }) {
@@ -73,13 +108,13 @@ function WorkflowStep({ step, expanded, onToggle, instanceId }: {
         </span>
         <span className="min-w-0 flex-1">
           <span className="block break-words text-sm font-medium">{step.title}</span>
-          <span className="mt-0.5 block text-xs text-muted-foreground">{researchStepStatusLabel[step.status]} · attempt {step.attempt_count}/{step.max_attempts}</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">{researchStepStatusLabel[step.status]} · 第 {step.attempt_count} 次尝试，共 {step.max_attempts} 次</span>
         </span>
         <ChevronDown className={cn("size-4 shrink-0 transition-transform motion-reduce:transition-none", expanded && "rotate-180")} />
       </button>
       {expanded ? (
         <div id={detailId} className="min-w-0 border-t px-4 py-3 text-xs leading-5 text-muted-foreground">
-          <p>执行者：{step.agent_name}</p>
+          <p className="font-medium text-foreground">技术详情</p><p className="mt-1">执行者：{step.agent_name}</p>
           {step.output.scaffold_only ? <p className="mt-1">Harness 骨架输出；未执行论文检索、导入或模型研究。</p> : null}
           {tools.length ? (
             <section className="mt-3" aria-label="工具执行摘要">
@@ -87,7 +122,7 @@ function WorkflowStep({ step, expanded, onToggle, instanceId }: {
               <div className="mt-1 grid gap-2">
                 {tools.map((tool, index) => (
                   <div key={`${tool.tool}-${index}`} className="min-w-0 rounded-lg bg-muted/55 p-2">
-                    <div className="flex flex-wrap items-center gap-2"><code className="break-all font-mono text-foreground">{tool.tool}</code><Badge variant="outline">{tool.status}</Badge><span>attempt {tool.attempt}</span></div>
+                    <div className="flex flex-wrap items-center gap-2"><code className="break-all font-mono text-foreground">{tool.tool}</code><Badge variant="outline">{tool.status}</Badge><span>第 {tool.attempt} 次尝试</span></div>
                     <p className="mt-1 break-words">{tool.summary}</p>
                   </div>
                 ))}
@@ -236,8 +271,8 @@ function PaperBriefList({ artifacts, instanceId }: { artifacts: ResearchArtifact
     const brief = artifact.content as PaperBrief
     const open = expanded === artifact.id
     const detailId = `${instanceId}-paper-brief-${artifact.id}`
-    return <article key={artifact.id} className="min-w-0 rounded-xl border bg-card"><button type="button" className="flex min-h-14 w-full items-center gap-3 p-3 text-left" aria-expanded={open} aria-controls={detailId} onClick={() => setExpanded(open ? "" : artifact.id)}><BookOpenText className="size-4 shrink-0 text-primary" /><span className="min-w-0 flex-1"><span className="block break-words text-sm font-medium">{brief.title}</span><span className="mt-1 block text-xs text-muted-foreground">{brief.year} · v{artifact.version} · {artifact.is_current ? "source hash 有效" : "source hash 已失效"}</span></span><ChevronDown className={cn("size-4 shrink-0", open && "rotate-180")} /></button>{open ? <div id={detailId} className="grid gap-3 border-t p-3 text-xs leading-5"><div><strong>研究问题</strong><p className="break-words text-muted-foreground">{brief.research_question}</p></div><div><strong>方法</strong><p className="break-words text-muted-foreground">{brief.method}</p></div><div><strong>数据集与实验</strong><p className="break-words text-muted-foreground">{brief.dataset || "未报告"}；{brief.experiments || "未报告"}</p></div><div><strong>主要发现</strong><ul className="list-disc pl-5 text-muted-foreground">{brief.key_findings.map((item) => <li key={item} className="break-words">{item}</li>)}</ul></div><div><strong>局限</strong><ul className="list-disc pl-5 text-muted-foreground">{brief.limitations.map((item) => <li key={item} className="break-words">{item}</li>)}</ul></div><div><strong>证据</strong><p className="break-words text-muted-foreground">{brief.evidence_ids.map((item) => `chunk ${item.chunk_id}`).join(" · ")}</p></div></div> : null}</article>
-  })}{!briefs.length ? <p className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">PaperBrief 尚未由 Extraction Agent 写入。</p> : null}</div>
+    return <article key={artifact.id} className="min-w-0 rounded-xl border bg-card"><button type="button" className="flex min-h-14 w-full items-center gap-3 p-3 text-left" aria-expanded={open} aria-controls={detailId} onClick={() => setExpanded(open ? "" : artifact.id)}><BookOpenText className="size-4 shrink-0 text-primary" /><span className="min-w-0 flex-1"><span className="block break-words text-sm font-medium">{brief.title}</span><span className="mt-1 block text-xs text-muted-foreground">{brief.year} · v{artifact.version} · {artifact.is_current ? "内容版本有效" : "原文已更新"}</span></span><ChevronDown className={cn("size-4 shrink-0", open && "rotate-180")} /></button>{open ? <div id={detailId} className="grid gap-3 border-t p-3 text-xs leading-5"><div><strong>研究问题</strong><p className="break-words text-muted-foreground">{brief.research_question}</p></div><div><strong>方法</strong><p className="break-words text-muted-foreground">{brief.method}</p></div><div><strong>数据集与实验</strong><p className="break-words text-muted-foreground">{brief.dataset || "未报告"}；{brief.experiments || "未报告"}</p></div><div><strong>主要发现</strong><ul className="list-disc pl-5 text-muted-foreground">{brief.key_findings.map((item) => <li key={item} className="break-words">{item}</li>)}</ul></div><div><strong>局限</strong><ul className="list-disc pl-5 text-muted-foreground">{brief.limitations.map((item) => <li key={item} className="break-words">{item}</li>)}</ul></div><div><strong>原文证据</strong><p className="break-words text-muted-foreground">{brief.evidence_ids.map((item) => `片段 ${item.chunk_id}`).join(" · ")}</p></div></div> : null}</article>
+  })}{!briefs.length ? <p className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">论文阅读卡尚未生成。</p> : null}</div>
 }
 
 const citationStatusLabel: Record<ResearchCitation["status"], string> = {
@@ -256,16 +291,19 @@ function CitationDisclosure({ runId, citation, instanceId }: { runId: string; ci
     && open && evidence.isSuccess && !evidence.isFetching && evidence.data
     ? evidence.data
     : citation
+  const ordinal = citation.citation_key.match(/\d+/)?.[0] ?? citation.citation_key
+  const accessibleName = `引用 ${ordinal}，${citationStatusLabel[current.status]}`
   return <article className="min-w-0 rounded-lg border bg-card">
-    <button ref={buttonRef} type="button" className="flex min-h-11 w-full min-w-0 items-center gap-2 px-3 py-2 text-left" aria-expanded={open} aria-controls={open ? detailId : undefined} onClick={() => setOpen((value) => !value)}>
-      <Quote className="size-4 shrink-0 text-primary" /><code className="min-w-0 flex-1 break-all text-xs font-semibold">{citation.citation_key}</code><Badge variant="outline"><span aria-live="polite">{citationStatusLabel[current.status]}</span></Badge><ChevronDown className={cn("size-4 shrink-0", open && "rotate-180")} />
+    <button ref={buttonRef} type="button" className="flex min-h-11 w-full min-w-0 items-center gap-2 px-3 py-2 text-left" aria-label={accessibleName} aria-expanded={open} aria-controls={detailId} onClick={() => setOpen((value) => !value)}>
+      <Quote className="size-4 shrink-0 text-primary" /><span className="min-w-0 flex-1 break-words text-xs font-semibold">引用 {ordinal}</span><Badge variant="outline"><span>{citationStatusLabel[current.status]}</span></Badge><ChevronDown className={cn("size-4 shrink-0", open && "rotate-180")} />
     </button>
     {open ? <div id={detailId} className="min-w-0 border-t p-3 text-xs leading-5">
       {evidence.isLoading ? <p className="text-muted-foreground">正在重新校验证据…</p> : evidence.isError ? <p role="alert" className="text-destructive">证据读取失败；未使用缓存内容。</p> : <>
         <p className="break-words [overflow-wrap:anywhere]" role="status" aria-live="polite">状态：{citationStatusLabel[current.status]}</p>
         {current.paper_id ? <p className="break-words text-muted-foreground">论文 {current.paper_id} · {current.heading || "未命名章节"} · {current.char_start}–{current.char_end}</p> : <p className="text-muted-foreground">当前权限下仅保留安全状态。</p>}
         {current.excerpt ? <blockquote className="mt-2 break-words rounded-md bg-muted/55 p-2 [overflow-wrap:anywhere]">{current.excerpt}</blockquote> : <p className="mt-2 text-muted-foreground">该状态不返回证据原文。</p>}
-        {current.status === "valid" && current.paper_id ? <Button asChild variant="link" className="h-auto min-h-11 px-0"><Link to={`/papers/${current.paper_id}?chunk=${current.chunk_id ?? ""}&start=${current.char_start ?? ""}&end=${current.char_end ?? ""}`}>在论文中定位 Evidence<ExternalLink className="size-3.5" /></Link></Button> : null}
+        {current.status === "valid" ? <p className="mt-1 text-muted-foreground">技术详情：内部标识 {citation.citation_key}</p> : null}
+        {current.status === "valid" && current.paper_id ? <Button asChild variant="link" className="h-auto min-h-11 px-0"><Link to={`/papers/${current.paper_id}?chunk=${current.chunk_id ?? ""}&start=${current.char_start ?? ""}&end=${current.char_end ?? ""}`}>在论文中定位原文证据<ExternalLink className="size-3.5" /></Link></Button> : null}
       </>}
       <Button variant="ghost" className="mt-1 min-h-11" onClick={() => { setOpen(false); requestAnimationFrame(() => buttonRef.current?.focus()) }}>关闭引用</Button>
     </div> : null}
@@ -286,7 +324,7 @@ function isResearchReport(content: Record<string, unknown>): content is Research
 }
 
 function CitationListForKeys({ keys, citations, runId, instanceId }: { keys: string[]; citations: ResearchCitation[] | null; runId: string; instanceId: string }) {
-  if (citations === null) return <p className="text-xs text-muted-foreground" aria-live="polite">正在读取 Citation Registry…</p>
+  if (citations === null) return <p className="text-xs text-muted-foreground" aria-live="polite">正在读取引用清单…</p>
   return <div className="grid gap-2">{keys.map((key) => { const citation = citations.find((entry) => entry.citation_key === key); return citation ? <CitationDisclosure key={`${instanceId}-${citation.id}-${key}`} runId={runId} citation={citation} instanceId={instanceId} /> : <p key={key} className="break-all text-xs text-destructive">{key} 未出现在当前 Registry</p> })}</div>
 }
 
@@ -322,30 +360,39 @@ function SynthesisReport({ run, artifacts, instanceId }: { run: ResearchRun; art
   const reportSections = ["执行摘要", "研究问题", "主要发现", "共识", "分歧", "局限与空白", "结论"]
   return <section className="min-w-0 space-y-4" aria-label="可追溯调研综合与报告" aria-busy={reportsQuery.isLoading || citationsQuery.isLoading}>
     <p className="sr-only" aria-live="polite">引用验证状态：{counts.valid ?? 0} 条有效，{counts.stale ?? 0} 条过期，{counts.inaccessible ?? 0} 条不可访问，{counts.invalid ?? 0} 条无效。</p>
-    {citationsQuery.isLoading ? <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground" aria-live="polite">正在读取 Citation Registry…</p> : citationsQuery.isError ? <p role="alert" className="rounded-lg border border-destructive/40 p-3 text-xs text-destructive">Citation Registry 读取失败，未把引用误判为空。</p> : null}
-    {plan ? <article className="min-w-0 rounded-xl border bg-card p-3"><div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">综合计划</h3><Badge variant="outline">v{planArtifact?.version}</Badge></div><p className="mt-2 break-words text-xs leading-5 text-muted-foreground">{plan.synthesis_strategy}</p><div className="mt-2 flex flex-wrap gap-1">{plan.comparison_dimensions.map((item) => <Badge key={item} variant="secondary" className="max-w-full whitespace-normal break-words">{item}</Badge>)}</div></article> : <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">Synthesis Plan 尚未生成。</p>}
-    {matrix ? <article className="min-w-0 rounded-xl border bg-card p-3"><h3 className="text-sm font-semibold">论文对比矩阵</h3><div className="mt-3 grid gap-4">{matrix.dimensions.map((dimension) => <section key={dimension} className="min-w-0"><h4 className="break-words text-xs font-semibold">{dimension}</h4><div className="mt-2 grid gap-2">{matrix.cells.filter((cell) => cell.dimension === dimension).map((cell) => <article key={cell.cell_id} className="min-w-0 rounded-lg bg-muted/45 p-3"><p className="break-words text-xs font-medium">{matrix.papers.find((paper) => paper.paper_id === cell.paper_id)?.title ?? `论文 ${cell.paper_id}`}</p><p className="mt-1 break-words text-xs leading-5 text-muted-foreground [overflow-wrap:anywhere]">{cell.value}</p><div className="mt-2"><CitationListForKeys keys={cell.citation_keys} citations={citations} runId={run.id} instanceId={`${instanceId}-matrix-${cell.cell_id}`} /></div></article>)}</div></section>)}</div>{matrix.agreements.length ? <div className="mt-4"><CitedStatements title="矩阵共识" items={matrix.agreements} citations={citations} runId={run.id} instanceId={`${instanceId}-matrix-agreement`} /></div> : null}{matrix.disagreements.length ? <div className="mt-4"><CitedStatements title="矩阵分歧" items={matrix.disagreements} citations={citations} runId={run.id} instanceId={`${instanceId}-matrix-disagreement`} /></div> : null}{matrix.missing_evidence.length ? <section className="mt-4"><h4 className="text-xs font-semibold">缺失证据</h4><ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">{matrix.missing_evidence.map((item) => <li key={`${item.dimension}-${item.paper_id ?? "all"}`} className="break-words">{item.dimension}：{item.uncertainty}</li>)}</ul></section> : null}</article> : null}
-    {claims ? <article className="min-w-0 rounded-xl border bg-card p-3"><h3 className="text-sm font-semibold">主张、分歧与研究空白</h3><div className="mt-2 grid gap-2">{claims.claims.map((claim) => <article key={claim.claim_id} className="min-w-0 rounded-lg bg-muted/45 p-3"><div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{claim.claim_type}</Badge><span className="font-mono text-xs">{Math.round(claim.confidence * 100)}%</span><span className="break-words text-xs text-muted-foreground">覆盖论文：{claim.covered_paper_ids.join("、") || "不适用"}</span></div><p className="mt-2 break-words text-xs leading-5 [overflow-wrap:anywhere]">{claim.claim}</p>{claim.caveats.length ? <p className="mt-1 break-words text-xs text-muted-foreground">注意：{claim.caveats.join("；")}</p> : null}{claim.supporting_citations.length || claim.contradicting_citations.length ? <div className="mt-2"><CitationListForKeys keys={[...claim.supporting_citations, ...claim.contradicting_citations]} citations={citations} runId={run.id} instanceId={`${instanceId}-claim-${claim.claim_id}`} /></div> : null}</article>)}</div></article> : null}
-    {citations && citations.length ? <article className="min-w-0 rounded-xl border bg-card p-3"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">Citation Registry</h3><span className="text-xs text-muted-foreground">有效 {counts.valid ?? 0} · 过期 {counts.stale ?? 0} · 不可访问 {counts.inaccessible ?? 0} · 无效 {counts.invalid ?? 0}</span></div><div className="mt-2 grid gap-2">{citations.map((citation) => <CitationDisclosure key={`registry-${citation.id}`} runId={run.id} citation={citation} instanceId={`${instanceId}-registry`} />)}</div></article> : null}
-    <article className="min-w-0 rounded-xl border bg-card p-3"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">版本化研究报告</h3>{reports.length ? <label className="text-xs">版本 <select className="ml-1 min-h-11 rounded-md border bg-background px-2" value={reportArtifact?.version ?? ""} onChange={(event) => { const version = Number(event.target.value); setSelectedVersion(version); setFollowCurrent(reports.find((item) => item.version === version)?.is_current === true) }}>{reports.map((item) => <option key={item.id} value={item.version}>v{item.version}{item.is_current ? " · 当前" : " · stale"}</option>)}</select></label> : null}</div>
-      {reportArtifact && !reportArtifact.is_current ? <div role="status" className="mt-3 rounded-lg border border-[var(--status-waiting)] bg-[var(--status-waiting-bg)] p-3 text-xs">这是历史报告版本；其 Citation 已过期或不可访问，不能作为当前有效结论。</div> : null}
-      {reportsQuery.isLoading ? <p className="mt-3 text-xs text-muted-foreground" aria-live="polite">正在读取报告版本…</p> : reportsQuery.isError ? <p role="alert" className="mt-3 text-xs text-destructive">报告版本读取失败，未把网络错误解释为校验失败。</p> : report ? <div className="mt-4 min-w-0 space-y-5"><div><h2 className="break-words text-base font-semibold [overflow-wrap:anywhere]">{report.title}</h2><p className="mt-1 text-xs text-muted-foreground">{report.topic}</p></div><nav aria-label="研究报告目录" className="flex flex-wrap gap-2">{reportSections.map((label, index) => <a key={label} href={`#${instanceId}-report-${index}`} className="inline-flex min-h-11 items-center rounded-md border px-3 text-xs">{label}</a>)}</nav><section id={`${instanceId}-report-0`}><CitedStatements title="执行摘要" items={report.executive_summary} citations={citations} runId={run.id} instanceId={`${instanceId}-summary`} /></section><section id={`${instanceId}-report-1`}><h4 className="text-sm font-semibold">研究问题</h4><ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">{report.research_questions.map((item) => <li key={item} className="break-words">{item}</li>)}</ul></section><section id={`${instanceId}-report-2`}><CitedStatements title="主要发现" items={report.findings} citations={citations} runId={run.id} instanceId={`${instanceId}-findings`} /></section><section id={`${instanceId}-report-3`}><CitedStatements title="共识" items={report.agreements} citations={citations} runId={run.id} instanceId={`${instanceId}-agreements`} /></section><section id={`${instanceId}-report-4`}><CitedStatements title="分歧" items={report.disagreements} citations={citations} runId={run.id} instanceId={`${instanceId}-disagreements`} /></section><section id={`${instanceId}-report-5`}><h4 className="text-sm font-semibold">局限与研究空白</h4><ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">{[...report.limitations, ...report.research_gaps].map((item) => <li key={item} className="break-words">{item}</li>)}</ul></section><section id={`${instanceId}-report-6`}><CitedStatements title="结论" items={report.conclusion} citations={citations} runId={run.id} instanceId={`${instanceId}-conclusion`} /></section></div> : <p className="mt-3 text-xs text-muted-foreground">报告尚未通过严格引用校验。</p>}
-      {(reportArtifact || claimsArtifact) && ["completed", "failed"].includes(run.status) ? <Button className="mt-4 min-h-11" variant="outline" disabled={regeneration.isPending} onClick={() => { setFollowCurrent(true); regeneration.mutate() }}><RotateCcw className="size-4" />{reportArtifact ? "重新生成新版本" : "重新生成报告"}</Button> : null}{regeneration.isPending ? <p className="mt-2 text-xs text-muted-foreground" role="status" aria-live="polite">已请求生成新版本；完成后将自动切换到当前版本。</p> : null}{regeneration.isError ? <p role="alert" className="mt-2 text-xs text-destructive">重新生成请求失败，旧版本保持不变。</p> : null}
+    <article className="min-w-0 border-y py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0"><h3 className="break-words text-sm font-semibold">{report?.title ?? "版本化研究报告"}</h3><p className="mt-1 text-xs text-muted-foreground">引用有效 {counts.valid ?? 0} · 内容已更新 {counts.stale ?? 0} · 不可访问 {counts.inaccessible ?? 0}</p></div>
+        {reports.length ? <label className="text-xs">版本 <select className="ml-1 min-h-11 rounded-xl border bg-background px-2" value={reportArtifact?.version ?? ""} onChange={(event) => { const version = Number(event.target.value); setSelectedVersion(version); setFollowCurrent(reports.find((item) => item.version === version)?.is_current === true) }}>{reports.map((item) => <option key={item.id} value={item.version}>v{item.version}{item.is_current ? " · 当前版本" : " · 历史版本"}</option>)}</select></label> : null}
+      </div>
+      {reportArtifact && !reportArtifact.is_current ? <p role="status" className="mt-3 rounded-lg border border-[var(--status-waiting)] bg-[var(--status-waiting-bg)] p-3 text-xs">这是历史版本。受影响的事实文本不会作为当前结论展示。</p> : null}
+      {report && reportArtifact?.is_current ? <div className="mt-4"><h4 className="text-xs font-semibold">执行摘要</h4><ul className="mt-2 space-y-2">{report.executive_summary.slice(0, 3).map((item, index) => <li key={item.statement_id} className="break-words border-l-2 pl-3 text-xs leading-5 [overflow-wrap:anywhere]">{item.text}<span className="ml-1 text-muted-foreground">[引用 {index + 1}]</span></li>)}</ul></div> : reportsQuery.isLoading ? <p className="mt-3 text-xs text-muted-foreground">正在读取报告版本…</p> : <p className="mt-3 text-xs text-muted-foreground">报告尚未通过严格引用校验。</p>}
+      <div className="mt-4 flex flex-wrap gap-2">{reportArtifact ? <Button asChild variant="outline" className="min-h-11"><Link to={`/runs/${run.id}/reports/${reportArtifact.version}`}><ExternalLink className="size-4" />打开完整报告</Link></Button> : null}{(reportArtifact || claimsArtifact) && ["completed", "failed"].includes(run.status) ? <Button className="min-h-11" variant="outline" disabled={regeneration.isPending} onClick={() => { setFollowCurrent(true); regeneration.mutate() }}><RotateCcw className="size-4" />生成新版本</Button> : null}</div>
+      {regeneration.isPending ? <p className="mt-2 text-xs text-muted-foreground" role="status" aria-live="polite">已请求生成新版本；完成后将自动切换到当前版本。</p> : null}{regeneration.isError ? <p role="alert" className="mt-2 text-xs text-destructive">重新生成请求失败，旧版本保持不变。</p> : null}
     </article>
   </section>
 }
 
 export function WorkflowPanel({ run, onClose, compact = false }: { run: ResearchRun; onClose?: () => void; compact?: boolean }) {
   const steps = run.steps ?? []
-  const completed = steps.filter((step) => step.status === "completed").length
+  const groupedStages = run.mode === "topic" ? topicStages.map((stage) => ({ ...stage, steps: steps.filter((step) => (stage.keys as readonly string[]).includes(step.step_key)) })) : []
+  const progressItems = run.mode === "topic" ? groupedStages : steps
+  const completed = run.mode === "topic" ? groupedStages.filter((stage) => aggregateStageStatus(stage.steps) === "completed").length : steps.filter((step) => step.status === "completed").length
+  const progressTotal = progressItems.length
   const decisions = (run.decisions ?? []).filter((decision) => decision.status === "pending")
   const artifactsQuery = useResearchArtifactsQuery(run.mode === "topic" ? run.id : "")
   const papersQuery = useResearchRunPapersQuery(run.mode === "topic" ? run.id : "")
   const [expandedStepId, setExpandedStepId] = useState(() => steps.find((step) => ["running", "failed"].includes(step.status))?.id ?? "")
+  const [expandedStageId, setExpandedStageId] = useState<string>(() => groupedStages.find((stage) => stage.steps.some((step) => ["running", "failed", "waiting_input"].includes(step.status)))?.id ?? groupedStages[0]?.id ?? "")
   const instanceId = useId().replace(/:/g, "")
   const titleRef = useRef<HTMLHeadingElement>(null)
   const activeStepId = steps.find((step) => ["running", "failed", "waiting_input"].includes(step.status))?.id ?? ""
-  useEffect(() => { if (activeStepId) setExpandedStepId(activeStepId) }, [activeStepId])
+  useEffect(() => {
+    if (!activeStepId) return
+    setExpandedStepId(activeStepId)
+    const activeStage = groupedStages.find((stage) => stage.steps.some((step) => step.id === activeStepId))
+    if (activeStage) setExpandedStageId(activeStage.id)
+  }, [activeStepId])
   const artifacts = artifactsQuery.data ?? []
   const brief = artifacts.find((artifact) => artifact.artifact_type === "research_brief")
   return (
@@ -355,9 +402,9 @@ export function WorkflowPanel({ run, onClose, compact = false }: { run: Research
           <div className="min-w-0 flex-1"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Research Workflow</p><h2 ref={titleRef} tabIndex={-1} className="mt-1 break-words rounded text-base font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring">{run.title}</h2></div>
           {onClose ? <Button size="icon" variant="ghost" className="size-11 shrink-0" aria-label="关闭 Workflow" onClick={onClose}><X className="size-4" /></Button> : null}
         </div>
-        <div className="mt-3 flex items-center justify-between gap-3"><Badge variant={researchStatusTone[run.status]}>{researchStatusLabel[run.status]}</Badge><span className="text-xs tabular-nums text-muted-foreground">{completed}/{steps.length} 步</span></div>
-        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label="Research Workflow 进度" aria-valuemin={0} aria-valuemax={steps.length} aria-valuenow={completed}><span className="block h-full rounded-full bg-primary transition-[width] motion-reduce:transition-none" style={{ width: `${steps.length ? completed / steps.length * 100 : 0}%` }} /></div>
-        <p className="sr-only" aria-live="polite">{researchStatusLabel[run.status]}，已完成 {completed} / {steps.length} 步</p>
+        <div className="mt-3 flex items-center justify-between gap-3"><Badge variant={researchStatusTone[run.status]}>{researchStatusLabel[run.status]}</Badge><span className="text-xs tabular-nums text-muted-foreground">{completed}/{progressTotal} {run.mode === "topic" ? "阶段" : "步"}</span></div>
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label="Research Workflow 进度" aria-valuemin={0} aria-valuemax={progressTotal} aria-valuenow={completed}><span className="block h-full rounded-full bg-primary transition-[width] motion-reduce:transition-none" style={{ width: `${progressTotal ? completed / progressTotal * 100 : 0}%` }} /></div>
+        <p className="sr-only" aria-live="polite">{researchStatusLabel[run.status]}，已完成 {completed} / {progressTotal} {run.mode === "topic" ? "阶段" : "步"}</p>
         <BudgetSummary run={run} />
         <div className="mt-4"><RunControls run={run} /></div>
       </header>
@@ -367,7 +414,7 @@ export function WorkflowPanel({ run, onClose, compact = false }: { run: Research
         {run.mode === "topic" ? (
             <Tabs defaultValue="steps" className="min-w-0">
             <TabsList className="grid h-auto min-h-11 w-full grid-cols-3"><TabsTrigger className="min-h-11" value="steps"><Search />过程</TabsTrigger><TabsTrigger className="min-h-11" value="dataset"><BookOpenText />数据集</TabsTrigger><TabsTrigger className="min-h-11" value="synthesis"><FileText />综合报告</TabsTrigger></TabsList>
-            <TabsContent value="steps"><section aria-labelledby={`${instanceId}-steps`}><h3 id={`${instanceId}-steps`} className="my-3 text-sm font-semibold">真实执行步骤</h3><div className="grid gap-2">{steps.map((step) => <WorkflowStep key={step.id} step={step} instanceId={instanceId} expanded={expandedStepId === step.id} onToggle={() => setExpandedStepId((current) => current === step.id ? "" : step.id)} />)}</div></section></TabsContent>
+            <TabsContent value="steps"><section aria-labelledby={`${instanceId}-steps`}><div className="my-3"><h3 id={`${instanceId}-steps`} className="text-sm font-semibold">七个研究阶段</h3><p className="mt-1 text-xs text-muted-foreground">展开阶段可审计全部 17 条后端执行记录。</p></div><div>{groupedStages.map((stage) => <TopicStage key={stage.id} id={stage.id} label={stage.label} steps={stage.steps} instanceId={instanceId} expanded={expandedStageId === stage.id} onToggle={() => setExpandedStageId((current) => current === stage.id ? "" : stage.id)} expandedStepId={expandedStepId} onToggleStep={(id) => setExpandedStepId((current) => current === id ? "" : id)} />)}</div></section></TabsContent>
             <TabsContent value="dataset" className="pt-3"><Tabs defaultValue="papers"><TabsList className="grid h-auto min-h-11 w-full grid-cols-2"><TabsTrigger className="min-h-11" value="papers">论文</TabsTrigger><TabsTrigger className="min-h-11" value="briefs">阅读卡</TabsTrigger></TabsList><TabsContent value="papers" className="pt-3" aria-busy={papersQuery.isLoading}>{papersQuery.isLoading ? <p className="text-xs text-muted-foreground">正在读取论文列表…</p> : papersQuery.isError ? <p role="alert" className="text-xs text-destructive">论文列表读取失败，未假定列表为空。</p> : <PaperList papers={papersQuery.data ?? []} />}</TabsContent><TabsContent value="briefs" className="pt-3" aria-busy={artifactsQuery.isLoading}>{artifactsQuery.isLoading ? <p className="text-xs text-muted-foreground">正在读取 PaperBrief…</p> : artifactsQuery.isError ? <p role="alert" className="text-xs text-destructive">阅读卡读取失败，未假定数据不存在。</p> : <PaperBriefList artifacts={artifacts} instanceId={instanceId} />}</TabsContent></Tabs></TabsContent>
             <TabsContent value="synthesis" className="pt-3"><SynthesisReport run={run} artifacts={artifacts} instanceId={instanceId} /></TabsContent>
           </Tabs>

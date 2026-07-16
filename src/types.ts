@@ -186,7 +186,7 @@ export type ResearchStep = {
 };
 
 export type ResearchBudget = {
-  kind: "harness" | "topic";
+  kind: "harness" | "topic" | "project";
   max_candidates?: number;
   max_fulltext_papers?: number;
   max_model_calls?: number;
@@ -253,7 +253,9 @@ export type ResearchArtifactType =
   | "research_brief" | "search_queries" | "candidate_papers"
   | "screening_result" | "paper_brief" | "extraction_result"
   | "synthesis_plan" | "comparison_matrix" | "synthesis_claims"
-  | "citation_registry" | "research_report" | "citation_validation_result";
+  | "citation_registry" | "research_report" | "citation_validation_result"
+  | "research_landscape_plan" | "topic_clusters" | "research_timeline"
+  | "research_graph" | "project_analysis_validation";
 
 export type SynthesisPlan = {
   topic: string;
@@ -403,9 +405,10 @@ export type ResearchRun = {
   id: string;
   user_id: number;
   thread_id?: string | null;
+  project_id?: string | null;
   title: string;
   goal: string;
-  mode: "harness" | "topic" | "paper";
+  mode: "harness" | "topic" | "paper" | "project";
   status: ResearchRunStatus;
   requested_action?: "pause" | "cancel" | null;
   state_version: number;
@@ -431,6 +434,222 @@ export type ResearchEvent = {
   summary: string;
   payload: Record<string, unknown>;
   created_at: string;
+};
+
+export type ResearchProjectStatus = "active" | "archived";
+export type ResearchProjectItemType = "run" | "paper" | "research_report";
+export type ProjectDependencyStatus = "current" | "stale" | "inaccessible";
+
+export type ResearchProject = {
+  id: string;
+  owner_user_id: number;
+  title: string;
+  description: string;
+  status: ResearchProjectStatus;
+  item_count?: number;
+  current_item_count?: number;
+  stale_item_count?: number;
+  inaccessible_item_count?: number;
+  latest_analysis_run_id?: string | null;
+  latest_analysis_status?: ResearchRunStatus | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ResearchProjectItem = {
+  id: string;
+  project_id: string;
+  item_type: ResearchProjectItemType;
+  run_id?: string | null;
+  paper_id?: number | null;
+  artifact_id?: string | null;
+  artifact_version?: number | null;
+  source_run_id?: string | null;
+  source_hash_snapshot?: string | null;
+  position: number;
+  dependency_status: ProjectDependencyStatus;
+  title?: string | null;
+  subtitle?: string | null;
+  added_at: string;
+  updated_at: string;
+};
+
+export type ResearchProjectItemInput =
+  | { item_type: "run"; run_id: string }
+  | { item_type: "paper"; paper_id: number }
+  | { item_type: "research_report"; artifact_id: string; artifact_version: number };
+
+export type ResearchProjectCoverage = {
+  status: "ready" | "limited" | "blocked";
+  total_items: number;
+  current_items: number;
+  stale_items: number;
+  inaccessible_items: number;
+  paper_count: number;
+  report_count: number;
+  valid_citation_count: number;
+  missing_inputs: string[];
+  warnings: string[];
+  can_analyze: boolean;
+  updated_at: string;
+};
+
+export type ResearchLandscapePlan = {
+  project_id: string;
+  topic: string;
+  research_questions: string[];
+  selected_item_ids: string[];
+  clustering_dimensions: string[];
+  timeline_dimensions: string[];
+  graph_relation_types: string[];
+  constraints: string[];
+  schema_version: number;
+};
+
+export type TopicCluster = {
+  cluster_id: string;
+  label: string;
+  summary: string;
+  paper_ids: number[];
+  claim_ids: string[];
+  citation_keys: string[];
+  summary_citation_keys: string[];
+  distinguishing_features: CitedStatement[];
+  uncertainties: string[];
+  schema_version: number;
+};
+
+export type TopicClusters = {
+  clusters: TopicCluster[];
+  unclassified_paper_ids: number[];
+  citation_keys: string[];
+  uncertainties: string[];
+  schema_version: number;
+};
+
+export type ResearchTimelineEvent = {
+  event_id: string;
+  date?: string | null;
+  date_range?: { start?: string | null; end?: string | null } | null;
+  event_type: string;
+  title: string;
+  description: string;
+  paper_ids: number[];
+  claim_ids: string[];
+  citation_keys: string[];
+  confidence: number;
+};
+
+export type ResearchTimeline = {
+  events: ResearchTimelineEvent[];
+  periods: Array<{ period_id: string; date_range: { start: string; end: string }; title: string; description: string; event_ids: string[]; citation_keys: string[] }>;
+  turning_points: CitedStatement[];
+  unresolved_questions: string[];
+  citation_keys: string[];
+  schema_version: number;
+};
+
+export type ResearchGraphNodeType = "project" | "run" | "paper" | "report" | "topic_cluster" | "synthesis_claim";
+export type ResearchGraphEdgeType = "contains" | "generated_from" | "cites" | "supports" | "contradicts" | "belongs_to_cluster" | "precedes" | "influences";
+
+export type ResearchGraphNode = {
+  node_id: string;
+  node_type: ResearchGraphNodeType;
+  label: string;
+  entity_ref: string;
+  status: "valid" | "stale" | "inaccessible";
+};
+
+export type ResearchGraphEdge = {
+  edge_id: string;
+  source_node_id: string;
+  target_node_id: string;
+  relation_type: ResearchGraphEdgeType;
+  citation_keys: string[];
+  status: "valid" | "stale" | "inaccessible";
+};
+
+export type ResearchGraph = {
+  nodes: ResearchGraphNode[];
+  edges: ResearchGraphEdge[];
+  citation_keys: string[];
+  schema_version: number;
+};
+
+export type ProjectAnalysisValidation = {
+  validated_cluster_ids: string[];
+  validated_timeline_event_ids: string[];
+  validated_edge_ids: string[];
+  stale_dependencies: string[];
+  inaccessible_dependencies: string[];
+  coverage_summary: { accessible_item_count: number; paper_count: number; report_count: number; valid_citation_count: number; limited: boolean };
+  warnings: string[];
+  schema_version: number;
+};
+
+export type ResearchProjectArtifactType =
+  | "research_landscape_plan" | "topic_clusters" | "research_timeline"
+  | "research_graph" | "project_analysis_validation";
+
+export type ResearchProjectArtifact<T extends object = Record<string, unknown>> = {
+  id: string;
+  project_id: string;
+  artifact_type: ResearchProjectArtifactType;
+  version: number;
+  status: "completed" | "failed" | "stale" | "inaccessible";
+  dependency_status: ProjectDependencyStatus;
+  is_current: boolean;
+  content?: T | null;
+  input_item_ids?: string[];
+  citation_keys?: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ResearchProjectAnalysis = {
+  project_id: string;
+  run?: ResearchRun | null;
+  tool_summaries: ResearchToolCallSummary[];
+};
+
+export type ProjectEvidenceItem = {
+  citation_id: string;
+  citation_label: string;
+  status: ResearchCitationStatus;
+  paper_id?: number | null;
+  paper_title?: string | null;
+  heading?: string | null;
+  excerpt?: string | null;
+  chunk_id?: number | null;
+  char_start?: number | null;
+  char_end?: number | null;
+};
+
+export type ProjectEntityEvidence = {
+  entity_id: string;
+  entity_kind: "node" | "edge";
+  dependency_status: ProjectDependencyStatus;
+  citations: ProjectEvidenceItem[];
+};
+
+export type ResearchProjectBacklink = {
+  project_id: string;
+  project_title: string;
+  project_status: ResearchProjectStatus;
+  item_id: string;
+};
+
+export type ResearchReportLibraryItem = {
+  artifact_id: string;
+  artifact_version: number;
+  run_id: string;
+  run_title: string;
+  title: string;
+  topic: string;
+  status: "completed" | "stale" | "inaccessible";
+  is_current: boolean;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Stats = {

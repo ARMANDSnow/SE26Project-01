@@ -542,12 +542,22 @@ def resolve_decision(
             (item for item in options if isinstance(item, dict) and str(item.get("id")) == option_id),
             None,
         )
+        if not isinstance(selected_option, dict):
+            raise ValueError("unknown decision option")
+        normalized_option = cast(dict[str, Any], selected_option)
         decision_action = "resume"
-        if isinstance(selected_option, dict) and str(selected_option.get("action", "")).startswith("coverage_"):
+        selected_action = str(normalized_option.get("action", ""))
+        if selected_action.startswith("project_"):
+            from .projects import apply_project_coverage_decision
+
+            decision_action = apply_project_coverage_decision(
+                conn, decision_row=row, option=normalized_option
+            )
+        elif selected_action.startswith("coverage_"):
             from .research_data import apply_coverage_decision
 
-            decision_action = apply_coverage_decision(conn, decision_row=row, option=selected_option)
-        elif isinstance(selected_option, dict) and selected_option.get("action") is not None:
+            decision_action = apply_coverage_decision(conn, decision_row=row, option=normalized_option)
+        elif normalized_option.get("action") is not None:
             # Local import avoids a repository module cycle while keeping the
             # state transition and budget mutation in this transaction.
             from .research_data import apply_budget_decision
@@ -555,7 +565,7 @@ def resolve_decision(
             decision_action = apply_budget_decision(
                 conn,
                 decision_row=row,
-                option=selected_option,
+                option=normalized_option,
             )
         cursor = conn.execute(
             f"""
@@ -568,7 +578,7 @@ def resolve_decision(
         if cursor.rowcount != 1:
             raise ResearchConflictError("decision changed; retry the request")
         run_id = str(row["run_id"])
-        if decision_action == "stop":
+        if decision_action in {"stop", "edit_project"}:
             conn.execute(
                 f"""
                 UPDATE research_steps
@@ -591,7 +601,7 @@ def resolve_decision(
                 conn,
                 run_id,
                 "run.cancelled",
-                "调研任务已按预算决策停止",
+                "项目分析已返回编辑" if decision_action == "edit_project" else "调研任务已按决策停止",
                 step_id=str(row["step_id"]) if row["step_id"] else None,
                 payload={"decision_id": decision_id, "option_id": option_id},
             )

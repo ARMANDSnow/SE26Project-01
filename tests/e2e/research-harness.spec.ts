@@ -136,6 +136,12 @@ async function register(page: Page) {
   await expect(page.getByPlaceholder("输入问题，Enter 发送…")).toBeVisible()
 }
 
+async function selectAnswerMode(page: Page, label: "自动判断" | "普通对话" | "深度研究") {
+  const trigger = page.getByRole("combobox", { name: "回答模式" })
+  await trigger.click()
+  await page.getByRole("option", { name: label }).click()
+}
+
 test("routes deep research into a persisted data card and responsive workflow", async ({ page }, testInfo) => {
   const errors: string[] = []
   await page.emulateMedia({ reducedMotion: "reduce" })
@@ -160,7 +166,7 @@ test("routes deep research into a persisted data card and responsive workflow", 
   await page.keyboard.press("Escape")
   await expect(taskTrigger).toBeFocused()
 
-  await page.getByLabel("回答模式").selectOption("deep_research")
+  await selectAnswerMode(page, "深度研究")
   const title = `Playwright Topic ${testInfo.project.name}`
   const state = { status: "completed", title }
   await installTopicFixtures(page, state)
@@ -177,6 +183,7 @@ test("routes deep research into a persisted data card and responsive workflow", 
   await expect(workflow.getByRole("heading", { name: title })).toBeVisible()
   await expect(workflow.getByRole("heading", { name: "RAG 证据链" })).toBeVisible()
   await expect(workflow.getByLabel("实际预算使用").getByText("8/40")).toBeVisible()
+  await workflow.getByRole("button", { name: /搜集论文/ }).click()
   const localStep = workflow.getByRole("button", { name: /检索本地论文库/ })
   await localStep.click()
   await expect(workflow.getByText("本地检索返回 2 篇论文")).toBeVisible()
@@ -194,31 +201,37 @@ test("routes deep research into a persisted data card and responsive workflow", 
   await expect(workflow.getByText("证据约束提高引用准确率。")).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
   await workflow.getByRole("tab", { name: "综合报告" }).click()
-  await expect(workflow.getByRole("heading", { name: "综合计划" })).toBeVisible()
-  await expect(workflow.getByRole("heading", { name: "论文对比矩阵" })).toBeVisible()
-  await expect(workflow.getByText("白名单证据约束提高引用准确率。")).toBeVisible()
-  await expect(workflow.getByRole("heading", { name: "主张、分歧与研究空白" })).toBeVisible()
   await expect(workflow.getByRole("heading", { name: "可追溯 RAG 证据链研究报告" })).toBeVisible()
-  const citationButton = workflow.getByRole("button", { name: /C1/ }).first()
+  await expect(workflow.getByText("证据白名单能提高调研结论的可追溯性。")).toBeVisible()
+  const fullReportLink = workflow.getByRole("link", { name: "打开完整报告" })
+  await fullReportLink.click()
+  await expect(page).toHaveURL(/\/runs\/[^/]+\/reports\/2/)
+  if (testInfo.project.name === "mobile-390") {
+    await page.getByRole("combobox", { name: "报告内容" }).click()
+    await page.getByRole("option", { name: "引用", exact: true }).click()
+  } else {
+    await page.getByRole("tab", { name: "引用", exact: true }).click()
+  }
+  const citationButton = page.getByRole("button", { name: /引用 1/ }).first()
   await citationButton.focus()
   await page.keyboard.press("Enter")
-  await expect(workflow.getByText("Evidence-constrained generation improves citation accuracy.")).toBeVisible()
-  await expect(workflow.getByText(/论文 101 · Method/)).toBeVisible()
-  await workflow.getByRole("button", { name: "关闭引用" }).click()
+  await expect(page.getByText("Evidence-constrained generation improves citation accuracy.")).toBeVisible()
+  await expect(page.getByText("Method", { exact: true })).toBeVisible()
+  await page.keyboard.press("Escape")
   await expect(citationButton).toBeFocused()
+  await page.goBack()
+  workflow = testInfo.project.name === "desktop-1440" ? page.locator("aside:visible") : page.locator('[role="dialog"]:visible')
+  await workflow.getByRole("tab", { name: "综合报告" }).click()
   const versionSelect = workflow.getByLabel("版本")
   await versionSelect.selectOption("1")
-  await expect(workflow.getByText(/这是历史报告版本/)).toBeVisible()
+  await expect(workflow.getByText(/这是历史版本/)).toBeVisible()
   await expect(workflow.getByRole("heading", { name: "历史 RAG 证据链研究报告" })).toBeVisible()
-  await expect(workflow.getByText("已过期").first()).toBeVisible()
-  await expect(workflow.getByText("不可访问").first()).toBeVisible()
-  await expect(workflow.getByText("无效").first()).toBeVisible()
   await versionSelect.selectOption("2")
   await expect(workflow.getByRole("heading", { name: "可追溯 RAG 证据链研究报告" })).toBeVisible()
   if (testInfo.project.name === "mobile-390") {
-    for (const target of [citationButton, versionSelect, workflow.getByRole("button", { name: "重新生成新版本" })]) expect((await target.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44)
+    for (const target of [fullReportLink, versionSelect, workflow.getByRole("button", { name: "生成新版本" })]) expect((await target.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44)
   }
-  await workflow.getByRole("button", { name: "重新生成新版本" }).click()
+  await workflow.getByRole("button", { name: "生成新版本" }).click()
   await expect.poll(() => state.status).toBe("running")
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
 
@@ -295,7 +308,7 @@ test("keeps normal chat streaming, reload and explicit fork outside Research", a
       body: `event: text.delta\ndata: ${JSON.stringify({ delta: content })}\n\nevent: message.completed\ndata: ${JSON.stringify({ content })}\n\n`,
     })
   })
-  await page.getByLabel("回答模式").selectOption("normal")
+  await selectAnswerMode(page, "普通对话")
   await page.getByPlaceholder("输入问题，Enter 发送…").fill("这是普通问题")
   await page.getByRole("button", { name: "发送" }).click()
   await expect(page.getByText("普通回答 1", { exact: true })).toBeVisible()

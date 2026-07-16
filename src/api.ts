@@ -1,4 +1,12 @@
-import type { ChatMessageRepository, ChatRouteMode, ChatRouteResponse, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, ResearchArtifact, ResearchCitation, ResearchRun, ResearchRunPaper, Stats, Subscription, User, WikiSearchResult } from "./types";
+import type {
+  ChatMessageRepository, ChatRouteMode, ChatRouteResponse, ChatThread, FolderRecommendation,
+  GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk,
+  PaperDocument, PaperSummary, ProjectEntityEvidence, QaResponse, ResearchArtifact,
+  ResearchCitation, ResearchProject, ResearchProjectAnalysis, ResearchProjectArtifact,
+  ResearchProjectArtifactType, ResearchProjectBacklink, ResearchProjectCoverage,
+  ResearchProjectItem, ResearchProjectItemInput, ResearchReportLibraryItem, ResearchRun,
+  ResearchRunPaper, Stats, Subscription, User, WikiSearchResult,
+} from "./types";
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -76,6 +84,164 @@ export async function fetchResearchReports(runId: string): Promise<ResearchArtif
 
 export async function regenerateResearchReport(runId: string): Promise<ResearchRun> {
   return request<ResearchRun>(`/api/research/runs/${runId}/report-regeneration`, { method: "POST" })
+}
+
+export async function fetchResearchProjects(status?: "active" | "archived"): Promise<ResearchProject[]> {
+  const suffix = status ? `?status=${status}` : ""
+  const data = await request<{ items: ResearchProject[] }>(`/api/research/projects${suffix}`)
+  return data.items
+}
+
+export async function createResearchProject(payload: { title: string; description?: string }): Promise<ResearchProject> {
+  return request<ResearchProject>("/api/research/projects", { method: "POST", body: JSON.stringify(payload) })
+}
+
+export async function fetchResearchProject(projectId: string): Promise<ResearchProject> {
+  return request<ResearchProject>(`/api/research/projects/${projectId}`)
+}
+
+export async function updateResearchProject(projectId: string, payload: { title?: string; description?: string }): Promise<ResearchProject> {
+  return request<ResearchProject>(`/api/research/projects/${projectId}`, { method: "PATCH", body: JSON.stringify(payload) })
+}
+
+export async function deleteResearchProject(projectId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/api/research/projects/${projectId}`, { method: "DELETE" })
+}
+
+export async function setResearchProjectArchived(projectId: string, archived: boolean): Promise<ResearchProject> {
+  return request<ResearchProject>(`/api/research/projects/${projectId}/${archived ? "archive" : "restore"}`, { method: "POST" })
+}
+
+export async function fetchResearchProjectItems(projectId: string): Promise<ResearchProjectItem[]> {
+  const data = await request<{ items: Array<Record<string, unknown>> }>(`/api/research/projects/${projectId}/items`)
+  return data.items.map((item) => {
+    const status = String(item.dependency_status ?? item.status ?? "inaccessible")
+    const source = item.source && typeof item.source === "object" ? item.source as Record<string, unknown> : {}
+    const content = source.content && typeof source.content === "object" ? source.content as Record<string, unknown> : {}
+    return {
+      ...item,
+      project_id: String(item.project_id ?? projectId),
+      dependency_status: status === "valid" || status === "current" ? "current" : status === "stale" ? "stale" : "inaccessible",
+      title: status === "inaccessible" ? null : String(item.title ?? source.title ?? content.title ?? ""),
+      subtitle: status === "inaccessible" ? null : String(item.subtitle ?? source.goal ?? source.source_id ?? content.topic ?? ""),
+    } as ResearchProjectItem
+  })
+}
+
+export async function addResearchProjectItem(projectId: string, payload: ResearchProjectItemInput): Promise<ResearchProjectItem> {
+  return request<ResearchProjectItem>(`/api/research/projects/${projectId}/items`, { method: "POST", body: JSON.stringify(payload) })
+}
+
+export async function removeResearchProjectItem(projectId: string, itemId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/api/research/projects/${projectId}/items/${itemId}`, { method: "DELETE" })
+}
+
+export async function reorderResearchProjectItems(projectId: string, itemIds: string[]): Promise<ResearchProjectItem[]> {
+  const data = await request<{ items: ResearchProjectItem[] }>(`/api/research/projects/${projectId}/items/reorder`, {
+    method: "POST", body: JSON.stringify({ item_ids: itemIds }),
+  })
+  return data.items
+}
+
+export async function fetchResearchProjectCoverage(projectId: string): Promise<ResearchProjectCoverage> {
+  return request<ResearchProjectCoverage>(`/api/research/projects/${projectId}/coverage`)
+}
+
+export async function fetchResearchProjectAnalysis(projectId: string): Promise<ResearchProjectAnalysis> {
+  return request<ResearchProjectAnalysis>(`/api/research/projects/${projectId}/analysis`)
+}
+
+export async function startResearchProjectAnalysis(projectId: string): Promise<ResearchProjectAnalysis> {
+  return request<ResearchProjectAnalysis>(`/api/research/projects/${projectId}/analysis`, { method: "POST" })
+}
+
+export async function controlResearchProjectAnalysis(projectId: string, action: "pause" | "resume" | "cancel" | "retry"): Promise<ResearchProjectAnalysis> {
+  return request<ResearchProjectAnalysis>(`/api/research/projects/${projectId}/analysis/${action}`, { method: "POST" })
+}
+
+const projectArtifactView: Partial<Record<ResearchProjectArtifactType, string>> = {
+  topic_clusters: "topic-clusters",
+  research_timeline: "timeline",
+  research_graph: "graph",
+}
+
+export async function fetchResearchProjectArtifact<T extends object>(
+  projectId: string,
+  artifactType: ResearchProjectArtifactType,
+  version?: number,
+): Promise<ResearchProjectArtifact<T>> {
+  const view = projectArtifactView[artifactType]
+  if (!view) throw new Error("project artifact view is not exposed")
+  const suffix = version == null ? "" : `?version=${version}`
+  return request<ResearchProjectArtifact<T>>(`/api/research/projects/${projectId}/artifacts/${view}${suffix}`)
+}
+
+export async function fetchResearchProjectArtifactVersions(projectId: string, artifactType: ResearchProjectArtifactType): Promise<ResearchProjectArtifact[]> {
+  const view = projectArtifactView[artifactType]
+  if (!view) return []
+  const data = await request<{ items: ResearchProjectArtifact[] }>(`/api/research/projects/${projectId}/artifacts/${view}/versions`)
+  return data.items
+}
+
+export async function fetchProjectEntityEvidence(
+  projectId: string,
+  artifactVersion: number,
+  entityKind: ProjectEntityEvidence["entity_kind"],
+  entityId: string,
+): Promise<ProjectEntityEvidence> {
+  const raw = await request<{ entity_id: string; entity_kind: "node" | "edge"; dependency_status: string; citations: Array<Record<string, unknown>> }>(`/api/research/projects/${projectId}/entities/${entityKind}/${encodeURIComponent(entityId)}/evidence?artifact_version=${artifactVersion}`)
+  return {
+    entity_id: raw.entity_id,
+    entity_kind: entityKind,
+    dependency_status: raw.dependency_status === "current" ? "current" : raw.dependency_status === "stale" ? "stale" : "inaccessible",
+    citations: raw.citations.map((item, index) => ({
+      citation_id: String(item.citation_id ?? `${entityId}-${index}`), citation_label: `引用 ${index + 1}`,
+      status: String(item.status ?? "invalid") as ResearchCitation["status"],
+      paper_id: typeof item.paper_id === "number" ? item.paper_id : null,
+      paper_title: typeof item.paper_title === "string" ? item.paper_title : null,
+      heading: typeof item.heading === "string" ? item.heading : null,
+      excerpt: typeof item.excerpt === "string" ? item.excerpt : null,
+      chunk_id: typeof item.chunk_id === "number" ? item.chunk_id : null,
+      char_start: typeof item.char_start === "number" ? item.char_start : null,
+      char_end: typeof item.char_end === "number" ? item.char_end : null,
+    })),
+  }
+}
+
+export async function fetchResearchProjectBacklinks(item: ResearchProjectItemInput): Promise<ResearchProjectBacklink[]> {
+  const params = new URLSearchParams({ item_type: item.item_type })
+  if (item.item_type === "run") params.set("run_id", item.run_id)
+  if (item.item_type === "paper") params.set("paper_id", String(item.paper_id))
+  if (item.item_type === "research_report") {
+    params.set("artifact_id", item.artifact_id)
+    params.set("artifact_version", String(item.artifact_version))
+  }
+  const data = await request<{ items: ResearchProjectBacklink[] }>(`/api/research/projects/backlinks?${params}`)
+  return data.items.map((item) => ({
+    project_id: (item as unknown as { id: string }).id,
+    project_title: (item as unknown as { title: string }).title,
+    project_status: (item as unknown as { status: ResearchProjectBacklink["project_status"] }).status,
+    item_id: item.item_id,
+  }))
+}
+
+export async function fetchResearchReportLibrary(): Promise<ResearchReportLibraryItem[]> {
+  const runs = (await fetchResearchRuns()).filter((run) => run.mode === "topic")
+  const groups = await Promise.all(runs.map(async (run) => {
+    try {
+      const reports = await fetchResearchReports(run.id)
+      return reports.map((artifact) => {
+        const content = artifact.content as Partial<{ title: string; topic: string }>
+        return {
+          artifact_id: artifact.id, artifact_version: artifact.version, run_id: run.id, run_title: run.title,
+          title: content.title ?? "未命名报告", topic: content.topic ?? run.goal,
+          status: artifact.status === "stale" ? "stale" : "completed", is_current: artifact.is_current,
+          created_at: artifact.created_at, updated_at: artifact.updated_at,
+        } satisfies ResearchReportLibraryItem
+      })
+    } catch { return [] }
+  }))
+  return groups.flat().sort((a, b) => b.updated_at.localeCompare(a.updated_at))
 }
 
 export async function createResearchRun(payload: {
