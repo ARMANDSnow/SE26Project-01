@@ -9,7 +9,7 @@ from urllib.request import Request
 
 from ..config import get_settings
 from ..repositories.papers import get_paper_record, set_paper_asset_id
-from ..models import AssetInfo, PaperId
+from ..models import AssetInfo, PaperId, PaperSource
 from .asset_store import AssetNotFoundError, AssetStore, AssetStoreError, LocalAssetStore
 from .http_safety import UnsafeUrlError, open_trusted_url, validate_trusted_https_url
 
@@ -29,6 +29,15 @@ _download_lock = threading.Lock()
 
 class RemotePdfError(ValueError):
     pass
+
+
+def _has_pdf_eof(store: AssetStore, asset: AssetInfo) -> bool:
+    try:
+        with store.open(asset.id) as source:
+            source.seek(max(0, asset.size_bytes - 4096))
+            return b"%%EOF" in source.read()
+    except (AssetNotFoundError, OSError):
+        return False
 
 
 def _validate_pdf_url(url: str) -> str:
@@ -56,9 +65,12 @@ class PaperPdfService:
         if paper.asset_id is None:
             return None
         try:
-            return self.store.stat(paper.asset_id)
+            asset = self.store.stat(paper.asset_id)
         except AssetNotFoundError:
             return None
+        if paper.source == PaperSource.UPLOAD:
+            return asset
+        return asset if _has_pdf_eof(self.store, asset) else None
 
     def ensure(
         self,
@@ -94,9 +106,16 @@ class PaperPdfService:
                     allowed_hosts=ALLOWED_REMOTE_PDF_HOSTS,
                     timeout=REMOTE_PDF_TIMEOUT_SECONDS,
                 ) as response:
+                    content_length = response.headers.get("Content-Length")
                     asset = self.store.put_pdf(response)
-            except (HTTPError, URLError, TimeoutError, OSError, AssetStoreError, UnsafeUrlError) as exc:
-                raise RemotePdfError(f"remote PDF download failed: {exc}") from exc
+                    if content_length is not None and asset.size_bytes != int(content_length):
+                        self.store.delete(asset.id)
+                        raise RemotePdfError("remote PDF download was incomplete")
+                    if not _has_pdf_eof(self.store, asset):
+                        self.store.delete(asset.id)
+                        raise RemotePdfError("remote PDF is missing its EOF marker")
+            except (HTTPError, URLError, TimeoutError, OSError, ValueError, AssetStoreError, UnsafeUrlError) as exc:
+                raise RemotePdfError("remote PDF download failed") from exc
 
             if before_attach is None:
                 set_paper_asset_id(self.conn, paper_id, asset.id)

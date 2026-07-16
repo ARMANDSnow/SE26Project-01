@@ -1,7 +1,17 @@
 import { expect, test, type Page } from "@playwright/test"
 
 const now = "2026-07-16T10:00:00Z"
-const stepTitles = ["理解研究目标", "制定检索计划", "检索本地论文库", "搜索 arXiv 候选", "去重并导入候选", "筛选候选论文", "获取并解析全文", "检索正文与定位证据", "抽取结构化阅读卡", "完成调研数据集"]
+const stepTitles = [
+  "理解研究目标", "制定检索计划", "检索本地论文库", "搜索 arXiv 候选", "去重并导入候选",
+  "筛选候选论文", "获取并解析全文", "检索正文与定位证据", "抽取结构化阅读卡", "完成调研数据集",
+  "制定综合计划", "构建论文对比矩阵", "生成跨论文主张", "登记引用", "严格校验引用", "生成研究报告", "完成可追溯研究报告",
+]
+const stepKeys = [
+  "brief", "query_planning", "local_search", "arxiv_search", "dedup_import", "screening", "fulltext_acquisition", "reading", "extraction", "finalize_dataset",
+  "synthesis_planning", "comparison_matrix", "cross_paper_claims", "citation_registry", "citation_verification", "report_generation", "finalize_cited_report",
+]
+const sourceHash = "a".repeat(64)
+const evidenceId = `EV-${"a".repeat(24)}`
 
 function topicRun(id: string, title: string, status = "completed") {
   const waiting = status === "waiting_input"
@@ -9,16 +19,16 @@ function topicRun(id: string, title: string, status = "completed") {
     id, user_id: 1, thread_id: "e2e-thread", title, goal: title, mode: "topic", status,
     requested_action: null, state_version: status === "completed" ? 20 : 8, plan_version: 1,
     budget: { kind: "topic", max_candidates: 50, max_fulltext_papers: 12, max_model_calls: 40, max_tool_calls: 100, max_wall_clock_seconds: 1800 },
-    usage: { candidate_papers: 3, fulltext_papers: 1, model_calls: 4, tool_calls: 11, successful_calls: 15, failed_calls: 0, wall_clock_seconds: 42 },
+    usage: { candidate_papers: 3, fulltext_papers: 1, model_calls: 8, tool_calls: 11, successful_calls: 19, failed_calls: 0, wall_clock_seconds: 42 },
     error_code: status === "failed" ? "tool_timeout" : null,
     error_message: status === "failed" ? "研究工具执行超时，可从检查点重试。" : null,
     created_at: now, started_at: now, updated_at: now, completed_at: status === "completed" ? now : null,
     latest_event_id: 20,
     steps: stepTitles.map((stepTitle, index) => ({
       id: `step-${index}`, run_id: id,
-      step_key: ["brief", "query_planning", "local_search", "arxiv_search", "dedup_import", "screening", "fulltext_acquisition", "reading", "extraction", "finalize_dataset"][index],
+      step_key: stepKeys[index],
       step_type: `topic.${index}`, title: stepTitle,
-      agent_name: index < 1 || index === 9 ? "Coordinator Agent" : index < 4 ? "Search Agent" : index === 5 ? "Screening Agent" : index < 8 ? "Reader Agent" : "Extraction Agent",
+      agent_name: index < 1 || index === 9 || index === 16 ? "Coordinator Agent" : index < 4 ? "Search Agent" : index === 5 ? "Screening Agent" : index < 8 ? "Reader Agent" : index === 8 ? "Extraction Agent" : index === 11 ? "Comparison Agent" : index === 14 ? "Citation Verifier Agent" : index === 15 ? "Report Agent" : "Synthesis Agent",
       status: waiting && index === 6 ? "waiting_input" : status === "failed" && index === 6 ? "failed" : (waiting && index > 6) || (status === "failed" && index > 6) ? "queued" : "completed",
       position: index, attempt_count: 1, max_attempts: 3,
       output: index === 2 ? { candidate_count: 2, tool_calls: [{ tool: "local_paper_search", status: "completed", attempt: 1, summary: "本地检索返回 2 篇论文", duration_ms: 18 }] } : {},
@@ -40,12 +50,44 @@ function topicArtifacts(id: string) {
   const base = { run_id: id, schema_version: 1, version: 1, status: "completed", source_step_id: "step-0", is_current: true, created_at: now, updated_at: now }
   return [
     { ...base, id: "brief-artifact", artifact_type: "research_brief", content: { topic: "RAG 证据链", research_questions: ["如何评估检索证据质量？"], scope: "2023–2026 年带实证评估的论文", inclusion_criteria: ["包含实验"], exclusion_criteria: ["非论文"], date_range: { start_year: 2023, end_year: 2026 }, preferred_sources: ["local", "arxiv"], output_language: "zh-CN", constraints: [], schema_version: 1 } },
-    { ...base, id: "paper-brief-artifact", artifact_type: "paper_brief", paper_id: 101, source_hash: "a".repeat(64), source_step_id: "step-8", content: { paper_id: 101, source: "arxiv", source_id: "2501.00001", title: "A Very Long Paper Title About Retrieval-Augmented Generation Evidence Grounding Without Horizontal Overflow on Mobile Screens", authors: ["Ada Lovelace"], year: 2025, research_question: "检索证据如何提高可追溯性？", method: "先检索正文块，再基于白名单证据生成回答。", dataset: "CitationBench", experiments: "引用准确率与检索召回率", key_findings: ["证据约束提高引用准确率。"], limitations: ["仅评估英文数据。"], relevance: "直接回答研究问题。", evidence_ids: [{ chunk_id: 501, paper_id: 101, source_hash: "a".repeat(64), chunk_index: 0, char_start: 0, char_end: 120, heading: "Method" }], source_hash: "a".repeat(64), schema_version: 1 } },
+    { ...base, id: "paper-brief-artifact", artifact_type: "paper_brief", paper_id: 101, source_hash: sourceHash, source_step_id: "step-8", content: { paper_id: 101, source: "arxiv", source_id: "2501.00001", title: "A Very Long Paper Title About Retrieval-Augmented Generation Evidence Grounding Without Horizontal Overflow on Mobile Screens", authors: ["Ada Lovelace"], year: 2025, research_question: "检索证据如何提高可追溯性？", method: "先检索正文块，再基于白名单证据生成回答。", dataset: "CitationBench", experiments: "引用准确率与检索召回率", key_findings: ["证据约束提高引用准确率。"], limitations: ["仅评估英文数据。"], relevance: "直接回答研究问题。", evidence_ids: [{ evidence_id: evidenceId, chunk_id: 501, paper_id: 101, source_hash: sourceHash, chunk_index: 0, char_start: 0, char_end: 120, heading: "Method" }], source_hash: sourceHash, schema_version: 1 } },
+    { ...base, id: "synthesis-plan", artifact_type: "synthesis_plan", source_step_id: "step-10", content: { topic: "RAG 证据链", research_questions: ["如何评估检索证据质量？"], comparison_dimensions: ["引用准确率", "证据覆盖"], synthesis_strategy: "仅综合已打开且通过当前 source hash 校验的 Chunk Evidence。", expected_outputs: ["论文对比矩阵", "可追溯研究报告"], constraints: ["事实性结论必须带引用"], schema_version: 1 } },
+    { ...base, id: "comparison-matrix", artifact_type: "comparison_matrix", source_step_id: "step-11", content: { dimensions: ["引用准确率"], papers: [{ paper_id: 101, title: "A Very Long Paper Title About Retrieval-Augmented Generation Evidence Grounding Without Horizontal Overflow on Mobile Screens" }], cells: [{ cell_id: "cell-1", dimension: "引用准确率", paper_id: 101, value: "白名单证据约束提高引用准确率。", citation_keys: ["C1"], evidence_ids: [evidenceId] }], agreements: [{ statement_id: "agreement-1", text: "证据约束是可追溯回答的共同基础。", citation_keys: ["C1"] }], disagreements: [], missing_evidence: [{ dimension: "多语言迁移", paper_id: 101, uncertainty: "当前证据只覆盖英文数据。" }], schema_version: 1 } },
+    { ...base, id: "synthesis-claims", artifact_type: "synthesis_claims", source_step_id: "step-12", content: { claims: [{ claim_id: "claim-1", claim: "证据约束提高引用准确率。", claim_type: "finding", confidence: 0.91, supporting_citations: ["C1"], contradicting_citations: [], covered_paper_ids: [101], caveats: ["仅评估英文数据"], schema_version: 1 }], schema_version: 1 } },
+    { ...base, id: "citation-registry", artifact_type: "citation_registry", version: 2, source_step_id: "step-13", content: { entries: [{ citation_key: "C1", claim_id: "claim-1", paper_id: 101, chunk_id: 501, evidence_id: evidenceId, source: "arxiv", source_id: "2501.00001", source_hash: sourceHash, heading: "Method", char_start: 0, char_end: 120 }], schema_version: 1 } },
+    { ...base, id: "citation-validation", artifact_type: "citation_validation_result", source_step_id: "step-14", content: { valid_citation_keys: ["C1"], stale_citation_keys: [], inaccessible_citation_keys: [], invalid_citation_keys: [], verified_claim_ids: ["claim-1"], schema_version: 1 } },
+    currentReport(id),
+  ]
+}
+
+function reportContent(title: string, registryVersion = 2) {
+  const cited = (statement_id: string, text: string) => ({ statement_id, text, citation_keys: ["C1"] })
+  return { title, topic: "RAG 证据链", executive_summary: [cited("summary-1", "证据白名单能提高调研结论的可追溯性。")], research_questions: ["如何评估检索证据质量？"], findings: [cited("finding-1", "证据约束提高引用准确率。")], agreements: [cited("report-agreement-1", "来源哈希校验是引用有效性的基础。")], disagreements: [], limitations: ["当前仅纳入一篇满足条件的论文。"], research_gaps: ["仍需验证多语言论文。"], conclusion: [cited("conclusion-1", "报告结论可追溯到当前有效 Chunk Evidence。")], citation_keys: ["C1"], generated_from_artifact_versions: { synthesis_plan: 1, comparison_matrix: 1, synthesis_claims: 1, citation_registry: registryVersion, citation_validation_result: 1 }, schema_version: 1 }
+}
+
+function currentReport(id: string) {
+  return { id: "research-report-v2", run_id: id, artifact_type: "research_report", schema_version: 1, source_step_id: "step-15", version: 2, status: "completed", content: reportContent("可追溯 RAG 证据链研究报告"), source_hash: null, is_current: true, created_at: now, updated_at: now }
+}
+
+function topicReports(id: string) {
+  return [
+    { ...currentReport(id), id: "research-report-v1", version: 1, is_current: false, status: "stale", content: reportContent("历史 RAG 证据链研究报告", 1) },
+    currentReport(id),
+  ]
+}
+
+function topicCitations(id: string) {
+  const current = { id: "citation-1", run_id: id, artifact_id: "citation-registry", artifact_version: 2, citation_key: "C1", claim_id: "claim-1", paper_id: 101, chunk_id: 501, evidence_id: evidenceId, source: "arxiv", source_id: "2501.00001", source_hash: sourceHash, heading: "Method", char_start: 0, char_end: 120, quote_hash: "b".repeat(64), status: "valid", created_at: now, updated_at: now }
+  return [
+    { ...current, id: "citation-old", artifact_id: "citation-registry-v1", artifact_version: 1, status: "stale" },
+    { id: "citation-inaccessible", run_id: id, artifact_id: "citation-registry-v1", artifact_version: 1, citation_key: "C2", status: "inaccessible", created_at: now, updated_at: now },
+    { ...current, id: "citation-invalid", artifact_id: "citation-registry-v1", artifact_version: 1, citation_key: "C3", status: "invalid" },
+    current,
   ]
 }
 
 function topicPapers(id: string) {
-  const base = { run_id: id, source_step_id: "step-5", source: "arxiv", source_hash: "a".repeat(64), authors: ["Ada Lovelace"], abstract: "Evidence-grounded retrieval.", published_at: "2025-01-01", primary_category: "cs.CL", source_url: "https://arxiv.org/abs/2501.00001", processing_status: "processed", created_at: now, updated_at: now }
+  const base = { run_id: id, source_step_id: "step-5", source: "arxiv", source_hash: sourceHash, authors: ["Ada Lovelace"], abstract: "Evidence-grounded retrieval.", published_at: "2025-01-01", primary_category: "cs.CL", source_url: "https://arxiv.org/abs/2501.00001", processing_status: "processed", created_at: now, updated_at: now }
   return [
     { ...base, paper_id: 101, source_id: "2501.00001", stage: "extracted", rank: 1, score: 0.96, inclusion_reason: "直接评估证据可追溯性", exclusion_reason: null, title: "A Very Long Paper Title About Retrieval-Augmented Generation Evidence Grounding Without Horizontal Overflow on Mobile Screens" },
     { ...base, paper_id: 102, source_id: "2501.00002", stage: "excluded", rank: null, score: 0.21, inclusion_reason: null, exclusion_reason: "没有报告可复核的实证结果", title: "A Survey Without Empirical Evaluation" },
@@ -60,6 +102,14 @@ async function installTopicFixtures(page: Page, state: { status: string; title: 
     if (!match) return route.fallback()
     const runId = match[1]
     if (url.pathname.endsWith("/events")) return route.fulfill({ status: 200, contentType: "text/event-stream", body: "" })
+    const citationEvidence = url.pathname.match(/\/citations\/(citation-1|citation-old)\/evidence$/)?.[1]
+    if (citationEvidence) {
+      const citation = topicCitations(runId).find((item) => item.id === citationEvidence)!
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...citation, excerpt: citation.status === "valid" ? "Evidence-constrained generation improves citation accuracy." : null }) })
+    }
+    if (url.pathname.endsWith("/citations")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: topicCitations(runId) }) })
+    if (url.pathname.endsWith("/reports")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: topicReports(runId) }) })
+    if (url.pathname.endsWith("/report-regeneration") && route.request().method() === "POST") { state.status = "running"; return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(topicRun(runId, state.title, state.status)) }) }
     if (url.pathname.endsWith("/artifacts")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: topicArtifacts(runId) }) })
     if (url.pathname.endsWith("/papers")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: topicPapers(runId) }) })
     const action = url.pathname.match(/\/(pause|resume|cancel|retry)$/)?.[1]
@@ -126,21 +176,50 @@ test("routes deep research into a persisted data card and responsive workflow", 
   let workflow = testInfo.project.name === "desktop-1440" ? page.locator("aside:visible") : page.locator('[role="dialog"]:visible')
   await expect(workflow.getByRole("heading", { name: title })).toBeVisible()
   await expect(workflow.getByRole("heading", { name: "RAG 证据链" })).toBeVisible()
-  await expect(workflow.getByLabel("实际预算使用").getByText("4/40")).toBeVisible()
+  await expect(workflow.getByLabel("实际预算使用").getByText("8/40")).toBeVisible()
   const localStep = workflow.getByRole("button", { name: /检索本地论文库/ })
   await localStep.click()
   await expect(workflow.getByText("本地检索返回 2 篇论文")).toBeVisible()
-  await workflow.getByRole("tab", { name: "论文" }).click()
+  await workflow.getByRole("tab", { name: "数据集" }).click()
+  await workflow.getByRole("tab", { name: "论文", exact: true }).click()
   await expect(workflow.getByText("直接评估证据可追溯性")).toBeVisible()
   await expect(workflow.getByText("没有报告可复核的实证结果")).toBeVisible()
   await expect(workflow.getByText("Candidate Awaiting Screening")).toBeVisible()
   await workflow.getByRole("button", { name: "全文就绪" }).click()
   await expect(workflow.getByText(/A Very Long Paper Title/)).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
-  await workflow.getByRole("tab", { name: "阅读卡" }).click()
+  await workflow.getByRole("tab", { name: "阅读卡", exact: true }).click()
   const briefButton = workflow.getByRole("button", { name: /A Very Long Paper Title/ })
   await briefButton.click()
   await expect(workflow.getByText("证据约束提高引用准确率。")).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
+  await workflow.getByRole("tab", { name: "综合报告" }).click()
+  await expect(workflow.getByRole("heading", { name: "综合计划" })).toBeVisible()
+  await expect(workflow.getByRole("heading", { name: "论文对比矩阵" })).toBeVisible()
+  await expect(workflow.getByText("白名单证据约束提高引用准确率。")).toBeVisible()
+  await expect(workflow.getByRole("heading", { name: "主张、分歧与研究空白" })).toBeVisible()
+  await expect(workflow.getByRole("heading", { name: "可追溯 RAG 证据链研究报告" })).toBeVisible()
+  const citationButton = workflow.getByRole("button", { name: /C1/ }).first()
+  await citationButton.focus()
+  await page.keyboard.press("Enter")
+  await expect(workflow.getByText("Evidence-constrained generation improves citation accuracy.")).toBeVisible()
+  await expect(workflow.getByText(/论文 101 · Method/)).toBeVisible()
+  await workflow.getByRole("button", { name: "关闭引用" }).click()
+  await expect(citationButton).toBeFocused()
+  const versionSelect = workflow.getByLabel("版本")
+  await versionSelect.selectOption("1")
+  await expect(workflow.getByText(/这是历史报告版本/)).toBeVisible()
+  await expect(workflow.getByRole("heading", { name: "历史 RAG 证据链研究报告" })).toBeVisible()
+  await expect(workflow.getByText("已过期").first()).toBeVisible()
+  await expect(workflow.getByText("不可访问").first()).toBeVisible()
+  await expect(workflow.getByText("无效").first()).toBeVisible()
+  await versionSelect.selectOption("2")
+  await expect(workflow.getByRole("heading", { name: "可追溯 RAG 证据链研究报告" })).toBeVisible()
+  if (testInfo.project.name === "mobile-390") {
+    for (const target of [citationButton, versionSelect, workflow.getByRole("button", { name: "重新生成新版本" })]) expect((await target.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44)
+  }
+  await workflow.getByRole("button", { name: "重新生成新版本" }).click()
+  await expect.poll(() => state.status).toBe("running")
   expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
 
   if (testInfo.project.name !== "desktop-1440") {

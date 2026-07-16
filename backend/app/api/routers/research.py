@@ -5,7 +5,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 
 from ...auth.dependencies import CurrentUser
@@ -28,12 +28,19 @@ from ...repositories.research_data import (
     list_artifacts,
     list_run_papers,
 )
+from ...repositories.research_citations import (
+    get_citation,
+    get_citation_evidence,
+    list_citations,
+    request_report_regeneration,
+)
 from ...services.research import ResearchExecutor
 from ..schemas import ResearchDecisionResolveRequest, ResearchRunCreateRequest
 
 
 router = APIRouter(prefix="/api/research", tags=["research"])
 MAX_EVENT_ID = 9_223_372_036_854_775_807
+PRIVATE_NO_STORE = "private, no-store"
 
 
 def _executor(request: Request) -> ResearchExecutor:
@@ -95,9 +102,11 @@ def research_run(run_id: str, user: CurrentUser) -> dict[str, Any]:
 @router.get("/runs/{run_id}/artifacts")
 def research_run_artifacts(
     run_id: str,
+    response: Response,
     user: CurrentUser,
     artifact_type: str | None = Query(default=None, max_length=80),
 ) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
     with connect() as conn:
         try:
             return {"items": list_artifacts(conn, run_id, user.id, artifact_type=artifact_type)}
@@ -106,7 +115,8 @@ def research_run_artifacts(
 
 
 @router.get("/runs/{run_id}/artifacts/{artifact_id}")
-def research_artifact(run_id: str, artifact_id: str, user: CurrentUser) -> dict[str, Any]:
+def research_artifact(run_id: str, artifact_id: str, response: Response, user: CurrentUser) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
     with connect() as conn:
         try:
             return get_artifact(conn, run_id, artifact_id, user.id)
@@ -131,12 +141,94 @@ def research_run_papers(
 
 
 @router.get("/runs/{run_id}/papers/{paper_id}/brief")
-def research_paper_brief(run_id: str, paper_id: int, user: CurrentUser) -> dict[str, Any]:
+def research_paper_brief(run_id: str, paper_id: int, response: Response, user: CurrentUser) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
     with connect() as conn:
         try:
             return get_paper_brief(conn, run_id, paper_id, user.id)
         except ResearchNotFoundError as exc:
             raise _not_found(exc) from exc
+
+
+@router.get("/runs/{run_id}/citations")
+def research_citation_registry(run_id: str, response: Response, user: CurrentUser) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
+    with connect() as conn:
+        try:
+            return {"items": list_citations(conn, run_id, user.id)}
+        except ResearchNotFoundError as exc:
+            raise _not_found(exc) from exc
+
+
+@router.get("/runs/{run_id}/citations/{citation_id}")
+def research_citation(run_id: str, citation_id: str, response: Response, user: CurrentUser) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
+    with connect() as conn:
+        try:
+            return get_citation(conn, run_id, citation_id, user.id)
+        except ResearchNotFoundError as exc:
+            raise _not_found(exc) from exc
+
+
+@router.get("/runs/{run_id}/citations/{citation_id}/evidence")
+def research_citation_evidence(run_id: str, citation_id: str, response: Response, user: CurrentUser) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
+    with connect() as conn:
+        try:
+            return get_citation_evidence(conn, run_id, citation_id, user.id)
+        except ResearchNotFoundError as exc:
+            raise _not_found(exc) from exc
+
+
+@router.get("/runs/{run_id}/reports")
+def research_report_versions(run_id: str, response: Response, user: CurrentUser) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
+    with connect() as conn:
+        try:
+            return {"items": list_artifacts(conn, run_id, user.id, artifact_type="research_report")}
+        except ResearchNotFoundError as exc:
+            raise _not_found(exc) from exc
+
+
+@router.get("/runs/{run_id}/reports/{version}")
+def research_report_version(run_id: str, version: int, response: Response, user: CurrentUser) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
+    with connect() as conn:
+        try:
+            items = list_artifacts(conn, run_id, user.id, artifact_type="research_report")
+        except ResearchNotFoundError as exc:
+            raise _not_found(exc) from exc
+    selected = next((item for item in items if int(item["version"]) == version), None)
+    if selected is None:
+        raise HTTPException(status_code=404, detail="Research object not found")
+    return selected
+
+
+@router.get("/runs/{run_id}/comparison-matrix")
+def research_comparison_matrix(run_id: str, response: Response, user: CurrentUser) -> dict[str, Any]:
+    response.headers["Cache-Control"] = PRIVATE_NO_STORE
+    with connect() as conn:
+        try:
+            items = list_artifacts(conn, run_id, user.id, artifact_type="comparison_matrix")
+        except ResearchNotFoundError as exc:
+            raise _not_found(exc) from exc
+    selected = next((item for item in items if item.get("is_current")), None)
+    if selected is None:
+        raise HTTPException(status_code=404, detail="Research object not found")
+    return selected
+
+
+@router.post("/runs/{run_id}/report-regeneration")
+def regenerate_research_report(run_id: str, request: Request, user: CurrentUser) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            result = request_report_regeneration(conn, run_id, user.id)
+        except ResearchNotFoundError as exc:
+            raise _not_found(exc) from exc
+        except ResearchConflictError as exc:
+            raise _conflict(exc) from exc
+    _executor(request).wake()
+    return result
 
 
 @router.post("/runs/{run_id}/pause")

@@ -220,6 +220,7 @@ export type ResearchBrief = {
 };
 
 export type ChunkEvidenceRef = {
+  evidence_id?: string | null;
   chunk_id: number;
   paper_id: number;
   source_hash: string;
@@ -250,7 +251,89 @@ export type PaperBrief = {
 
 export type ResearchArtifactType =
   | "research_brief" | "search_queries" | "candidate_papers"
-  | "screening_result" | "paper_brief" | "extraction_result";
+  | "screening_result" | "paper_brief" | "extraction_result"
+  | "synthesis_plan" | "comparison_matrix" | "synthesis_claims"
+  | "citation_registry" | "research_report" | "citation_validation_result";
+
+export type SynthesisPlan = {
+  topic: string;
+  research_questions: string[];
+  comparison_dimensions: string[];
+  synthesis_strategy: string;
+  expected_outputs: string[];
+  constraints: string[];
+  schema_version: 1;
+};
+
+export type CitedStatement = { statement_id: string; text: string; citation_keys: string[] };
+export type ComparisonMatrix = {
+  dimensions: string[];
+  papers: Array<{ paper_id: number; title: string }>;
+  cells: Array<{ cell_id: string; dimension: string; paper_id: number; value: string; citation_keys: string[]; evidence_ids: string[] }>;
+  agreements: CitedStatement[];
+  disagreements: CitedStatement[];
+  missing_evidence: Array<{ dimension: string; paper_id?: number | null; uncertainty: string }>;
+  schema_version: 1;
+};
+export type SynthesisClaim = {
+  claim_id: string;
+  claim: string;
+  claim_type: "finding" | "agreement" | "disagreement" | "limitation" | "gap";
+  confidence: number;
+  supporting_citations: string[];
+  contradicting_citations: string[];
+  covered_paper_ids: number[];
+  caveats: string[];
+  schema_version: 1;
+};
+export type SynthesisClaims = { claims: SynthesisClaim[]; schema_version: 1 };
+export type CitationValidationResult = {
+  valid_citation_keys: string[];
+  stale_citation_keys: string[];
+  inaccessible_citation_keys: string[];
+  invalid_citation_keys: string[];
+  verified_claim_ids: string[];
+  schema_version: 1;
+};
+export type ResearchReport = {
+  title: string;
+  topic: string;
+  executive_summary: CitedStatement[];
+  research_questions: string[];
+  findings: CitedStatement[];
+  agreements: CitedStatement[];
+  disagreements: CitedStatement[];
+  limitations: string[];
+  research_gaps: string[];
+  conclusion: CitedStatement[];
+  citation_keys: string[];
+  generated_from_artifact_versions: Record<string, number>;
+  schema_version: 1;
+};
+
+export type ResearchCitationStatus = "valid" | "stale" | "inaccessible" | "invalid";
+export type ResearchCitation = {
+  id: string;
+  run_id: string;
+  artifact_id: string;
+  artifact_version: number;
+  citation_key: string;
+  status: ResearchCitationStatus;
+  claim_id?: string;
+  paper_id?: number;
+  chunk_id?: number;
+  evidence_id?: string;
+  source?: string;
+  source_id?: string;
+  source_hash?: string;
+  heading?: string;
+  char_start?: number;
+  char_end?: number;
+  quote_hash?: string;
+  excerpt?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
 
 export type ResearchArtifact = {
   id: string;

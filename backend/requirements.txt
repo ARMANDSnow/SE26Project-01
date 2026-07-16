@@ -7,4 +7,5 @@ httpx==0.28.1
 python-multipart==0.0.20
 pypdf>=5.1,<7
 docling>=2.70,<3
+filelock>=3.20,<4
 mypy==1.15.0

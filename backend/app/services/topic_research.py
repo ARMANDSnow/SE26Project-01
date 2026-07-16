@@ -6,31 +6,50 @@ from ..db.connection import connect
 from ..repositories.research_data import (
     assert_safe_research_payload,
     authorize_budget_item,
+    begin_model_call,
+    complete_model_call,
     create_artifact,
     find_artifact_checkpoint,
     list_artifacts,
     list_run_papers,
-    reserve_budget,
     settle_budget_call,
     upsert_run_paper,
+    wait_for_evidence_coverage,
+)
+from ..repositories.research_citations import (
+    create_citation_registry,
+    list_citations,
+    list_current_evidence,
 )
 from .research_agents import (
     CoordinatorAgent,
+    CitationVerifierAgent,
+    ComparisonAgent,
     ExtractionAgent,
     LLMStructuredResearchModel,
     ReaderAgent,
+    ReportAgent,
     ScreeningAgent,
     SearchAgent,
+    SynthesisAgent,
     StructuredResearchModel,
 )
 from .research_contracts import (
     CandidatePaper,
     CandidatePapersArtifact,
+    CitationRegistry,
+    CitationRegistryEntry,
+    CitationValidationResult,
+    ComparisonMatrix,
     ExtractionResult,
+    PaperBrief,
     ResearchBrief,
+    ResearchReport,
     ResearchStepError,
     ScreeningResult,
     SearchQueries,
+    SynthesisClaims,
+    SynthesisPlan,
     StrictResearchModel,
     ToolCallSummary,
 )
@@ -64,6 +83,10 @@ class TopicResearchPipeline:
         self.screening_agent = ScreeningAgent(structured_model)
         self.reader_agent = ReaderAgent()
         self.extraction_agent = ExtractionAgent(structured_model)
+        self.synthesis_agent = SynthesisAgent(structured_model)
+        self.comparison_agent = ComparisonAgent(structured_model)
+        self.citation_verifier = CitationVerifierAgent()
+        self.report_agent = ReportAgent(structured_model)
         self.tools = tools or build_research_tool_registry()
 
     def handle(self, step: dict[str, Any]) -> dict[str, Any]:
@@ -94,6 +117,13 @@ class TopicResearchPipeline:
             "reading": self._reading,
             "extraction": self._extraction,
             "finalize_dataset": self._finalize,
+            "synthesis_planning": self._synthesis_planning,
+            "comparison_matrix": self._comparison_matrix,
+            "cross_paper_claims": self._cross_paper_claims,
+            "citation_registry": self._citation_registry,
+            "citation_verification": self._citation_verification,
+            "report_generation": self._report_generation,
+            "finalize_cited_report": self._finalize_cited_report,
         }
         try:
             handler = handlers[str(step["step_key"])]
@@ -101,25 +131,53 @@ class TopicResearchPipeline:
             raise ResearchStepError("unknown_topic_step", "未知的主题调研步骤。") from exc
         return handler(step, context)
 
-    def _model_call(self, context: ToolContext, callback: Callable[[], ModelT]) -> ModelT:
+    def _model_call(
+        self,
+        context: ToolContext,
+        operation_key: str,
+        model_type: type[ModelT],
+        input_payload: dict[str, Any],
+        callback: Callable[[], ModelT],
+    ) -> ModelT:
         with connect() as conn:
-            allowed = reserve_budget(
+            start_status, stored = begin_model_call(
                 conn,
                 run_id=context.run_id,
                 step_id=context.step_id,
                 worker_id=context.worker_id,
                 lease_generation=context.lease_generation,
-                kind="model_calls",
+                idempotency_key=operation_key,
+                model_name=model_type.__name__,
+                input_payload=input_payload,
             )
-        if not allowed:
+        if start_status == "completed":
+            return model_type.model_validate(stored)
+        if start_status == "waiting":
             from .research_contracts import ResearchWaitingInput
 
             raise ResearchWaitingInput("model budget requires input")
         succeeded = False
+        result: ModelT | None = None
         try:
             result = callback()
+            safe_result = result.model_dump(mode="json")
+            assert_safe_research_payload(safe_result)
             succeeded = True
+            with connect() as conn:
+                complete_model_call(
+                    conn, run_id=context.run_id, step_id=context.step_id,
+                    worker_id=context.worker_id, lease_generation=context.lease_generation,
+                    idempotency_key=operation_key, result=safe_result, succeeded=True,
+                )
             return result
+        except Exception:
+            with connect() as conn:
+                complete_model_call(
+                    conn, run_id=context.run_id, step_id=context.step_id,
+                    worker_id=context.worker_id, lease_generation=context.lease_generation,
+                    idempotency_key=operation_key, result=None, succeeded=False,
+                )
+            raise
         finally:
             with connect() as conn:
                 settle_budget_call(
@@ -145,9 +203,12 @@ class TopicResearchPipeline:
     def _latest_artifact(run_id: str, user_id: int, artifact_type: str) -> dict[str, Any]:
         with connect() as conn:
             artifacts = list_artifacts(conn, run_id, user_id, artifact_type=artifact_type)
-        if not artifacts:
+        current = next((artifact for artifact in artifacts if artifact.get("is_current")), None)
+        if current is None:
+            current = next((artifact for artifact in artifacts if artifact.get("status") == "completed"), None)
+        if current is None:
             raise ResearchStepError("artifact_dependency_missing", "上游结构化产物不存在。")
-        return artifacts[0]
+        return current
 
     @staticmethod
     def _tool_summaries(items: list[ToolCallSummary]) -> list[dict[str, Any]]:
@@ -159,7 +220,7 @@ class TopicResearchPipeline:
         if checkpoint:
             return {"artifact_id": checkpoint["id"], "reused_checkpoint": True}
         goal = str(step.get("input", {}).get("goal", "")).strip()
-        brief = self._model_call(context, lambda: self.coordinator.build_brief(goal))
+        brief = self._model_call(context, key, ResearchBrief, {"goal": goal}, lambda: self.coordinator.build_brief(goal))
         with connect() as conn:
             artifact = create_artifact(
                 conn,
@@ -181,7 +242,7 @@ class TopicResearchPipeline:
         brief = ResearchBrief.model_validate(
             self._latest_artifact(context.run_id, context.user_id, "research_brief")["content"]
         )
-        queries = self._model_call(context, lambda: self.search_agent.plan_queries(brief))
+        queries = self._model_call(context, key, SearchQueries, brief.model_dump(mode="json"), lambda: self.search_agent.plan_queries(brief))
         with connect() as conn:
             artifact = create_artifact(
                 conn,
@@ -319,7 +380,8 @@ class TopicResearchPipeline:
         candidates = CandidatePapersArtifact.model_validate(
             self._latest_artifact(context.run_id, context.user_id, "candidate_papers")["content"]
         ).items
-        result = self._model_call(context, lambda: self.screening_agent.screen(brief, candidates))
+        screening_input = {"brief": brief.model_dump(mode="json"), "candidates": [item.model_dump(mode="json") for item in candidates]}
+        result = self._model_call(context, key, ScreeningResult, screening_input, lambda: self.screening_agent.screen(brief, candidates))
         assert_safe_research_payload(result.model_dump(mode="json"))
         selected = sorted((item for item in result.items if item.selected), key=lambda item: item.score, reverse=True)
         ranks = {item.paper_id: index + 1 for index, item in enumerate(selected)}
@@ -452,7 +514,7 @@ class TopicResearchPipeline:
                 continue
             paper_id = int(row["paper_id"])
             source_hash = str(row["source_hash"])
-            paper_key = f"topic:paper_brief:{paper_id}:{source_hash}"
+            paper_key = f"{step['idempotency_key']}:paper_brief:{paper_id}:{source_hash}"
             checkpoint = self._checkpoint(step, paper_key)
             if checkpoint is not None:
                 with connect() as conn:
@@ -484,8 +546,12 @@ class TopicResearchPipeline:
             if not opened_items:
                 raise ResearchStepError("paper_evidence_missing", "Paper Brief 缺少可追溯正文证据。")
             candidate = candidate_from_run_paper(row)
+            extraction_input = {"research_brief": brief.model_dump(mode="json"), "paper": candidate.model_dump(mode="json"), "source_hash": source_hash, "opened_evidence": opened_items}
             paper_brief = self._model_call(
                 context,
+                paper_key,
+                PaperBrief,
+                extraction_input,
                 lambda: self.extraction_agent.extract(
                     brief=brief,
                     paper=candidate,
@@ -521,7 +587,7 @@ class TopicResearchPipeline:
             extracted_ids.append(paper_id)
             summaries.append(search_summary)
         result = ExtractionResult(paper_brief_artifact_ids=artifact_ids, extracted_paper_ids=extracted_ids)
-        result_key = "topic:extraction_result:v1"
+        result_key = f"{step['idempotency_key']}:extraction_result"
         with connect() as conn:
             artifact = create_artifact(
                 conn,
@@ -552,6 +618,261 @@ class TopicResearchPipeline:
             "paper_brief_count": extracted,
             "artifact_count": len(artifacts),
         }
+
+    def _current_paper_briefs(self, context: ToolContext) -> list[PaperBrief]:
+        with connect() as conn:
+            artifacts = list_artifacts(conn, context.run_id, context.user_id, artifact_type="paper_brief")
+            evidence = list_current_evidence(conn, context.run_id, context.user_id)
+        valid_evidence = {str(item["id"]) for item in evidence if item["status"] == "valid"}
+        latest: dict[int, PaperBrief] = {}
+        for artifact in artifacts:
+            if not artifact.get("is_current"):
+                continue
+            parsed = PaperBrief.model_validate(artifact["content"])
+            evidence_ids = {item.evidence_id for item in parsed.evidence_ids}
+            if None in evidence_ids or not evidence_ids or not evidence_ids.issubset(valid_evidence):
+                continue
+            latest.setdefault(parsed.paper_id, parsed)
+        if not latest:
+            with connect() as conn:
+                wait_for_evidence_coverage(
+                    conn, run_id=context.run_id, step_id=context.step_id,
+                    worker_id=context.worker_id, lease_generation=context.lease_generation,
+                )
+            from .research_contracts import ResearchWaitingInput
+
+            raise ResearchWaitingInput("evidence coverage requires input")
+        return list(latest.values())
+
+    def _citation_candidates(self, context: ToolContext) -> list[dict[str, Any]]:
+        briefs = self._current_paper_briefs(context)
+        requested = {str(ref.evidence_id) for brief in briefs for ref in brief.evidence_ids if ref.evidence_id}
+        with connect() as conn:
+            evidence = list_current_evidence(conn, context.run_id, context.user_id)
+        current = [item for item in evidence if item["status"] == "valid" and str(item["id"]) in requested]
+        current.sort(key=lambda item: (int(item["paper_id"]), int(item["chunk_id"]), str(item["id"])))
+        return [
+            {
+                "citation_key": f"C{index}", "evidence_id": str(item["id"]),
+                "paper_id": int(item["paper_id"]), "heading": str(item["heading"]),
+                "source_hash": str(item["source_hash"]),
+            }
+            for index, item in enumerate(current, start=1)
+        ]
+
+    @staticmethod
+    def _validate_matrix(matrix: ComparisonMatrix, candidates: list[dict[str, Any]], briefs: list[PaperBrief]) -> None:
+        candidate_by_key = {str(item["citation_key"]): item for item in candidates}
+        allowed_papers = {item.paper_id: item.title for item in briefs}
+        matrix_papers = {item.paper_id: item.title for item in matrix.papers}
+        if matrix_papers != allowed_papers:
+            raise ResearchStepError("comparison_identity_invalid", "对比矩阵包含 Run 之外的论文。")
+        for cell in matrix.cells:
+            if cell.paper_id not in allowed_papers or any(key not in candidate_by_key for key in cell.citation_keys):
+                raise ResearchStepError("comparison_citation_invalid", "对比矩阵包含未知论文或引用。")
+            cited = [candidate_by_key[key] for key in cell.citation_keys]
+            expected_evidence = {str(item["evidence_id"]) for item in cited}
+            if any(int(item["paper_id"]) != cell.paper_id for item in cited) or set(cell.evidence_ids) != expected_evidence:
+                raise ResearchStepError("comparison_evidence_invalid", "对比矩阵 Evidence 与 Citation 不一致。")
+        for item in [*matrix.agreements, *matrix.disagreements]:
+            if any(key not in candidate_by_key for key in item.citation_keys):
+                raise ResearchStepError("comparison_citation_invalid", "对比结论包含未知引用。")
+
+    def _synthesis_planning(self, step: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        key = f"{step['idempotency_key']}:artifact"
+        checkpoint = self._checkpoint(step, key)
+        if checkpoint:
+            return {"artifact_id": checkpoint["id"], "reused_checkpoint": True}
+        brief = ResearchBrief.model_validate(self._latest_artifact(context.run_id, context.user_id, "research_brief")["content"])
+        paper_briefs = self._current_paper_briefs(context)
+        plan_input = {"research_brief": brief.model_dump(mode="json"), "paper_briefs": [item.model_dump(mode="json") for item in paper_briefs]}
+        plan = self._model_call(context, key, SynthesisPlan, plan_input, lambda: self.synthesis_agent.plan(brief, paper_briefs))
+        with connect() as conn:
+            artifact = create_artifact(conn, run_id=context.run_id, source_step_id=context.step_id,
+                worker_id=context.worker_id, lease_generation=context.lease_generation,
+                artifact_type="synthesis_plan", content=plan.model_dump(mode="json"), idempotency_key=key)
+        return {"artifact_id": artifact["id"], "dimension_count": len(plan.comparison_dimensions)}
+
+    def _comparison_matrix(self, step: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        key = f"{step['idempotency_key']}:artifact"
+        checkpoint = self._checkpoint(step, key)
+        if checkpoint:
+            return {"artifact_id": checkpoint["id"], "reused_checkpoint": True}
+        plan = SynthesisPlan.model_validate(self._latest_artifact(context.run_id, context.user_id, "synthesis_plan")["content"])
+        briefs = self._current_paper_briefs(context)
+        candidates = self._citation_candidates(context)
+        matrix_input = {"plan": plan.model_dump(mode="json"), "paper_briefs": [item.model_dump(mode="json") for item in briefs], "citation_candidates": candidates}
+        matrix = self._model_call(context, key, ComparisonMatrix, matrix_input, lambda: self.comparison_agent.compare(plan, briefs, candidates))
+        self._validate_matrix(matrix, candidates, briefs)
+        with connect() as conn:
+            artifact = create_artifact(conn, run_id=context.run_id, source_step_id=context.step_id,
+                worker_id=context.worker_id, lease_generation=context.lease_generation,
+                artifact_type="comparison_matrix", content=matrix.model_dump(mode="json"), idempotency_key=key)
+        return {"artifact_id": artifact["id"], "cell_count": len(matrix.cells)}
+
+    def _cross_paper_claims(self, step: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        key = f"{step['idempotency_key']}:artifact"
+        checkpoint = self._checkpoint(step, key)
+        if checkpoint:
+            return {"artifact_id": checkpoint["id"], "reused_checkpoint": True}
+        plan = SynthesisPlan.model_validate(self._latest_artifact(context.run_id, context.user_id, "synthesis_plan")["content"])
+        matrix = ComparisonMatrix.model_validate(self._latest_artifact(context.run_id, context.user_id, "comparison_matrix")["content"])
+        candidates = self._citation_candidates(context)
+        allowed_keys = {str(item["citation_key"]) for item in candidates}
+        paper_by_key = {str(item["citation_key"]): int(item["paper_id"]) for item in candidates}
+        allowed_papers = set(paper_by_key.values())
+        claims_input = {"plan": plan.model_dump(mode="json"), "comparison_matrix": matrix.model_dump(mode="json"), "citation_candidates": candidates}
+        claims = self._model_call(context, key, SynthesisClaims, claims_input, lambda: self.synthesis_agent.claims(plan, matrix, candidates))
+        for claim in claims.claims:
+            cited_keys = [*claim.supporting_citations, *claim.contradicting_citations]
+            if any(citation_key not in allowed_keys for citation_key in cited_keys):
+                raise ResearchStepError("synthesis_citation_invalid", "跨论文主张包含未知引用。")
+            covered = set(claim.covered_paper_ids)
+            cited_papers = {paper_by_key[citation_key] for citation_key in cited_keys}
+            if not covered.issubset(allowed_papers) or not cited_papers.issubset(covered):
+                raise ResearchStepError("synthesis_identity_invalid", "跨论文主张的论文覆盖与引用身份不一致。")
+        with connect() as conn:
+            artifact = create_artifact(conn, run_id=context.run_id, source_step_id=context.step_id,
+                worker_id=context.worker_id, lease_generation=context.lease_generation,
+                artifact_type="synthesis_claims", content=claims.model_dump(mode="json"), idempotency_key=key)
+        return {"artifact_id": artifact["id"], "claim_count": len(claims.claims)}
+
+    def _citation_registry(self, step: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        key = f"{step['idempotency_key']}:artifact"
+        checkpoint = self._checkpoint(step, key)
+        if checkpoint:
+            return {"artifact_id": checkpoint["id"], "citation_count": len(checkpoint["content"]["entries"]), "reused_checkpoint": True}
+        matrix = ComparisonMatrix.model_validate(self._latest_artifact(context.run_id, context.user_id, "comparison_matrix")["content"])
+        claims = SynthesisClaims.model_validate(self._latest_artifact(context.run_id, context.user_id, "synthesis_claims")["content"])
+        candidates = {str(item["citation_key"]): item for item in self._citation_candidates(context)}
+        claims_for_key: dict[str, list[str]] = {}
+        def register_relation(citation_key: str, relation_id: str) -> None:
+            relations = claims_for_key.setdefault(citation_key, [])
+            if relation_id not in relations:
+                relations.append(relation_id)
+        for claim in claims.claims:
+            for citation_key in [*claim.supporting_citations, *claim.contradicting_citations]:
+                register_relation(citation_key, claim.claim_id)
+        for statement in [*matrix.agreements, *matrix.disagreements]:
+            for citation_key in statement.citation_keys:
+                register_relation(citation_key, statement.statement_id)
+        for cell in matrix.cells:
+            for citation_key in cell.citation_keys:
+                register_relation(citation_key, cell.cell_id)
+        entries = [
+            CitationRegistryEntry(citation_key=key_name, claim_id=claims_for_key[key_name][0], claim_ids=claims_for_key[key_name],
+                paper_id=int(candidates[key_name]["paper_id"]), evidence_id=str(candidates[key_name]["evidence_id"]))
+            for key_name in sorted(claims_for_key, key=lambda value: int(value[1:]))
+            if key_name in candidates
+        ]
+        if len(entries) != len(claims_for_key) or not entries:
+            raise ResearchStepError("citation_registry_incomplete", "引用登记缺少合法 Evidence。")
+        registry = CitationRegistry(entries=entries)
+        with connect() as conn:
+            artifact = create_citation_registry(conn, run_id=context.run_id, source_step_id=context.step_id,
+                worker_id=context.worker_id, lease_generation=context.lease_generation,
+                content=registry.model_dump(mode="json"), idempotency_key=key)
+        return {"artifact_id": artifact["id"], "citation_count": len(entries)}
+
+    def _citation_verification(self, step: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        key = f"{step['idempotency_key']}:artifact"
+        checkpoint = self._checkpoint(step, key)
+        if checkpoint:
+            return {"artifact_id": checkpoint["id"], "reused_checkpoint": True}
+        registry_artifact = self._latest_artifact(context.run_id, context.user_id, "citation_registry")
+        registry = CitationRegistry.model_validate(registry_artifact["content"])
+        claims = SynthesisClaims.model_validate(self._latest_artifact(context.run_id, context.user_id, "synthesis_claims")["content"])
+        with connect() as conn:
+            citations = [item for item in list_citations(conn, context.run_id, context.user_id) if item.get("artifact_id") == registry_artifact["id"]]
+        citation_by_key = {str(item["citation_key"]): item for item in citations}
+        registry_by_key = {item.citation_key: item for item in registry.entries}
+        if set(citation_by_key) != set(registry_by_key):
+            raise ResearchStepError("citation_registry_incomplete", "Citation Registry 与持久化引用不一致。")
+        for key_name, entry in registry_by_key.items():
+            row = citation_by_key[key_name]
+            if int(row.get("paper_id", 0)) != entry.paper_id or str(row.get("evidence_id", "")) != entry.evidence_id or str(row.get("claim_id", "")) != entry.claim_id:
+                raise ResearchStepError("citation_registry_invalid", "Citation Registry 的主张、论文或 Evidence 关系不一致。")
+        for claim in claims.claims:
+            cited_keys = [*claim.supporting_citations, *claim.contradicting_citations]
+            if any(key_name not in citation_by_key for key_name in cited_keys):
+                raise ResearchStepError("citation_claim_invalid", "事实性主张引用了 Registry 之外的 Citation。")
+            if any(claim.claim_id not in registry_by_key[key_name].claim_ids for key_name in cited_keys):
+                raise ResearchStepError("citation_claim_invalid", "Citation Registry 缺少主张与引用的审计关系。")
+            cited_papers = {int(citation_by_key[key_name].get("paper_id", 0)) for key_name in cited_keys}
+            if not cited_papers.issubset(set(claim.covered_paper_ids)):
+                raise ResearchStepError("citation_claim_invalid", "主张覆盖论文与 Citation 身份不一致。")
+        statuses = {str(item["citation_key"]): str(item["status"]) for item in citations}
+        result = self.citation_verifier.result(statuses=statuses, claims=claims)
+        required_claims = {claim.claim_id for claim in claims.claims if claim.claim_type in {"finding", "agreement", "disagreement"}}
+        if set(result.verified_claim_ids) != required_claims or result.stale_citation_keys or result.inaccessible_citation_keys or result.invalid_citation_keys:
+            raise ResearchStepError("citation_validation_failed", "事实性主张的引用未全部通过严格校验。")
+        with connect() as conn:
+            artifact = create_artifact(conn, run_id=context.run_id, source_step_id=context.step_id,
+                worker_id=context.worker_id, lease_generation=context.lease_generation,
+                artifact_type="citation_validation_result", content=result.model_dump(mode="json"), idempotency_key=key)
+        return {"artifact_id": artifact["id"], "valid_citation_count": len(result.valid_citation_keys)}
+
+    @staticmethod
+    def _report_citation_keys(report: ResearchReport) -> set[str]:
+        statements = [*report.executive_summary, *report.findings, *report.agreements, *report.disagreements, *report.conclusion]
+        return {key for item in statements for key in item.citation_keys}
+
+    @staticmethod
+    def _validate_report_statement_pairs(
+        report: ResearchReport,
+        claims: SynthesisClaims,
+        matrix: ComparisonMatrix,
+    ) -> None:
+        allowed_statement_pairs: set[tuple[str, tuple[str, ...]]] = set()
+        for claim in claims.claims:
+            if claim.claim_type in {"finding", "agreement", "disagreement"}:
+                allowed_statement_pairs.add(
+                    (claim.claim, tuple([*claim.supporting_citations, *claim.contradicting_citations]))
+                )
+        for cell in matrix.cells:
+            allowed_statement_pairs.add((cell.value, tuple(cell.citation_keys)))
+        for statement in [*matrix.agreements, *matrix.disagreements]:
+            allowed_statement_pairs.add((statement.text, tuple(statement.citation_keys)))
+        for statement in [*report.executive_summary, *report.findings, *report.agreements, *report.disagreements, *report.conclusion]:
+            if (statement.text, tuple(statement.citation_keys)) not in allowed_statement_pairs:
+                raise ResearchStepError("report_statement_unverified", "研究报告包含未验证的事实性陈述。")
+
+    def _report_generation(self, step: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        key = f"{step['idempotency_key']}:artifact"
+        checkpoint = self._checkpoint(step, key)
+        if checkpoint:
+            return {"artifact_id": checkpoint["id"], "version": checkpoint["version"], "reused_checkpoint": True}
+        plan_artifact = self._latest_artifact(context.run_id, context.user_id, "synthesis_plan")
+        matrix_artifact = self._latest_artifact(context.run_id, context.user_id, "comparison_matrix")
+        claims_artifact = self._latest_artifact(context.run_id, context.user_id, "synthesis_claims")
+        registry_artifact = self._latest_artifact(context.run_id, context.user_id, "citation_registry")
+        validation_artifact = self._latest_artifact(context.run_id, context.user_id, "citation_validation_result")
+        plan = SynthesisPlan.model_validate(plan_artifact["content"])
+        matrix = ComparisonMatrix.model_validate(matrix_artifact["content"])
+        claims = SynthesisClaims.model_validate(claims_artifact["content"])
+        validation = CitationValidationResult.model_validate(validation_artifact["content"])
+        versions = {"synthesis_plan": int(plan_artifact["version"]), "comparison_matrix": int(matrix_artifact["version"]), "synthesis_claims": int(claims_artifact["version"]), "citation_registry": int(registry_artifact["version"]), "citation_validation_result": int(validation_artifact["version"])}
+        report_input = {"plan": plan.model_dump(mode="json"), "comparison_matrix": matrix.model_dump(mode="json"), "verified_claims": claims.model_dump(mode="json"), "valid_citation_keys": validation.valid_citation_keys, "generated_from_artifact_versions": versions}
+        report = self._model_call(context, key, ResearchReport, report_input, lambda: self.report_agent.write(plan=plan, matrix=matrix, claims=claims,
+            valid_citation_keys=validation.valid_citation_keys, generated_from_artifact_versions=versions))
+        used = self._report_citation_keys(report)
+        if not used or used != set(report.citation_keys) or not used.issubset(set(validation.valid_citation_keys)) or report.generated_from_artifact_versions != versions:
+            raise ResearchStepError("report_citation_invalid", "研究报告包含未验证引用或伪造上游版本。")
+        self._validate_report_statement_pairs(report, claims, matrix)
+        if report.research_questions != plan.research_questions:
+            raise ResearchStepError("report_question_invalid", "研究报告篡改了综合计划中的研究问题。")
+        with connect() as conn:
+            artifact = create_artifact(conn, run_id=context.run_id, source_step_id=context.step_id,
+                worker_id=context.worker_id, lease_generation=context.lease_generation,
+                artifact_type="research_report", content=report.model_dump(mode="json"), idempotency_key=key)
+        return {"artifact_id": artifact["id"], "version": artifact["version"], "citation_count": len(used)}
+
+    def _finalize_cited_report(self, step: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        del step
+        report = self._latest_artifact(context.run_id, context.user_id, "research_report")
+        if not report.get("is_current"):
+            raise ResearchStepError("research_report_stale", "研究报告依赖已失效，不能标记为当前有效。")
+        return {"cited_report_ready": True, "artifact_id": report["id"], "version": report["version"]}
 
 
 def list_run_papers_for_context(context: ToolContext) -> list[dict[str, Any]]:

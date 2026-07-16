@@ -13,8 +13,8 @@ import {
   Sparkles,
   Star,
 } from "lucide-react"
-import { FormEvent, useMemo, useState } from "react"
-import { Link, useParams } from "react-router"
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react"
+import { Link, useParams, useSearchParams } from "react-router"
 import { toast } from "sonner"
 import { AppEmptyState } from "@/components/common/empty-state"
 import { LoadingState } from "@/components/common/loading-state"
@@ -31,6 +31,7 @@ import {
   useAddNoteMutation,
   useFavoriteMutation,
   useGeneratePaperSummaryMutation,
+  usePaperChunksQuery,
   usePaperQuery,
   useParsePaperDocumentMutation,
 } from "@/lib/query-hooks"
@@ -42,18 +43,34 @@ type WorkspaceTab = "source" | "summary" | "notes"
 
 export function PaperDetailPage() {
   const { paperId = "" } = useParams()
+  const [searchParams] = useSearchParams()
   const id = Number(paperId)
+  const evidenceChunkId = Number(searchParams.get("chunk"))
+  const hasEvidenceTarget = Number.isInteger(evidenceChunkId) && evidenceChunkId > 0
   const paperQuery = usePaperQuery(id)
+  const chunksQuery = usePaperChunksQuery(id)
   const favoriteMutation = useFavoriteMutation()
   const parseMutation = useParsePaperDocumentMutation()
   const summaryMutation = useGeneratePaperSummaryMutation()
   const addNoteMutation = useAddNoteMutation()
   const [layout, setLayout] = useState<LayoutMode>("split")
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("summary")
-  const [sourceView, setSourceView] = useState<"pdf" | "text">("pdf")
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(hasEvidenceTarget ? "source" : "summary")
+  const [sourceView, setSourceView] = useState<"pdf" | "text">(hasEvidenceTarget ? "text" : "pdf")
+  const evidenceRef = useRef<HTMLElement>(null)
   const [note, setNote] = useState("")
   const [comment, setComment] = useState("")
   const paper = paperQuery.data
+  const evidenceChunk = chunksQuery.data?.find((chunk) => chunk.id === evidenceChunkId)
+
+  useEffect(() => {
+    if (!hasEvidenceTarget || !evidenceChunk) return
+    setWorkspaceTab("source")
+    setSourceView("text")
+    requestAnimationFrame(() => {
+      evidenceRef.current?.scrollIntoView({ block: "center" })
+      evidenceRef.current?.focus()
+    })
+  }, [evidenceChunk, hasEvidenceTarget])
 
   const currentSummary = useMemo(
     () => paper?.summaries?.find((summary) => Boolean(summary.is_active)) ?? paper?.summaries?.[0],
@@ -172,7 +189,7 @@ export function PaperDetailPage() {
                 </div> : null}
               </div>
               <TabsContent value="source" className="mt-0 min-h-0 flex-1 overflow-auto p-0">
-                {workspaceTab === "source" && sourceView === "pdf" && pdfUrl ? <iframe title={paper.title} src={pdfUrl} className="h-[720px] w-full bg-muted" /> : documentReady ? <div className="p-5"><MarkdownBlock content={paper.document?.content_markdown ?? ""} className="max-w-none" /></div> : <AppEmptyState title="尚未生成可阅读的全文" description="点击“解析全文”，使用 Docling 读取完整 PDF。" />}
+                {workspaceTab === "source" && sourceView === "pdf" && pdfUrl ? <iframe title={paper.title} src={pdfUrl} className="h-[720px] w-full bg-muted" /> : documentReady ? <div className="p-5">{hasEvidenceTarget ? chunksQuery.isLoading ? <p className="mb-4 text-sm text-muted-foreground" aria-live="polite">正在定位 Citation Evidence…</p> : chunksQuery.isError ? <p className="mb-4 text-sm text-destructive" role="alert">Evidence 定位失败；未用全文缓存伪装定位结果。</p> : evidenceChunk ? <section ref={evidenceRef} tabIndex={-1} className="mb-5 min-w-0 rounded-xl border border-primary/35 bg-primary/5 p-4 outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Citation Evidence 定位" role="status"><p className="text-xs font-semibold text-primary">Citation Evidence · Chunk {evidenceChunk.id}</p><h2 className="mt-1 break-words text-sm font-semibold [overflow-wrap:anywhere]">{evidenceChunk.heading || "未命名章节"}</h2><p className="mt-1 text-xs text-muted-foreground">字符 {evidenceChunk.char_start}–{evidenceChunk.char_end}</p><blockquote className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"><mark className="rounded bg-[var(--status-waiting-bg)] px-0.5 text-foreground">{evidenceChunk.content}</mark></blockquote></section> : <p className="mb-4 text-sm text-destructive" role="alert">当前论文与 source hash 下不存在该 Evidence Chunk。</p> : null}<MarkdownBlock content={paper.document?.content_markdown ?? ""} className="max-w-none" /></div> : <AppEmptyState title="尚未生成可阅读的全文" description="点击“解析全文”，使用 Docling 读取完整 PDF。" />}
               </TabsContent>
               <TabsContent value="summary" className="mt-0 min-h-0 flex-1 overflow-auto p-5">
                 {currentSummary ? <div className="grid gap-4"><div className="text-xs text-muted-foreground">{currentSummary.model} · {currentSummary.created_at}</div><MarkdownBlock content={currentSummary.content} className="max-w-none" /></div> : <AppEmptyState title="还没有全文概要" description={documentReady ? "点击顶部“生成概要”。" : "请先完成论文全文解析。"} />}

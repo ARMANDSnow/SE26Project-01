@@ -1,10 +1,19 @@
 # Agent Handoff
 
-最后更新：2026-07-16，iter13 closeout。
+最后更新：2026-07-16，iter14 closeout。
 
 ## Current Status
 
 - 当前分支：`codex/agentic-research-refactor`；Agentic Research 产品基线和 iter11 均在本分支，尚未 push。
+- iter14 将 schema 升至 v8，新增 durable `research_model_calls`、`research_evidence`、`research_citations`；fresh、v7→v8、v2→v8、失败回滚与伪造 v8 fail-closed 已覆盖。
+- topic Run 现为 17 步：Iter13 十步 dataset 后追加 Synthesis Plan、Comparison Matrix、cross-paper Claims、Citation Registry、Citation Verification、Research Report 和 finalize。standalone Harness 仍为三步确定性流程，未伪装成完整调研。
+- `open_evidence` 在 active lease 下登记服务器生成 Evidence ID 与 quote hash；PaperBrief/Citation/报告写入和读取均重新校验 Run Paper、ACL、asset/document/chunk/source hash、document relation、heading、offset 与内容 hash。
+- 新增 Synthesis/Comparison/Citation Verifier/Report Agent。事实 Matrix/Claim/Report 必须绑定已验证 Citation；Report 的事实文本只能来自已验证 Claim/Matrix 原句，limitation/gap 才允许无引用。
+- 模型预算预占与 durable operation 创建为单一事务，canonical input hash 防止错误复用，provider 返回内容在写 ledger 前经过安全检查；`started/ambiguous` fail closed，不自动产生第二次付费请求。
+- Research API 新增 Citation Registry/详情/Evidence、Matrix、Report versions/指定版本和显式 regeneration；非 owner 统一 404，inaccessible 只返回安全 tombstone。
+- Workflow 新增“综合报告”视图：卡片矩阵、Claims、Citation Registry 四态、报告目录/版本/stale、Evidence 定位和 regeneration；1440/1024/390、键盘/焦点、reduced-motion 与 44px 已覆盖。
+- 已用真实 `gpt-5.5-medium`、真实 arXiv/PDF/Docling 从 Chat 完成 17/17 步双论文 topic Run，并从 UI 两次执行步骤 11–17 regeneration。最终 Report v2 current、v1 stale，当前 4 条 Citation valid，两个历史 Registry version 各 4 条 stale；17/40 模型调用、21/100 工具调用。
+- 真实运行补强了 arXiv 核心短语查询、远程 PDF `Content-Length`/EOF 完整性、Report exact-statement 白名单、首次 strict failure regeneration 入口与 Citation stale cache 投影。兼容 provider 仍必须使用含 `/v1` 的 API 前缀并显式 `LLM_JSON_RESPONSE_FORMAT=false`。
 - iter13 将 schema 升至 v7：新增版本化 `research_artifacts` 与 owner-scoped `research_run_papers`；fresh、v6→v7、v2→v7、失败回滚和伪造 v7 fail-closed 已覆盖。
 - Chat 深度研究现创建十步 `mode='topic'` Run：ResearchBrief、query planning、本地/arXiv 检索、去重导入、筛选、全文获取/Docling、证据阅读、PaperBrief 抽取和 dataset finalize；standalone `/api/research/runs` 继续保留三步确定性 Harness。
 - 新增 Coordinator/Search/Screening/Reader/Extraction Agent 的严格版本化 Pydantic 契约；真实模型输出只有通过论文 identity、当前 ACL、PDF asset/document/chunks source hash 与 evidence 白名单校验后才能落库。缺少 `LLM_API_KEY` 明确失败为 `llm_configuration_unavailable`。
@@ -27,7 +36,7 @@
 - iter08 已建立 `api -> services -> repositories -> db` 外层分层；`main.py` 只负责生命周期、中间件、内存 SessionStore 和 Router 挂载。
 - iter09 已加入用户名/密码认证：Argon2id 哈希、内存 Session、HttpOnly SameSite=Lax Cookie，以及注册、登录、登出和当前用户 API。
 - 业务 Router 统一通过 `CurrentUser` 解析身份，不再信任 `X-User-ID`；除 health/auth 入口外，35 个业务 API method/path 全部要求登录。
-- SQLite schema version 为 7；启动时支持 v2→v3→v4→v5→v6→v7 连续前迁，失败 DDL 回滚且伪造/缺约束 v7 fail closed。
+- SQLite schema version 为 8；启动时支持 v2→v3→v4→v5→v6→v7→v8 连续前迁，失败 DDL 回滚且伪造/缺约束 v8 fail closed。
 - arXiv/USENIX/SIGOPS 等论文继续全局共享；用户上传通过独立 `paper_uploads` 记录 owner、visibility、provenance、moderation status 与原始文件名，新上传默认 private。
 - 私有上传访问控制覆盖目录、详情、PDF、Chunk、处理/解析/概要、资料库、历史、论文 Chat、Wiki/FTS/Graph、classic/agentic QA 与只读论文工具；缺失授权元数据的 upload 默认不可见。
 - 资料库/收藏、笔记、阅读历史、订阅、统计和聊天继续按用户隔离；公开上传收回为 private 后，其他用户遗留关联数据保留但立即从读取视图隐藏。
@@ -58,7 +67,7 @@ npm run build
 git diff --check
 ```
 
-结果：104 个后端测试通过；strict mypy 覆盖 52 个源文件并通过；前端生产构建和 `git diff --check` 通过。Playwright 为 6 passed、6 skipped：1440px、1024px、390px topic flagship/刷新/真实数据/Task Center/深浅色/长文本通过，桌面额外覆盖 Budget Decision、暂停/继续/停止/重试、普通 Chat 分支和 Paper Chat 路由隔离。主入口约 450.38 kB、Chat 432.87 kB，低于 Vite 500 kB 建议线。真实 arXiv smoke 返回 `2607.14046`；经用户单独授权，`gpt-5.5-medium` 的最小 Chat smoke 与严格 ResearchBrief smoke 均通过。
+结果：112 个后端测试通过；strict mypy 覆盖 54 个源文件并通过；前端生产构建通过。Playwright 为 6 passed、6 skipped：1440px、1024px、390px cited-research flagship 覆盖 Brief/PaperBrief/Matrix/Claims/Registry/Report、四种 Citation 状态、版本/stale、键盘焦点、重生成入口、无溢出与 44px；桌面继续覆盖 Budget Decision、暂停/继续/停止/重试、普通 Chat 分支和 Paper Chat 路由隔离。主入口约 467 kB、Chat 约 433 kB，低于 Vite 500 kB 建议线。真实付费 topic smoke 使用两篇 2026 arXiv 论文完成 PDF/Docling 与 17/17 步，并验证 strict Report fail-closed、UI regeneration、v1/v2 切换和 Citation→Evidence 定位；最终为 17 model calls、21 tool calls。
 
 ## Known Risks
 
@@ -69,7 +78,9 @@ git diff --check
 - 尚未实现分享链接、团队空间、上传删除和对象存储级 ACL；相同 PDF blob 可物理去重，但逻辑权限仍绑定各自 paper/upload 记录。
 - Research SSE 当前每连接 1 秒短读轮询，尚未加入用户级 SSE/Run 创建配额；长任务公开前需补资源限制。
 - Playwright 的 topic 数据、慢步骤、Decision 和错误态使用测试网络 fixture；生产没有 seed/debug API。真实 PDF/Docling 的浏览器长任务仍需专门的集成环境。
-- auto 模式的模型分类器与普通 Chat 都依赖真实 LLM 配置；本轮真实验证了普通 Chat 与 Coordinator ResearchBrief，分类器及完整十步 topic Run 仍主要由依赖注入覆盖。
+- auto 模式的模型分类器与普通 Chat 都依赖真实 LLM 配置；17 步 topic Run 已完成一次两篇论文的真实付费 smoke，但更大规模、多用户并发、进程中断和真实 provider ambiguous-call 恢复仍主要由依赖注入覆盖。
+- durable model operation 的 `started/ambiguous` 状态会阻止自动重发；后续应增加受控人工 Decision/运维恢复，而不是静默 retry。
+- 报告事实文本当前使用已验证 Claim/Matrix 原句白名单；更自然的改写需要 Citation entailment gold set 与独立验证器后才能放宽。
 - 当前没有前端 LLM 配置页；真实模型只能在启动后端前通过 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_CHAT_MODEL` 和必要时的 `LLM_JSON_RESPONSE_FORMAT` 环境变量配置，修改后需重启后端。兼容服务的 `LLM_BASE_URL` 必须是 API 前缀（通常含 `/v1`）。topic Run 可能使用多次付费调用，运行 smoke 前必须单独确认。前端不得读取或持久化真实 Key。
 - 当前验证的兼容网关/模型拒绝 `response_format=json_object`（脱敏 `provider_http_400`）；使用该组合需显式配置 `LLM_JSON_RESPONSE_FORMAT=false`。结构化调用仍注入完整 JSON Schema 并做严格 Pydantic 校验；模型层不隐藏重试，保证一次预算预占对应一次 provider 请求。
 - 仓库现存默认 `backend/data/arxiv_wiki.sqlite3` 是用户旧 v0 库（116 篇），本轮没有修改或重建；验证全部用独立 `DATABASE_PATH`。如需承接该数据，必须另立 legacy v0 迁移任务。
@@ -78,9 +89,9 @@ git diff --check
 
 ## Next Candidates
 
-1. Iter14：基于版本化 PaperBrief 实现 Synthesis Agent、对比矩阵、研究报告和 Run 级 Evidence/Citation Registry，并继续严格校验 source hash。
-2. 引入可取消进程 worker/任务队列，为 arXiv/PDF/Docling/模型调用提供跨进程 lease、超时和资源配额。
-3. 为 Research SSE、Run 创建和模型调用增加用户级连接/速率限制；SessionStore 迁移 Redis。
+1. Iter15：研究脉络/主题簇/时间线 Artifact、资料库项目化，以及 Run/论文/报告/图谱反向链接。
+2. 建立 Citation entailment/覆盖率 gold set、人工复核队列和报告导出前再验证。
+3. 引入可取消进程 worker/任务队列、ambiguous-call Decision、Redis Session 与用户级 Run/SSE/模型配额。
 4. 如需使用旧 116 篇本地论文，先设计可审查、不破坏的 v0 legacy 迁移，不要直接 reset。
 
 ## Git Notes
@@ -91,4 +102,5 @@ git diff --check
 - iter11：`docs/iterations/iteration_iter11_research-run-harness.md`。
 - iter12：`docs/iterations/iteration_iter12_chat-run-workflow.md`。
 - iter13：`docs/iterations/iteration_iter13_topic-research-pipeline.md`。
+- iter14：`docs/iterations/iteration_iter14_cited-research-synthesis.md`。
 - 尚未 push；推送前先 fetch/rebase 并保留远端用户改动。

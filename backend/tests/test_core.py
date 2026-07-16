@@ -66,6 +66,8 @@ from backend.app.services.sources.sigops import (
 )
 from backend.app.services.http_safety import UnsafeUrlError, _TrustedRedirectHandler
 from backend.app.services.paper_tools import PaperToolbox
+from backend.app.services.research_tools import _arxiv_discovery_terms
+from backend.app.services.sources.arxiv import build_query
 from backend.app.services.sources.usenix import _detail_to_paper
 from backend.app.services.search import answer_question, build_graph, search_wiki
 from backend.app.services.conversations import (
@@ -97,6 +99,31 @@ def memory_db() -> sqlite3.Connection:
     )
     populate_test_library(conn)
     return conn
+
+
+def test_topic_arxiv_discovery_uses_broad_terms_in_one_query() -> None:
+    terms = _arxiv_discovery_terms(
+        [
+            "arXiv 2024 retrieval augmented generation citation grounding correctness",
+            "arXiv RAG evidence attribution verification",
+        ]
+    )
+
+    assert terms == [
+        "retrieval augmented generation",
+        "citation",
+        "grounding",
+        "correctness",
+    ]
+    assert build_query(["cs.CL", "cs.IR"], terms, match_any=True) == (
+        '(cat:cs.CL OR cat:cs.IR) AND '
+        '(all:"retrieval augmented generation" OR all:"citation" OR all:"grounding" '
+        'OR all:"correctness")'
+    )
+    assert build_query(["cs.CL"], terms, match_any=True, require_first=True) == (
+        '(cat:cs.CL) AND all:"retrieval augmented generation" AND '
+        '(all:"citation" OR all:"grounding" OR all:"correctness")'
+    )
 
 
 def test_migration_runner_applies_contiguous_versions() -> None:
@@ -1171,7 +1198,7 @@ def test_api_remote_pdf_downloads_once_and_serves_cache(api_client, monkeypatch)
             if getattr(self, "read_once", False):
                 return b""
             self.read_once = True
-            return b"%PDF-1.4 cached"
+            return b"%PDF-1.4 cached\n%%EOF\n"
 
     calls = []
 
@@ -1196,6 +1223,69 @@ def test_api_remote_pdf_downloads_once_and_serves_cache(api_client, monkeypatch)
     assert second.content == first.content
     assert not_modified.status_code == 304
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("body", "headers"),
+    [
+        (b"%PDF-1.4 truncated", {}),
+        (b"%PDF-1.4 complete\n%%EOF\n", {"Content-Length": "999"}),
+    ],
+)
+def test_api_remote_pdf_rejects_incomplete_downloads(api_client, monkeypatch, body, headers):
+    with connect() as conn:
+        paper_id = conn.execute("SELECT id FROM papers ORDER BY id LIMIT 1").fetchone()["id"]
+        conn.execute(
+            "UPDATE papers SET pdf_url = ?, asset_id = NULL WHERE id = ?",
+            ("https://www.usenix.org/system/files/incomplete.pdf", paper_id),
+        )
+        conn.commit()
+
+    class FakeResponse:
+        def __init__(self):
+            self.headers = headers
+            self.read_once = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def geturl(self):
+            return "https://www.usenix.org/system/files/incomplete.pdf"
+
+        def read(self, _size=-1):
+            if self.read_once:
+                return b""
+            self.read_once = True
+            return body
+
+    monkeypatch.setattr(
+        "backend.app.services.remote_pdf.open_trusted_url",
+        lambda *_args, **_kwargs: FakeResponse(),
+    )
+
+    response = api_client.get(f"/api/papers/{paper_id}/pdf")
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "remote PDF download failed"}
+    with connect() as conn:
+        assert conn.execute("SELECT asset_id FROM papers WHERE id = ?", (paper_id,)).fetchone()["asset_id"] is None
+
+
+def test_research_sensitive_reads_disable_http_caching(api_client) -> None:
+    created = api_client.post(
+        "/api/research/runs",
+        json={"title": "No-store", "goal": "Verify private research response caching"},
+    )
+    assert created.status_code == 201
+    run_id = created.json()["id"]
+
+    for suffix in ("artifacts", "citations", "reports"):
+        response = api_client.get(f"/api/research/runs/{run_id}/{suffix}")
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "private, no-store"
 
 
 def test_api_unknown_graph_topic_returns_empty(api_client):
@@ -1561,6 +1651,7 @@ def test_research_manual_retry_grants_new_attempt_without_leaking_error() -> Non
     assert claimed is not None
     assert claimed["attempt_count"] == 2
     assert claimed["max_attempts"] == 2
+    assert claimed["idempotency_key"].startswith(f"{step['idempotency_key']}:manual:")
 
 
 def test_research_decision_resolution_requeues_waiting_step() -> None:
@@ -1658,6 +1749,13 @@ def test_research_api_runs_deterministic_harness_and_isolates_owner(api_client):
         ("get", f"/api/research/runs/{run_id}/artifacts/not-owned"),
         ("get", f"/api/research/runs/{run_id}/papers"),
         ("get", f"/api/research/runs/{run_id}/papers/1/brief"),
+        ("get", f"/api/research/runs/{run_id}/citations"),
+        ("get", f"/api/research/runs/{run_id}/citations/not-owned"),
+        ("get", f"/api/research/runs/{run_id}/citations/not-owned/evidence"),
+        ("get", f"/api/research/runs/{run_id}/reports"),
+        ("get", f"/api/research/runs/{run_id}/reports/1"),
+        ("get", f"/api/research/runs/{run_id}/comparison-matrix"),
+        ("post", f"/api/research/runs/{run_id}/report-regeneration"),
         ("post", f"/api/research/runs/{run_id}/pause"),
         ("post", f"/api/research/runs/{run_id}/cancel"),
         ("post", f"/api/research/runs/{run_id}/retry"),
@@ -1809,7 +1907,7 @@ def test_topic_research_without_llm_configuration_fails_explicitly(api_client):
         time.sleep(0.02)
     assert failed is not None, json.dumps(snapshot.json(), ensure_ascii=False)
     assert failed["mode"] == "topic"
-    assert len(failed["steps"]) == 10
+    assert len(failed["steps"]) == 17
     assert failed["error_code"] == "llm_configuration_unavailable"
     assert failed["error_message"] == "主题调研需要真实模型配置；当前 LLM_API_KEY 未配置。"
     serialized = json.dumps(failed, ensure_ascii=False)

@@ -11,14 +11,16 @@ from .migrations import (
     V5_MIGRATION,
     V6_MIGRATION,
     V7_MIGRATION,
+    V8_MIGRATION,
     apply_migrations,
 )
 from .migrations.v5 import RESEARCH_SCHEMA_SQL
 from .migrations.v7 import RESEARCH_DATA_SCHEMA_SQL
+from .migrations.v8 import migrate_v7_to_v8
 
 
 PAPER_CHUNKS_FTS_TABLE = "paper_chunks_fts"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class IncompatibleSchemaError(RuntimeError):
@@ -143,7 +145,7 @@ def _assert_research_data_schema(conn: sqlite3.Connection) -> None:
         or "unique(run_id, artifact_type, version)" not in artifact_sql
         or "unique(run_id, idempotency_key)" not in artifact_sql
         or "check(json_valid(content_json))" not in artifact_sql
-        or "check(artifact_type in ( 'research_brief', 'search_queries', 'candidate_papers', 'screening_result', 'paper_brief', 'extraction_result' ))" not in artifact_sql
+        or "check(artifact_type in ('research_brief', 'search_queries', 'candidate_papers', 'screening_result', 'paper_brief', 'extraction_result', 'synthesis_plan', 'comparison_matrix', 'synthesis_claims', 'citation_registry', 'research_report', 'citation_validation_result'))" not in artifact_sql
         or "check(schema_version >= 1)" not in artifact_sql
         or "check(version >= 1)" not in artifact_sql
         or "check(status in ('draft', 'completed', 'failed', 'stale'))" not in artifact_sql
@@ -161,6 +163,70 @@ def _assert_research_data_schema(conn: sqlite3.Connection) -> None:
         raise IncompatibleSchemaError(
             f"Database topic research schema does not match version {SCHEMA_VERSION}; "
             f"rebuild it with: {_schema_reset_command(conn)}"
+        )
+
+
+def _assert_citation_schema(conn: sqlite3.Connection) -> None:
+    model_calls = {str(row[1]): (str(row[2]).upper(), int(row[3]), int(row[5])) for row in conn.execute("PRAGMA table_info(research_model_calls)").fetchall()}
+    evidence = {str(row[1]): (str(row[2]).upper(), int(row[3]), int(row[5])) for row in conn.execute("PRAGMA table_info(research_evidence)").fetchall()}
+    citations = {str(row[1]): (str(row[2]).upper(), int(row[3]), int(row[5])) for row in conn.execute("PRAGMA table_info(research_citations)").fetchall()}
+    expected_evidence = {
+        "id": ("TEXT", 0, 1), "run_id": ("TEXT", 1, 0), "opened_by_step_id": ("TEXT", 1, 0),
+        "paper_id": ("INTEGER", 1, 0), "chunk_id": ("INTEGER", 1, 0), "source": ("TEXT", 1, 0),
+        "source_id": ("TEXT", 1, 0), "source_hash": ("TEXT", 1, 0), "heading": ("TEXT", 1, 0),
+        "char_start": ("INTEGER", 1, 0), "char_end": ("INTEGER", 1, 0), "quote_hash": ("TEXT", 1, 0),
+        "status": ("TEXT", 1, 0), "created_at": ("TEXT", 1, 0), "updated_at": ("TEXT", 1, 0),
+    }
+    expected_model_calls = {
+        "id": ("TEXT", 0, 1), "run_id": ("TEXT", 1, 0), "step_id": ("TEXT", 1, 0),
+        "idempotency_key": ("TEXT", 1, 0), "model_name": ("TEXT", 1, 0), "input_hash": ("TEXT", 1, 0),
+        "status": ("TEXT", 1, 0), "result_json": ("TEXT", 0, 0), "created_at": ("TEXT", 1, 0),
+        "updated_at": ("TEXT", 1, 0),
+    }
+    expected_citations = {
+        "id": ("TEXT", 0, 1), "run_id": ("TEXT", 1, 0), "artifact_id": ("TEXT", 1, 0),
+        "artifact_version": ("INTEGER", 1, 0), "citation_key": ("TEXT", 1, 0), "claim_id": ("TEXT", 1, 0),
+        "paper_id": ("INTEGER", 1, 0), "chunk_id": ("INTEGER", 1, 0), "evidence_id": ("TEXT", 1, 0),
+        "source": ("TEXT", 1, 0), "source_id": ("TEXT", 1, 0), "source_hash": ("TEXT", 1, 0),
+        "heading": ("TEXT", 1, 0), "char_start": ("INTEGER", 1, 0), "char_end": ("INTEGER", 1, 0),
+        "quote_hash": ("TEXT", 1, 0), "status": ("TEXT", 1, 0), "created_at": ("TEXT", 1, 0),
+        "updated_at": ("TEXT", 1, 0),
+    }
+    evidence_indexes = _index_signature(conn, "research_evidence")
+    citation_indexes = _index_signature(conn, "research_citations")
+    evidence_sql = _table_sql(conn, "research_evidence")
+    citation_sql = _table_sql(conn, "research_citations")
+    evidence_fks = {(str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper()) for row in conn.execute("PRAGMA foreign_key_list(research_evidence)")}
+    citation_fks = {(str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper()) for row in conn.execute("PRAGMA foreign_key_list(research_citations)")}
+    model_call_fks = {(str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper()) for row in conn.execute("PRAGMA foreign_key_list(research_model_calls)")}
+    model_call_sql = _table_sql(conn, "research_model_calls")
+    if (
+        model_calls != expected_model_calls
+        or evidence != expected_evidence or citations != expected_citations
+        or not {("run_id", "research_runs", "id", "CASCADE"), ("step_id", "research_steps", "id", "CASCADE")}.issubset(model_call_fks)
+        or not {("run_id", "research_runs", "id", "CASCADE"), ("opened_by_step_id", "research_steps", "id", "CASCADE"), ("paper_id", "papers", "id", "RESTRICT")}.issubset(evidence_fks)
+        or not {("run_id", "research_runs", "id", "CASCADE"), ("artifact_id", "research_artifacts", "id", "CASCADE"), ("paper_id", "papers", "id", "RESTRICT"), ("evidence_id", "research_evidence", "id", "RESTRICT")}.issubset(citation_fks)
+        or evidence_indexes.get("idx_research_evidence_run_paper") != (0, ("run_id", "paper_id", "source_hash", "chunk_id"))
+        or citation_indexes.get("idx_research_citations_run_status") != (0, ("run_id", "status", "citation_key"))
+        or citation_indexes.get("idx_research_citations_evidence") != (0, ("evidence_id", "artifact_id", "artifact_version"))
+        or "unique(run_id, chunk_id, source_hash, char_start, char_end)" not in evidence_sql
+        or "unique(artifact_id, artifact_version, citation_key)" not in citation_sql
+        or "length(source_hash) = 64 and source_hash not glob '*[^0-9a-f]*'" not in evidence_sql
+        or "length(quote_hash) = 64 and quote_hash not glob '*[^0-9a-f]*'" not in evidence_sql
+        or "check(char_start >= 0)" not in evidence_sql or "check(char_end >= char_start)" not in evidence_sql
+        or "length(source_hash) = 64 and source_hash not glob '*[^0-9a-f]*'" not in citation_sql
+        or "length(quote_hash) = 64 and quote_hash not glob '*[^0-9a-f]*'" not in citation_sql
+        or "check(char_start >= 0)" not in citation_sql or "check(char_end >= char_start)" not in citation_sql
+        or "check(artifact_version >= 1)" not in citation_sql or "check(length(trim(citation_key)) > 0)" not in citation_sql
+        or "status in ('valid', 'stale', 'inaccessible', 'invalid')" not in evidence_sql
+        or "status in ('valid', 'stale', 'inaccessible', 'invalid')" not in citation_sql
+        or "unique(run_id, idempotency_key)" not in model_call_sql
+        or "check(length(input_hash) = 64)" not in model_call_sql
+        or "check(result_json is null or json_valid(result_json))" not in model_call_sql
+        or "status in ('started', 'completed', 'failed', 'ambiguous')" not in model_call_sql
+    ):
+        raise IncompatibleSchemaError(
+            f"Database citation schema does not match version {SCHEMA_VERSION}; rebuild it with: {_schema_reset_command(conn)}"
         )
 
 
@@ -293,6 +359,7 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
             f"{_schema_reset_command(conn)}"
         )
     _assert_research_data_schema(conn)
+    _assert_citation_schema(conn)
 
 
 def supports_fts5(conn: sqlite3.Connection) -> bool:
@@ -410,10 +477,10 @@ def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = No
 def init_schema(conn: sqlite3.Connection) -> None:
     tables = _schema_tables(conn)
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    if tables and version in {2, 3, 4, 5, 6}:
+    if tables and version in {2, 3, 4, 5, 6, 7}:
         apply_migrations(
             conn,
-            [V3_MIGRATION, V4_MIGRATION, V5_MIGRATION, V6_MIGRATION, V7_MIGRATION],
+            [V3_MIGRATION, V4_MIGRATION, V5_MIGRATION, V6_MIGRATION, V7_MIGRATION, V8_MIGRATION],
             target_version=SCHEMA_VERSION,
         )
     _assert_schema_compatible(conn)
@@ -647,6 +714,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     )
     conn.executescript(RESEARCH_SCHEMA_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ").replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ").replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS "))
     conn.executescript(RESEARCH_DATA_SCHEMA_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ").replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ").replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS "))
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'research_citations'").fetchone():
+        migrate_v7_to_v8(conn)
     init_paper_chunks_fts(conn)
     rebuild_paper_chunks_fts(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

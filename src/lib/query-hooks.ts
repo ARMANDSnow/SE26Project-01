@@ -30,6 +30,10 @@ import {
   fetchResearchRuns,
   fetchResearchArtifacts,
   fetchResearchRunPapers,
+  fetchResearchCitations,
+  fetchResearchCitationEvidence,
+  fetchResearchReports,
+  regenerateResearchReport,
   createResearchRun,
   controlResearchRun,
   resolveResearchDecision,
@@ -149,6 +153,52 @@ export function useResearchRunPapersQuery(id: string) {
     queryKey: queryKeys.researchRunPapers(id),
     queryFn: () => fetchResearchRunPapers(id),
     enabled: id.length > 0,
+  })
+}
+
+export function useResearchCitationsQuery(id: string) {
+  return useQuery({
+    queryKey: [...queryKeys.researchRun(id), "citations"],
+    queryFn: () => fetchResearchCitations(id),
+    enabled: id.length > 0,
+    refetchOnWindowFocus: "always",
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false,
+  })
+}
+
+export function useResearchReportsQuery(id: string) {
+  return useQuery({
+    queryKey: [...queryKeys.researchRun(id), "reports"],
+    queryFn: () => fetchResearchReports(id),
+    enabled: id.length > 0,
+    refetchOnWindowFocus: "always",
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false,
+  })
+}
+
+export function useResearchCitationEvidenceQuery(runId: string, citationId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: [...queryKeys.researchRun(runId), "citation", citationId, "evidence"],
+    queryFn: () => fetchResearchCitationEvidence(runId, citationId),
+    enabled: enabled && runId.length > 0 && citationId.length > 0,
+    staleTime: 0,
+    refetchInterval: enabled ? 5_000 : false,
+    refetchIntervalInBackground: false,
+  })
+}
+
+export function useRegenerateResearchReportMutation(runId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => regenerateResearchReport(runId),
+    onSuccess: (run) => {
+      queryClient.setQueryData(queryKeys.researchRun(runId), run)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchRun(runId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchArtifacts(runId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchRuns })
+    },
   })
 }
 

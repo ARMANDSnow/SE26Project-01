@@ -1,6 +1,6 @@
 # PaperWiki 产品规划
 
-本目录记录 PaperWiki 从“论文功能集合”重构为“Agent 驱动的科研论文工作台”的产品方案。当前文档是实施前的产品基线，不代表所有目标能力已经完成。
+本目录记录 PaperWiki 从“论文功能集合”重构为“Agent 驱动的科研论文工作台”的产品方案。路线图中 Iter11–14 已实现；资料库项目化、研究脉络图和评测体系仍是后续目标。
 
 ## 已确认的产品决策
 
@@ -29,7 +29,7 @@
 
 ## 当前实现与目标实现的边界
 
-仓库当前已经具备 Chat 会话、论文导入与上传、Docling 全文解析、结构化 Wiki、论文库检索、个人资料库、单篇论文 Chat，以及后端跨论文 QA Agent。当前最关键的缺口是：主页 Chat 尚未接入论文工具；没有持久化 Research Run、Workflow Step、Decision、Artifact 和 Event 模型；前端也没有完整执行过程与证据产物的可视化。
+仓库当前已具备 Chat Research 路由、持久化 Research Run/Step/Event/Decision/Artifact、17 步 topic workflow、durable Evidence/Citation、跨论文对比与严格验证的版本化研究报告，并在 Workflow 中提供响应式证据交互。当前主要缺口转为：研究脉络/资料库项目化、完整真实 17 步成本 smoke、Citation entailment 评测、可取消跨进程 worker 与多实例 Session/配额。
 
 后续迭代必须在界面和文档中持续区分“已实现”“本轮实现”“规划中”，避免把路线图能力包装成当前能力。
 

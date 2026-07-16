@@ -47,19 +47,41 @@ def _entry_to_paper(entry: ET.Element) -> PaperCandidate:
     )
 
 
-def build_query(categories: list[str], keywords: list[str]) -> str:
+def build_query(
+    categories: list[str],
+    keywords: list[str],
+    match_any: bool = False,
+    require_first: bool = False,
+) -> str:
     parts: list[str] = []
     if categories:
         parts.append("(" + " OR ".join(f"cat:{item}" for item in categories) + ")")
-    for keyword in keywords:
-        keyword = keyword.strip()
-        if keyword:
-            parts.append(f'all:"{keyword}"')
+    keyword_parts = [f'all:"{keyword.strip()}"' for keyword in keywords if keyword.strip()]
+    if keyword_parts:
+        if require_first and len(keyword_parts) > 1:
+            parts.extend([keyword_parts[0], "(" + " OR ".join(keyword_parts[1:]) + ")"])
+        elif match_any:
+            parts.append("(" + " OR ".join(keyword_parts) + ")")
+        else:
+            parts.extend(keyword_parts)
     return " AND ".join(parts) if parts else "cat:cs.AI"
 
 
-def fetch_arxiv_papers(categories: list[str], keywords: list[str], max_results: int = 10) -> list[PaperCandidate]:
-    query = quote_plus(build_query(categories, keywords))
+def fetch_arxiv_papers(
+    categories: list[str],
+    keywords: list[str],
+    max_results: int = 10,
+    match_any: bool = False,
+    require_first: bool = False,
+) -> list[PaperCandidate]:
+    query = quote_plus(
+        build_query(
+            categories,
+            keywords,
+            match_any=match_any,
+            require_first=require_first,
+        )
+    )
     url = f"{ARXIV_API}?search_query={query}&sortBy=submittedDate&sortOrder=descending&start=0&max_results={max_results}"
     request = Request(url, headers={"User-Agent": "arxiv-paper-wiki-mvp/0.1"})
     with urlopen(request, timeout=12) as response:

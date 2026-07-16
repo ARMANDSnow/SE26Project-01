@@ -8,11 +8,16 @@ from pydantic import ValidationError
 from .llm import LLMClient, LLMConfigurationError, LLMServiceError
 from .research_contracts import (
     CandidatePaper,
+    CitationValidationResult,
+    ComparisonMatrix,
     PaperBrief,
     ResearchBrief,
     ResearchStepError,
     ScreeningResult,
     SearchQueries,
+    SynthesisClaims,
+    SynthesisPlan,
+    ResearchReport,
     StrictResearchModel,
 )
 
@@ -165,5 +170,137 @@ class ExtractionAgent:
                 "paper": paper.model_dump(mode="json"),
                 "source_hash": source_hash,
                 "opened_evidence": evidence,
+            },
+        )
+
+
+class SynthesisAgent:
+    name = "Synthesis Agent"
+
+    def __init__(self, model: StructuredResearchModel) -> None:
+        self.model = model
+
+    def plan(self, brief: ResearchBrief, paper_briefs: list[PaperBrief]) -> SynthesisPlan:
+        return self.model.generate(
+            SynthesisPlan,
+            system_prompt=(
+                "Plan a cross-paper synthesis. Use only the supplied current PaperBrief dataset. "
+                "Comparison dimensions must be answerable from the supplied briefs. Return schema version 1."
+            ),
+            input_data={"research_brief": brief.model_dump(mode="json"), "paper_briefs": [item.model_dump(mode="json") for item in paper_briefs]},
+        )
+
+    def claims(
+        self,
+        plan: SynthesisPlan,
+        matrix: ComparisonMatrix,
+        citation_candidates: list[dict[str, Any]],
+    ) -> SynthesisClaims:
+        return self.model.generate(
+            SynthesisClaims,
+            system_prompt=(
+                "Produce cross-paper claims using only supplied comparison cells and citation candidates. "
+                "Every finding/agreement/disagreement needs supporting citation keys copied exactly. "
+                "Unsupported content may only be limitation or gap."
+            ),
+            input_data={"plan": plan.model_dump(mode="json"), "comparison_matrix": matrix.model_dump(mode="json"), "citation_candidates": citation_candidates},
+        )
+
+
+class ComparisonAgent:
+    name = "Comparison Agent"
+
+    def __init__(self, model: StructuredResearchModel) -> None:
+        self.model = model
+
+    def compare(
+        self,
+        plan: SynthesisPlan,
+        paper_briefs: list[PaperBrief],
+        citation_candidates: list[dict[str, Any]],
+    ) -> ComparisonMatrix:
+        return self.model.generate(
+            ComparisonMatrix,
+            system_prompt=(
+                "Build a structured comparison matrix. Every factual cell, agreement and disagreement "
+                "must copy one or more citation_key and evidence_id values from the supplied candidates. "
+                "Record unsupported dimensions only in missing_evidence."
+            ),
+            input_data={"plan": plan.model_dump(mode="json"), "paper_briefs": [item.model_dump(mode="json") for item in paper_briefs], "citation_candidates": citation_candidates},
+        )
+
+
+class CitationVerifierAgent:
+    name = "Citation Verifier Agent"
+
+    @staticmethod
+    def result(
+        *,
+        statuses: dict[str, str],
+        claims: SynthesisClaims,
+    ) -> CitationValidationResult:
+        valid = sorted(key for key, status in statuses.items() if status == "valid")
+        verified = [
+            claim.claim_id for claim in claims.claims
+            if claim.claim_type in {"finding", "agreement", "disagreement"}
+            and all(key in valid for key in [*claim.supporting_citations, *claim.contradicting_citations])
+        ]
+        return CitationValidationResult(
+            valid_citation_keys=valid,
+            stale_citation_keys=sorted(key for key, status in statuses.items() if status == "stale"),
+            inaccessible_citation_keys=sorted(key for key, status in statuses.items() if status == "inaccessible"),
+            invalid_citation_keys=sorted(key for key, status in statuses.items() if status == "invalid"),
+            verified_claim_ids=verified,
+        )
+
+
+class ReportAgent:
+    name = "Report Agent"
+
+    def __init__(self, model: StructuredResearchModel) -> None:
+        self.model = model
+
+    def write(
+        self,
+        *,
+        plan: SynthesisPlan,
+        matrix: ComparisonMatrix,
+        claims: SynthesisClaims,
+        valid_citation_keys: list[str],
+        generated_from_artifact_versions: dict[str, int],
+    ) -> ResearchReport:
+        reportable_statements = [
+            {
+                "text": claim.claim,
+                "citation_keys": [*claim.supporting_citations, *claim.contradicting_citations],
+            }
+            for claim in claims.claims
+            if claim.claim_type in {"finding", "agreement", "disagreement"}
+        ]
+        reportable_statements.extend(
+            {"text": cell.value, "citation_keys": cell.citation_keys}
+            for cell in matrix.cells
+        )
+        reportable_statements.extend(
+            {"text": statement.text, "citation_keys": statement.citation_keys}
+            for statement in [*matrix.agreements, *matrix.disagreements]
+        )
+        return self.model.generate(
+            ResearchReport,
+            system_prompt=(
+                "Write a structured cited research report using only the verified claims, comparison matrix "
+                "and valid citation keys supplied. For every executive summary, finding, agreement, disagreement "
+                "and conclusion item, copy both text and citation_keys exactly from one reportable_statements "
+                "entry. Never paraphrase, merge, split, or synthesize factual statement text. It is acceptable "
+                "to reuse an exact entry in more than one report section. Put unsupported content only in "
+                "limitations or research_gaps. Copy generated_from_artifact_versions exactly."
+            ),
+            input_data={
+                "plan": plan.model_dump(mode="json"),
+                "comparison_matrix": matrix.model_dump(mode="json"),
+                "verified_claims": claims.model_dump(mode="json"),
+                "reportable_statements": reportable_statements,
+                "valid_citation_keys": valid_citation_keys,
+                "generated_from_artifact_versions": generated_from_artifact_versions,
             },
         )

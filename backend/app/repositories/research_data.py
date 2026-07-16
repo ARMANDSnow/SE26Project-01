@@ -124,6 +124,17 @@ def _artifact_row(row: sqlite3.Row, *, is_current: bool | None = None) -> dict[s
     return result
 
 
+def _artifact_integrity_valid(row: sqlite3.Row) -> bool:
+    encoded = str(row["content_json"])
+    if hashlib.sha256(encoded.encode("utf-8")).hexdigest() != str(row["content_hash"]):
+        return False
+    try:
+        validate_artifact_content(str(row["artifact_type"]), cast(dict[str, Any], json.loads(encoded)))
+    except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
+        return False
+    return True
+
+
 def create_artifact(
     conn: sqlite3.Connection,
     *,
@@ -143,6 +154,7 @@ def create_artifact(
     if artifact_type == "paper_brief" and (paper_id is None or source_hash is None):
         raise ResearchConflictError("paper brief requires a paper relation and source hash")
     encoded = _json(validated)
+    schema_version = int(validated.get("schema_version", 1))
     content_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -183,13 +195,14 @@ def create_artifact(
             INSERT INTO research_artifacts(
                 id, run_id, paper_id, artifact_type, schema_version, source_step_id,
                 version, status, content_json, source_hash, idempotency_key, content_hash
-            ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 artifact_id,
                 run_id,
                 paper_id,
                 artifact_type,
+                schema_version,
                 source_step_id,
                 version,
                 status,
@@ -199,6 +212,21 @@ def create_artifact(
                 content_hash,
             ),
         )
+        if artifact_type == "paper_brief":
+            downstream_types = (
+                "synthesis_plan", "comparison_matrix", "synthesis_claims",
+                "citation_registry", "citation_validation_result", "research_report",
+            )
+            placeholders = ",".join("?" for _ in downstream_types)
+            conn.execute(
+                f"UPDATE research_artifacts SET status = 'stale', updated_at = {_NOW} "
+                f"WHERE run_id = ? AND artifact_type IN ({placeholders}) AND status = 'completed'",
+                (run_id, *downstream_types),
+            )
+            conn.execute(
+                f"UPDATE research_citations SET status = 'stale', updated_at = {_NOW} WHERE run_id = ?",
+                (run_id,),
+            )
         conn.execute(
             """
             INSERT INTO research_events(run_id, step_id, event_type, summary, payload_json)
@@ -289,11 +317,11 @@ def _validate_paper_artifact(
     ):
         raise ResearchConflictError("paper brief identity or source hash is stale")
     for evidence in brief.evidence_ids:
-        if evidence.paper_id != paper_id or evidence.source_hash != expected_hash:
+        if evidence.paper_id != paper_id or evidence.source_hash != expected_hash or evidence.evidence_id is None:
             raise ResearchConflictError("paper brief evidence identity is stale or out of scope")
         chunk = conn.execute(
             """
-            SELECT id, heading FROM paper_chunks
+            SELECT id, heading, char_start, char_end, content FROM paper_chunks
             WHERE id = ? AND paper_id = ? AND source_hash = ? AND chunk_index = ?
               AND char_start = ? AND char_end = ?
             """,
@@ -308,6 +336,27 @@ def _validate_paper_artifact(
         ).fetchone()
         if chunk is None or str(chunk["heading"]) != evidence.heading:
             raise ResearchConflictError("paper brief evidence is stale or out of scope")
+        opened = conn.execute(
+            """
+            SELECT source_hash, heading, char_start, char_end, quote_hash, status FROM research_evidence
+            WHERE id = ? AND run_id = ? AND paper_id = ? AND chunk_id = ?
+              AND source_hash = ? AND heading = ? AND char_start = ? AND char_end = ?
+            """,
+            (
+                evidence.evidence_id, run_id, paper_id, evidence.chunk_id,
+                expected_hash, evidence.heading, evidence.char_start, evidence.char_end,
+            ),
+        ).fetchone()
+        if (
+            opened is None
+            or str(opened["status"]) != "valid"
+            or str(opened["source_hash"]) != expected_hash
+            or str(opened["heading"]) != str(chunk["heading"])
+            or int(opened["char_start"]) != int(chunk["char_start"])
+            or int(opened["char_end"]) != int(chunk["char_end"])
+            or str(opened["quote_hash"]) != hashlib.sha256(str(chunk["content"]).encode("utf-8")).hexdigest()
+        ):
+            raise ResearchConflictError("paper brief evidence was not opened for this run")
 
 
 def list_artifacts(
@@ -356,7 +405,17 @@ def _artifact_for_user(
     row: sqlite3.Row,
     user_id: int,
 ) -> dict[str, Any]:
-    result = _artifact_row(row, is_current=_artifact_is_current(conn, row))
+    if not _artifact_integrity_valid(row):
+        if str(row["status"]) == "completed":
+            conn.execute(
+                f"UPDATE research_artifacts SET status = 'stale', updated_at = {_NOW} WHERE id = ? AND status = 'completed'",
+                (str(row["id"]),),
+            )
+        result = _artifact_row(row, is_current=False)
+        result["status"] = "stale"
+        result["content"] = {}
+        return result
+    result = _artifact_row(row, is_current=_artifact_is_current(conn, row, user_id))
     content = cast(dict[str, Any], result["content"])
     artifact_type = str(result["artifact_type"])
     if artifact_type == "candidate_papers":
@@ -406,12 +465,220 @@ def _artifact_for_user(
             for artifact_id in content.get("paper_brief_artifact_ids", [])
             if artifact_id in allowed_artifact_ids
         ]
+    elif artifact_type == "comparison_matrix":
+        from .research_citations import _citation_status
+
+        citation_rows = conn.execute("SELECT c.* FROM research_citations c JOIN research_artifacts a ON a.id = c.artifact_id WHERE c.run_id = ? AND a.status = 'completed'", (str(result["run_id"]),)).fetchall()
+        matrix_status_by_key: dict[str, set[str]] = {}
+        for citation_row in citation_rows:
+            matrix_status_by_key.setdefault(str(citation_row["citation_key"]), set()).add(_citation_status(conn, citation_row, user_id))
+        inaccessible_keys = {key for key, statuses in matrix_status_by_key.items() if "inaccessible" in statuses}
+        nonvalid_keys = {key for key, statuses in matrix_status_by_key.items() if statuses != {"valid"}}
+        allowed_papers = {
+            int(cast(int, item["paper_id"])) for item in content.get("papers", [])
+            if isinstance(item, dict) and isinstance(item.get("paper_id"), int)
+            and paper_is_accessible(conn, int(item["paper_id"]), user_id)
+        }
+        original_papers = {int(cast(int, item["paper_id"])) for item in content.get("papers", []) if isinstance(item, dict) and isinstance(item.get("paper_id"), int)}
+        content["papers"] = [item for item in content.get("papers", []) if isinstance(item, dict) and item.get("paper_id") in allowed_papers]
+        content["cells"] = [item for item in content.get("cells", []) if isinstance(item, dict) and item.get("paper_id") in allowed_papers and not inaccessible_keys.intersection(item.get("citation_keys", []))]
+        content["missing_evidence"] = [item for item in content.get("missing_evidence", []) if isinstance(item, dict) and (item.get("paper_id") is None or item.get("paper_id") in allowed_papers)]
+        for field in ("agreements", "disagreements"):
+            content[field] = [item for item in content.get(field, []) if isinstance(item, dict) and not inaccessible_keys.intersection(item.get("citation_keys", []))]
+        if any(nonvalid_keys.intersection(item.get("citation_keys", [])) for field in ("cells", "agreements", "disagreements") for item in content.get(field, []) if isinstance(item, dict)):
+            result["is_current"] = False
+        if allowed_papers != original_papers:
+            content["agreements"] = []
+            content["disagreements"] = []
+            result["is_current"] = False
+    elif artifact_type == "synthesis_claims":
+        from .research_citations import _citation_status
+
+        citation_rows = conn.execute("SELECT c.* FROM research_citations c JOIN research_artifacts a ON a.id = c.artifact_id WHERE c.run_id = ? AND a.status = 'completed'", (str(result["run_id"]),)).fetchall()
+        claim_status_by_key: dict[str, set[str]] = {}
+        for citation_row in citation_rows:
+            claim_status_by_key.setdefault(str(citation_row["citation_key"]), set()).add(_citation_status(conn, citation_row, user_id))
+        claims = []
+        for item in content.get("claims", []):
+            paper_ids = item.get("covered_paper_ids", []) if isinstance(item, dict) else []
+            citation_keys = [*item.get("supporting_citations", []), *item.get("contradicting_citations", [])] if isinstance(item, dict) else []
+            statuses = {status for key in citation_keys for status in claim_status_by_key.get(str(key), set())}
+            factual = isinstance(item, dict) and item.get("claim_type") in {"finding", "agreement", "disagreement"}
+            if factual and (not paper_ids or not citation_keys):
+                result["is_current"] = False
+                continue
+            if "inaccessible" not in statuses and all(isinstance(paper_id, int) and paper_is_accessible(conn, paper_id, user_id) for paper_id in paper_ids):
+                claims.append(item)
+                if statuses and statuses != {"valid"}:
+                    result["is_current"] = False
+            else:
+                result["is_current"] = False
+        content["claims"] = claims
+    elif artifact_type in {"citation_registry", "research_report"}:
+        from .research_citations import _citation_status
+
+        if artifact_type == "citation_registry":
+            citation_rows = conn.execute("SELECT * FROM research_citations WHERE artifact_id = ?", (str(result["id"]),)).fetchall()
+        else:
+            registry_version = int(content.get("generated_from_artifact_versions", {}).get("citation_registry", 0))
+            registry = conn.execute("SELECT id FROM research_artifacts WHERE run_id = ? AND artifact_type = 'citation_registry' AND version = ?", (str(result["run_id"]), registry_version)).fetchone()
+            citation_rows = conn.execute("SELECT * FROM research_citations WHERE artifact_id = ?", (str(registry["id"]),)).fetchall() if registry else []
+        status_by_key = {str(item["citation_key"]): _citation_status(conn, item, user_id) for item in citation_rows}
+        inaccessible = {key for key, status in status_by_key.items() if status == "inaccessible"}
+        if artifact_type == "citation_registry":
+            content["entries"] = [item for item in content.get("entries", []) if isinstance(item, dict) and item.get("citation_key") not in inaccessible]
+        elif inaccessible:
+            for field in ("executive_summary", "findings", "agreements", "disagreements", "conclusion"):
+                content[field] = [item for item in content.get(field, []) if isinstance(item, dict) and not inaccessible.intersection(item.get("citation_keys", []))]
+            content["limitations"] = []
+            content["research_gaps"] = []
+            result["is_current"] = False
+    if artifact_type in {"synthesis_plan", "comparison_matrix", "synthesis_claims", "citation_registry", "citation_validation_result", "research_report"} and not result.get("is_current") and result.get("status") == "completed":
+        run = conn.execute("SELECT status FROM research_runs WHERE id = ?", (str(result["run_id"]),)).fetchone()
+        if run is not None and str(run["status"]) in {"completed", "failed", "cancelled"}:
+            conn.execute(f"UPDATE research_artifacts SET status = 'stale', updated_at = {_NOW} WHERE id = ? AND status = 'completed'", (str(result["id"]),))
+            result["status"] = "stale"
     return result
 
 
-def _artifact_is_current(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+def _run_dataset_is_current(conn: sqlite3.Connection, run_id: str, user_id: int) -> bool:
+    rows = conn.execute(
+        """
+        SELECT rp.paper_id, rp.source_hash, p.asset_id, d.source_hash AS document_hash,
+               d.status AS document_status
+        FROM research_run_papers rp
+        JOIN papers p ON p.id = rp.paper_id
+        LEFT JOIN paper_documents d ON d.paper_id = p.id
+        WHERE rp.run_id = ? AND rp.stage = 'extracted'
+        """,
+        (run_id,),
+    ).fetchall()
+    if not rows:
+        return False
+    for item in rows:
+        source_hash = str(item["source_hash"] or "")
+        if (
+            not paper_is_accessible(conn, int(item["paper_id"]), user_id)
+            or str(item["asset_id"] or "").removeprefix("sha256:") != source_hash
+            or str(item["document_status"] or "") != "completed"
+            or str(item["document_hash"] or "") != source_hash
+        ):
+            return False
+        brief = conn.execute(
+            """
+            SELECT 1 FROM research_artifacts
+            WHERE run_id = ? AND paper_id = ? AND artifact_type = 'paper_brief'
+              AND source_hash = ? AND status = 'completed' LIMIT 1
+            """,
+            (run_id, int(item["paper_id"]), source_hash),
+        ).fetchone()
+        if brief is None:
+            return False
+    return True
+
+
+def _artifact_is_current(conn: sqlite3.Connection, row: sqlite3.Row, user_id: int) -> bool:
+    if str(row["status"]) != "completed" or not _artifact_integrity_valid(row):
+        return False
+    artifact_type = str(row["artifact_type"])
+    if artifact_type in {"synthesis_plan", "comparison_matrix", "synthesis_claims", "citation_registry", "citation_validation_result", "research_report"}:
+        if not _run_dataset_is_current(conn, str(row["run_id"]), user_id):
+            return False
+        content = cast(dict[str, Any], _decoded(str(row["content_json"]), {}))
+        if artifact_type in {"comparison_matrix", "synthesis_claims"}:
+            if artifact_type == "comparison_matrix":
+                required_keys = {
+                    str(key)
+                    for field in ("cells", "agreements", "disagreements")
+                    for item in content.get(field, [])
+                    if isinstance(item, dict)
+                    for key in item.get("citation_keys", [])
+                }
+            else:
+                required_keys = {
+                    str(key)
+                    for item in content.get("claims", [])
+                    if isinstance(item, dict) and item.get("claim_type") in {"finding", "agreement", "disagreement"}
+                    for key in [*item.get("supporting_citations", []), *item.get("contradicting_citations", [])]
+                }
+            registry = conn.execute(
+                "SELECT * FROM research_artifacts WHERE run_id = ? AND artifact_type = 'citation_registry' AND status = 'completed' ORDER BY version DESC LIMIT 1",
+                (str(row["run_id"]),),
+            ).fetchone()
+            validation = conn.execute(
+                "SELECT * FROM research_artifacts WHERE run_id = ? AND artifact_type = 'citation_validation_result' AND status = 'completed' ORDER BY version DESC LIMIT 1",
+                (str(row["run_id"]),),
+            ).fetchone()
+            if registry is None or validation is None or not _artifact_integrity_valid(registry) or not _artifact_integrity_valid(validation):
+                return False
+            from .research_citations import _citation_status
+
+            citation_rows = conn.execute(
+                "SELECT * FROM research_citations WHERE artifact_id = ?",
+                (str(registry["id"]),),
+            ).fetchall()
+            status_by_key = {str(item["citation_key"]): _citation_status(conn, item, user_id) for item in citation_rows}
+            validated_keys = {
+                str(key)
+                for key in cast(dict[str, Any], _decoded(str(validation["content_json"]), {})).get("valid_citation_keys", [])
+            }
+            if not required_keys or not required_keys.issubset(validated_keys) or any(status_by_key.get(key) != "valid" for key in required_keys):
+                return False
+        if artifact_type == "research_report":
+            versions = content.get("generated_from_artifact_versions", {})
+            if not isinstance(versions, dict):
+                return False
+            for dependency_type in (
+                "synthesis_plan", "comparison_matrix", "synthesis_claims",
+                "citation_registry", "citation_validation_result",
+            ):
+                dependency_version = versions.get(dependency_type)
+                if not isinstance(dependency_version, int):
+                    return False
+                dependency = conn.execute(
+                    "SELECT * FROM research_artifacts WHERE run_id = ? AND artifact_type = ? AND version = ?",
+                    (str(row["run_id"]), dependency_type, dependency_version),
+                ).fetchone()
+                latest = conn.execute(
+                    "SELECT MAX(version) AS version FROM research_artifacts WHERE run_id = ? AND artifact_type = ? AND status = 'completed'",
+                    (str(row["run_id"]), dependency_type),
+                ).fetchone()
+                if (
+                    dependency is None
+                    or str(dependency["status"]) != "completed"
+                    or not _artifact_integrity_valid(dependency)
+                    or latest is None
+                    or latest["version"] is None
+                    or int(latest["version"]) != dependency_version
+                ):
+                    return False
+        if artifact_type in {"citation_registry", "citation_validation_result", "research_report"}:
+            from .research_citations import _citation_status
+
+            if artifact_type == "citation_registry":
+                registry_id = str(row["id"])
+            else:
+                registry_version = int(content.get("generated_from_artifact_versions", {}).get("citation_registry", 0)) if artifact_type == "research_report" else 0
+                registry = conn.execute(
+                    "SELECT id FROM research_artifacts WHERE run_id = ? AND artifact_type = 'citation_registry' AND version = ?",
+                    (str(row["run_id"]), registry_version),
+                ).fetchone() if registry_version else None
+                if artifact_type == "research_report" and registry is None:
+                    return False
+                if registry is None:
+                    registry = conn.execute(
+                        "SELECT id FROM research_artifacts WHERE run_id = ? AND artifact_type = 'citation_registry' ORDER BY version DESC LIMIT 1",
+                        (str(row["run_id"]),),
+                    ).fetchone()
+                if registry is None:
+                    return False
+                registry_id = str(registry["id"])
+            citations = conn.execute("SELECT * FROM research_citations WHERE artifact_id = ?", (registry_id,)).fetchall()
+            if not citations or any(_citation_status(conn, item, user_id) != "valid" for item in citations):
+                return False
+        return True
     if row["paper_id"] is None or row["source_hash"] is None:
-        return str(row["status"]) == "completed"
+        return True
     document = conn.execute(
         """
         SELECT d.source_hash, d.status, p.asset_id
@@ -448,7 +715,7 @@ def get_paper_brief(
     ).fetchone()
     if row is None:
         raise ResearchNotFoundError("paper brief not found")
-    return _artifact_row(row, is_current=_artifact_is_current(conn, row))
+    return _artifact_row(row, is_current=_artifact_is_current(conn, row, user_id))
 
 
 def upsert_run_paper(
@@ -811,6 +1078,91 @@ def settle_budget_call(
         raise
 
 
+def begin_model_call(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    step_id: str,
+    worker_id: str,
+    lease_generation: int,
+    idempotency_key: str,
+    model_name: str,
+    input_payload: dict[str, Any],
+) -> tuple[str, dict[str, Any] | None]:
+    assert_safe_research_payload(input_payload)
+    input_hash = hashlib.sha256(_json(input_payload).encode("utf-8")).hexdigest()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        lease = _active_lease(conn, run_id=run_id, step_id=step_id, worker_id=worker_id, lease_generation=lease_generation)
+        existing = conn.execute("SELECT * FROM research_model_calls WHERE run_id = ? AND idempotency_key = ?", (run_id, idempotency_key)).fetchone()
+        if existing is not None:
+            if str(existing["model_name"]) != model_name or str(existing["input_hash"]) != input_hash:
+                raise ResearchConflictError("model operation identity conflict")
+            status = str(existing["status"])
+            if status == "completed":
+                conn.commit()
+                return "completed", cast(dict[str, Any], _decoded(str(existing["result_json"]), {}))
+            if status in {"started", "ambiguous"}:
+                conn.execute(f"UPDATE research_model_calls SET status = 'ambiguous', updated_at = {_NOW} WHERE id = ?", (str(existing["id"]),))
+                conn.commit()
+                raise ResearchConflictError("model call outcome is ambiguous; automatic retry is blocked")
+            raise ResearchConflictError("failed model call slot cannot be dispatched twice")
+        budget = _decoded(str(lease["budget_json"]), dict(DEFAULT_TOPIC_BUDGET))
+        usage = _decoded(str(lease["usage_json"]), dict(DEFAULT_TOPIC_USAGE))
+        elapsed_row = conn.execute(
+            "SELECT MAX(0, CAST((julianday('now') - julianday(created_at)) * 86400 AS INTEGER)) AS seconds FROM research_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        elapsed = int(elapsed_row["seconds"] if elapsed_row else 0)
+        usage["wall_clock_seconds"] = elapsed
+        if elapsed >= int(budget.get("max_wall_clock_seconds", 1_800)) or int(usage.get("model_calls", 0)) + 1 > int(budget.get("max_model_calls", 0)):
+            _wait_for_budget(conn, lease, "model_calls", budget, usage)
+            conn.commit()
+            return "waiting", None
+        usage["model_calls"] = int(usage.get("model_calls", 0)) + 1
+        conn.execute(
+            "INSERT INTO research_model_calls(id, run_id, step_id, idempotency_key, model_name, input_hash, status) VALUES (?, ?, ?, ?, ?, ?, 'started')",
+            (str(uuid.uuid4()), run_id, step_id, idempotency_key, model_name, input_hash),
+        )
+        conn.execute(
+            f"UPDATE research_runs SET usage_json = ?, state_version = state_version + 1, updated_at = {_NOW} WHERE id = ?",
+            (_json(usage), run_id),
+        )
+        conn.commit()
+        return "started", None
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def complete_model_call(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    step_id: str,
+    worker_id: str,
+    lease_generation: int,
+    idempotency_key: str,
+    result: dict[str, Any] | None,
+    succeeded: bool,
+) -> None:
+    if result is not None:
+        assert_safe_research_payload(result)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _active_lease(conn, run_id=run_id, step_id=step_id, worker_id=worker_id, lease_generation=lease_generation)
+        cursor = conn.execute(
+            f"UPDATE research_model_calls SET status = ?, result_json = ?, updated_at = {_NOW} WHERE run_id = ? AND idempotency_key = ? AND status = 'started'",
+            ("completed" if succeeded else "failed", _json(result) if result is not None else None, run_id, idempotency_key),
+        )
+        if cursor.rowcount != 1:
+            raise ResearchConflictError("model call slot is no longer writable")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def _wait_for_budget(
     conn: sqlite3.Connection,
     lease: sqlite3.Row,
@@ -908,4 +1260,70 @@ def apply_budget_decision(
         f"UPDATE research_runs SET budget_json = ?, updated_at = {_NOW} WHERE id = ?",
         (_json(budget), run_id),
     )
+    return "resume"
+
+
+def wait_for_evidence_coverage(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    step_id: str,
+    worker_id: str,
+    lease_generation: int,
+) -> None:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        lease = _active_lease(conn, run_id=run_id, step_id=step_id, worker_id=worker_id, lease_generation=lease_generation)
+        existing = conn.execute("SELECT 1 FROM research_decisions WHERE run_id = ? AND status = 'pending'", (run_id,)).fetchone()
+        if existing is None:
+            decision_id = str(uuid.uuid4())
+            options = [
+                {"id": "continue_reading", "label": "继续读取论文（推荐）", "description": "从当前 source hash 重新打开证据并抽取 PaperBrief。", "action": "coverage_continue_reading"},
+                {"id": "stop", "label": "停止任务", "description": "保留已完成数据，不生成无证据报告。", "action": "coverage_stop"},
+            ]
+            conn.execute(
+                "INSERT INTO research_decisions(id, run_id, step_id, question, options_json, recommended_option) VALUES (?, ?, ?, '当前没有足够的有效 Citation 生成研究报告，请选择下一步。', ?, 'continue_reading')",
+                (decision_id, run_id, step_id, _json(options)),
+            )
+            conn.execute(
+                "INSERT INTO research_events(run_id, step_id, event_type, summary, payload_json) VALUES (?, ?, 'decision.requested', '引用覆盖需要确认', ?)",
+                (run_id, step_id, _json({"decision_id": decision_id, "kind": "evidence_coverage"})),
+            )
+        conn.execute(
+            f"UPDATE research_steps SET status = 'waiting_input', lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, updated_at = {_NOW} WHERE id = ? AND lease_owner = ? AND lease_generation = ?",
+            (step_id, str(lease["lease_owner"]), int(lease["lease_generation"])),
+        )
+        conn.execute(f"UPDATE research_runs SET status = 'waiting_input', state_version = state_version + 1, updated_at = {_NOW} WHERE id = ?", (run_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def apply_coverage_decision(conn: sqlite3.Connection, *, decision_row: sqlite3.Row, option: dict[str, Any]) -> str:
+    run_id = str(decision_row["run_id"])
+    action = str(option.get("action", ""))
+    if action == "coverage_stop":
+        return "stop"
+    if action != "coverage_continue_reading":
+        raise ResearchConflictError("evidence coverage decision action is invalid")
+    generation = uuid.uuid4().hex[:12]
+    conn.execute(
+        f"""
+        UPDATE research_steps SET status = 'queued', completed_at = NULL, output_json = '{{}}',
+            idempotency_key = 'topic:' || step_key || ':coverage:{generation}',
+            max_attempts = max_attempts + 1, updated_at = {_NOW}
+        WHERE run_id = ? AND step_key IN ('reading', 'extraction', 'finalize_dataset')
+        """,
+        (run_id,),
+    )
+    conn.execute(
+        f"UPDATE research_run_papers SET stage = 'fulltext_ready', updated_at = {_NOW} WHERE run_id = ? AND stage IN ('read', 'extracted')",
+        (run_id,),
+    )
+    conn.execute(
+        f"UPDATE research_artifacts SET status = 'stale', updated_at = {_NOW} WHERE run_id = ? AND artifact_type IN ('paper_brief', 'extraction_result', 'synthesis_plan', 'comparison_matrix', 'synthesis_claims', 'citation_registry', 'citation_validation_result', 'research_report') AND status = 'completed'",
+        (run_id,),
+    )
+    conn.execute(f"UPDATE research_citations SET status = 'stale', updated_at = {_NOW} WHERE run_id = ?", (run_id,))
     return "resume"

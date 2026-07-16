@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from ..db.connection import connect
 from ..models import PaperCandidate, PaperSource
 from ..repositories.papers import get_paper_record, upsert_paper
 from ..repositories.research import ResearchConflictError, ResearchNotFoundError
+from ..repositories.research_citations import register_opened_evidence
 from ..repositories.research_data import (
     assert_active_tool_context,
     assert_safe_research_payload,
@@ -34,6 +36,41 @@ from .research_contracts import (
 )
 from .search import search_chunks
 from .sources.arxiv import fetch_arxiv_papers
+
+
+_ARXIV_DISCOVERY_STOPWORDS = {
+    "and", "arxiv", "for", "from", "in", "of", "or", "the", "to", "with",
+}
+
+
+def _arxiv_discovery_terms(queries: list[str]) -> list[str]:
+    """Keep one real arXiv request broad enough for LLM-written discovery queries."""
+    primary = queries[0]
+    phrase_match = re.search(r"retrieval[- ]augmented generation", primary, re.IGNORECASE)
+    acronym_match = next(
+        (
+            match
+            for query in queries
+            for match in re.findall(r"\b[A-Z][A-Z0-9-]{1,9}\b", query)
+            if match.casefold() != "arxiv"
+        ),
+        None,
+    )
+    core = phrase_match.group(0).replace("-", " ") if phrase_match else acronym_match
+    terms: list[str] = []
+    seen: set[str] = set()
+    if core:
+        terms.append(core)
+        seen.update(re.findall(r"[a-z]+", core.casefold()))
+    for token in re.findall(r"[A-Za-z][A-Za-z-]{1,}", primary):
+        normalized = token.casefold()
+        if normalized in _ARXIV_DISCOVERY_STOPWORDS or normalized in seen:
+            continue
+        seen.add(normalized)
+        terms.append(token)
+        if len(terms) == 8:
+            break
+    return terms or [queries[0]]
 
 
 class ToolTransientError(RuntimeError):
@@ -338,7 +375,13 @@ def _local_search(context: ToolContext, payload: LocalSearchInput) -> LocalSearc
 def _arxiv_search(context: ToolContext, payload: ArxivSearchInput) -> ArxivSearchOutput:
     del context
     try:
-        fetched = fetch_arxiv_papers(payload.categories, [payload.queries[0]], payload.max_results)
+        fetched = fetch_arxiv_papers(
+            payload.categories,
+            _arxiv_discovery_terms(payload.queries),
+            payload.max_results,
+            True,
+            True,
+        )
     except Exception as exc:
         raise ToolTransientError("arxiv_search_unavailable") from exc
     seen: set[str] = set()
@@ -562,28 +605,26 @@ def _open_evidence(context: ToolContext, payload: OpenEvidenceInput) -> OpenEvid
         raise ResearchStepError("evidence_not_whitelisted", "只能打开本步骤检索结果中的证据。")
     chunk_id = int(payload.ref_id.split(":", 1)[1])
     with connect() as conn:
-        row = conn.execute(
-            """
-            SELECT pc.*, p.title FROM paper_chunks pc
-            JOIN papers p ON p.id = pc.paper_id
-            JOIN research_run_papers rp ON rp.paper_id = pc.paper_id AND rp.run_id = ?
-            WHERE pc.id = ? AND rp.stage IN ('fulltext_ready', 'read', 'extracted')
-              AND rp.source_hash = pc.source_hash
-            """,
-            (context.run_id, chunk_id),
-        ).fetchone()
-        if row is None or not paper_is_accessible(conn, int(row["paper_id"]), context.user_id):
-            raise ResearchNotFoundError("research evidence not found")
+        registered = register_opened_evidence(
+            conn,
+            run_id=context.run_id,
+            step_id=context.step_id,
+            worker_id=context.worker_id,
+            lease_generation=context.lease_generation,
+            user_id=context.user_id,
+            chunk_id=chunk_id,
+        )
     evidence = ChunkEvidenceRef(
+        evidence_id=str(registered["id"]),
         chunk_id=chunk_id,
-        paper_id=int(row["paper_id"]),
-        source_hash=str(row["source_hash"]),
-        chunk_index=int(row["chunk_index"]),
-        char_start=int(row["char_start"]),
-        char_end=int(row["char_end"]),
-        heading=str(row["heading"]),
+        paper_id=int(registered["paper_id"]),
+        source_hash=str(registered["source_hash"]),
+        chunk_index=int(registered["chunk_index"]),
+        char_start=int(registered["char_start"]),
+        char_end=int(registered["char_end"]),
+        heading=str(registered["heading"]),
     )
-    return OpenEvidenceOutput(evidence=evidence, excerpt=str(row["content"])[: payload.max_chars])
+    return OpenEvidenceOutput(evidence=evidence, excerpt=str(registered["content"])[: payload.max_chars])
 
 
 def build_research_tool_registry() -> ToolRegistry:

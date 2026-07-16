@@ -7,6 +7,7 @@ Agent 续写入口：
 
 | Iteration | Title | Status | Notes |
 | --- | --- | --- | --- |
+| [iter14](iteration_iter14_cited-research-synthesis.md) | 可追溯调研综合与研究报告 | Complete | schema v8、durable Evidence/Citation/model ledger、17 步综合、严格引用验证、版本化报告与响应式引用交互；112 tests、mypy、build、6 项 Playwright 和真实 arXiv/PDF/Docling/模型 smoke 通过。 |
 | [iter13](iteration_iter13_topic-research-pipeline.md) | 主题调研数据链路 | Complete | schema v7、版本化 Artifact/Run Paper、Tool Registry、五 Agent、十步 topic workflow、预算 Decision 与真实数据 UI；102 tests、mypy、build、6 项 Playwright 和真实 arXiv smoke 通过。 |
 | [iter12](iteration_iter12_chat-run-workflow.md) | Chat 接入 Research Run 与 Workflow UI | Complete | schema v6、原子 Chat 路由、assistant-ui Run data part、实时 Workflow；92 tests、strict mypy、build 和三视口 Playwright 通过。 |
 | [iter11](iteration_iter11_research-run-harness.md) | Research Run 与可恢复 Harness | Complete | schema v5、fenced lease 单 worker、SSE 续传、Decision、任务中心与 Run 页；80 tests、strict mypy、build 和 2 Playwright 通过。 |

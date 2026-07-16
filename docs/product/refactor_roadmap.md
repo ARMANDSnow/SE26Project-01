@@ -424,13 +424,12 @@ src/components/chat/
 
 目标：完成旗舰 Workflow 的可信交付。
 
-- Synthesis Agent、Citation Validator、Librarian Agent；
-- comparison matrix、research report、Evidence Registry；
-- 报告页面、目录和引用检查器；
-- 报告版本与“继续研究”；
-- 自动保存私有资料库。
+- **状态：已完成（2026-07-16）**。实现 Synthesis、Comparison、Citation Verifier、Report Agent；Librarian/资料库项目化顺延 Iter15。
+- 实现 comparison matrix、versioned research report、durable Evidence/Citation Registry 与严格 source-hash/ACL 校验。
+- 实现报告目录、Citation inspector、四状态、历史 stale 版本和显式重新生成。
+- 自动保存私有资料库仍属 Iter15，不在 Iter14 伪装完成。
 
-验收：报告至少引用 5 篇论文；引用全部可跳转；无效引用阻止“已验证”状态。
+验收：结构与安全链路、三视口 UI 和依赖注入 17 步 workflow 已通过；引用全部可定位，无效引用阻止“已验证”。真实至少 5 篇论文的付费端到端 smoke 仍需单独授权。
 
 ### Iter15：研究脉络、图谱与资料库项目化
 

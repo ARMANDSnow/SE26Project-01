@@ -242,6 +242,13 @@ def insert_topic_research_run(
         ("reading", "topic.reading", "检索正文与定位证据", "Reader Agent", ["fulltext_acquisition"], 2),
         ("extraction", "topic.extraction", "抽取结构化阅读卡", "Extraction Agent", ["reading"], 2),
         ("finalize_dataset", "topic.finalize", "完成调研数据集", "Coordinator Agent", ["extraction"], 1),
+        ("synthesis_planning", "topic.synthesis_planning", "制定综合计划", "Synthesis Agent", ["finalize_dataset"], 1),
+        ("comparison_matrix", "topic.comparison_matrix", "构建论文对比矩阵", "Comparison Agent", ["synthesis_planning"], 1),
+        ("cross_paper_claims", "topic.cross_paper_claims", "分析跨论文主张与分歧", "Synthesis Agent", ["comparison_matrix"], 1),
+        ("citation_registry", "topic.citation_registry", "登记 Run 引用证据", "Citation Verifier Agent", ["cross_paper_claims"], 1),
+        ("citation_verification", "topic.citation_verification", "严格校验引用", "Citation Verifier Agent", ["citation_registry"], 1),
+        ("report_generation", "topic.report_generation", "生成可追溯研究报告", "Report Agent", ["citation_verification"], 1),
+        ("finalize_cited_report", "topic.finalize_cited_report", "完成引用报告", "Coordinator Agent", ["report_generation"], 1),
     )
     conn.execute(
         """
@@ -467,15 +474,18 @@ def retry_run(conn: sqlite3.Connection, run_id: str, user_id: int) -> dict[str, 
         run = _owned_run(conn, run_id, user_id)
         if str(run["status"]) != "failed":
             raise ResearchConflictError("only a failed run can retry")
+        retry_generation = uuid.uuid4().hex
         conn.execute(
             f"""
             UPDATE research_steps
             SET status = 'queued', output_json = '{{}}', lease_owner = NULL,
                 lease_expires_at = NULL, heartbeat_at = NULL, completed_at = NULL,
-                max_attempts = max_attempts + 1, updated_at = {_NOW}
+                max_attempts = max_attempts + 1,
+                idempotency_key = idempotency_key || ':manual:' || ?,
+                updated_at = {_NOW}
             WHERE run_id = ? AND status = 'failed'
             """,
-            (run_id,),
+            (retry_generation, run_id),
         )
         cursor = conn.execute(
             f"""
@@ -533,7 +543,11 @@ def resolve_decision(
             None,
         )
         decision_action = "resume"
-        if isinstance(selected_option, dict) and selected_option.get("action") is not None:
+        if isinstance(selected_option, dict) and str(selected_option.get("action", "")).startswith("coverage_"):
+            from .research_data import apply_coverage_decision
+
+            decision_action = apply_coverage_decision(conn, decision_row=row, option=selected_option)
+        elif isinstance(selected_option, dict) and selected_option.get("action") is not None:
             # Local import avoids a repository module cycle while keeping the
             # state transition and budget mutation in this transaction.
             from .research_data import apply_budget_decision
