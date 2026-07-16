@@ -1,14 +1,20 @@
 # Agent Handoff
 
-最后更新：2026-07-15，iter10 closeout。
+最后更新：2026-07-16，iter11 closeout。
 
 ## Current Status
 
-- 当前分支：`codex/develop`；iter07 至 iter10 均已通过 fast-forward 纳入本地 develop，尚未 push。
+- 当前分支：`codex/agentic-research-refactor`；Agentic Research 产品基线和 iter11 均在本分支，尚未 push。
+- iter11 建立 schema v5 Research Harness：`research_runs`、`research_steps`、`research_events`、`research_decisions`，数据库是任务状态的唯一真相源。
+- FastAPI lifespan 启停单 worker `ResearchExecutor`；60 秒租约、15 秒 heartbeat，工作与心跳分线程，owner + lease generation + expiry CAS 阻止旧 worker 续租或提交。
+- Research API 支持创建、列表、快照、安全暂停/继续/取消/重试、Decision 回答和带递增 Event ID/`Last-Event-ID` 的 SSE；非 owner 统一 404。
+- 当前 Harness 只执行 normalize/plan/finalize 三个确定性骨架 step，不调用 arXiv、Docling 或模型，不写入论文调研声明。
+- 前端新增全局任务中心与 `/runs/:runId`，支持创建骨架、分组查看、恢复步骤和控制请求；Radix Sheet 关闭后恢复焦点，390px 无横向溢出。
+- `App.tsx` 已引入路由级懒加载，主入口 chunk 从约 913 kB 降到 412.58 kB；Chat 为独立 427.51 kB chunk。
 - iter08 已建立 `api -> services -> repositories -> db` 外层分层；`main.py` 只负责生命周期、中间件、内存 SessionStore 和 Router 挂载。
 - iter09 已加入用户名/密码认证：Argon2id 哈希、内存 Session、HttpOnly SameSite=Lax Cookie，以及注册、登录、登出和当前用户 API。
 - 业务 Router 统一通过 `CurrentUser` 解析身份，不再信任 `X-User-ID`；除 health/auth 入口外，35 个业务 API method/path 全部要求登录。
-- SQLite schema version 为 4；启动时支持 v2→v3→v4 连续迁移。v2 私有数据归到禁用 legacy user 1；v3 历史上传迁移为 legacy public/approved。
+- SQLite schema version 为 5；启动时支持 v2→v3→v4→v5 连续前迁，失败 DDL 回滚且伪造/缺表 v5 fail closed。
 - arXiv/USENIX/SIGOPS 等论文继续全局共享；用户上传通过独立 `paper_uploads` 记录 owner、visibility、provenance、moderation status 与原始文件名，新上传默认 private。
 - 私有上传访问控制覆盖目录、详情、PDF、Chunk、处理/解析/概要、资料库、历史、论文 Chat、Wiki/FTS/Graph、classic/agentic QA 与只读论文工具；缺失授权元数据的 upload 默认不可见。
 - 资料库/收藏、笔记、阅读历史、订阅、统计和聊天继续按用户隔离；公开上传收回为 private 后，其他用户遗留关联数据保留但立即从读取视图隐藏。
@@ -39,7 +45,7 @@ npm run build
 git diff --check
 ```
 
-结果：70 个后端测试通过；strict mypy 覆盖 45 个源文件并通过；前端生产构建通过；`git diff --check` 通过。Vite 仍提示主包约 913 kB，属于既有代码分割 follow-up。本轮未运行付费真实 LLM smoke。
+结果：80 个后端测试通过；strict mypy 覆盖 49 个源文件并通过；前端生产构建通过；Playwright 在 desktop Chromium 和 390px Chromium 各 1 条旗舰流程通过；`git diff --check` 通过。主入口 chunk 412.58 kB，低于 Vite 500 kB 建议线。本轮未运行 arXiv 网络或付费真实 LLM smoke。
 
 ## Known Risks
 
@@ -48,23 +54,22 @@ git diff --check
 - v2 legacy 用户没有可恢复密码，迁移后保持禁用；其历史私有数据需要后续显式认领流程。
 - 公开上传目前只记录 `unreviewed/approved/rejected` 状态，没有管理员审核、内容扫描、举报或下架工作流；用户显式 public 后立即对登录用户可见。
 - 尚未实现分享链接、团队空间、上传删除和对象存储级 ACL；相同 PDF blob 可物理去重，但逻辑权限仍绑定各自 paper/upload 记录。
-- 前端认证流程尚无 Playwright 回归，只完成 TypeScript/Vite 构建与后端 API 契约测试。
-- 前端主 bundle 仍超过 Vite 500 kB 建议阈值，后续可按路由和 assistant-ui 组件拆包。
+- Research SSE 当前每连接 1 秒短读轮询，尚未加入用户级 SSE/Run 创建配额；长任务公开前需补资源限制。
+- 仓库现存默认 `backend/data/arxiv_wiki.sqlite3` 是用户旧 v0 库（116 篇），本轮没有修改或重建；验证全部用独立 `DATABASE_PATH`。如需承接该数据，必须另立 legacy v0 迁移任务。
 - `database.py` 仍作为兼容 facade；`conversations.py`、`documents.py`、`search.py` 和 `paper_tools.py` 仍包含历史领域 SQL。
 - Docling 解析与远程 PDF 下载仍是同步长任务；大批量使用需要任务队列。
 
 ## Next Candidates
 
-1. 增加登录、登出、跨账户切换、私有上传发布/收回与旧视图失效的 Playwright smoke。
-2. 设计公开上传审核/举报/下架流程，以及管理员或角色授权模型。
-3. 增加登录限流、密码修改/重置和 legacy 数据认领；部署扩容时实现 RedisSessionStore。
-4. 设计 Agent 原生会话内 Context/Tool 状态和可撤销授权，不默认读取论文或资料库。
-5. 渐进删除 `database.py` facade，并把剩余历史 SQL 提取到 Repository。
+1. Iter12：为 `chat_messages` 增加 `content_parts_json`，实现 `/api/chat/route` 与原子 Run 卡消息。
+2. Iter12：建立单一 Research SSE/React Query 实时桥接，完成 Chat/Workflow 桌面三栏、平板 Drawer 和 390px 全屏交互。
+3. 为 Research SSE 和 Run 创建增加用户级连接/速率限制，并扩展 pause/resume/cancel/retry 的慢步骤 Playwright。
+4. 如需使用旧 116 篇本地论文，先设计可审查、不破坏的 v0 legacy 迁移，不要直接 reset。
 
 ## Git Notes
 
 - iter08：`docs/iterations/iteration_iter08_backend-layer-refactor.md`。
 - iter09：`docs/iterations/iteration_iter09_session-user-isolation.md`。
 - iter10：`docs/iterations/iteration_iter10_upload-visibility.md`。
-- `codex/feature-upload-visibility` 已以 `--ff-only` 合入本地 `codex/develop`。
+- iter11：`docs/iterations/iteration_iter11_research-run-harness.md`。
 - 尚未 push；推送前先 fetch/rebase 并保留远端用户改动。

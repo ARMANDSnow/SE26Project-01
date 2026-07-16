@@ -7,6 +7,7 @@ Agent 续写入口：
 
 | Iteration | Title | Status | Notes |
 | --- | --- | --- | --- |
+| [iter11](iteration_iter11_research-run-harness.md) | Research Run 与可恢复 Harness | Complete | schema v5、fenced lease 单 worker、SSE 续传、Decision、任务中心与 Run 页；80 tests、strict mypy、build 和 2 Playwright 通过。 |
 | [iter10](iteration_iter10_upload-visibility.md) | 用户上传归属与可见性 | Complete | schema v4、默认私有/显式公开上传、全读取链路访问控制；70 tests、strict mypy 和前端 build 通过。 |
 | [iter09](iteration_iter09_session-user-isolation.md) | Session 登录与跨用户数据隔离 | Complete | 内存 SessionStore、Argon2 登录、CurrentUser、schema v3 migration 与跨用户隔离；67 tests、strict mypy 和前端 build 通过。 |
 | [iter08](iteration_iter08_backend-layer-refactor.md) | 后端分层与迁移基础重构 | Complete | Router/Service/Repository/db 分层、兼容 facade 与 migration runner；61 tests、strict mypy 和前端 build 通过。 |

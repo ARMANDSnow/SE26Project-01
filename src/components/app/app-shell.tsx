@@ -10,6 +10,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import type { ComponentType, SVGProps } from "react"
 import { Link, NavLink, Outlet, useLocation } from "react-router"
 import { ThemeToggle } from "@/components/app/theme-toggle"
+import { TaskCenter } from "@/features/research/task-center"
 import { Button } from "@/components/ui/button"
 import {
   Sidebar,
@@ -95,6 +96,14 @@ function NavigationMenu() {
 export function AppShell() {
   const queryClient = useQueryClient()
   const userQuery = useCurrentUserQuery()
+  const location = useLocation()
+  const header = location.pathname.startsWith("/runs/")
+    ? { title: "Research Run", description: "可恢复任务与执行步骤" }
+    : location.pathname.startsWith("/papers")
+      ? { title: "论文库", description: "检索、导入与阅读论文" }
+      : location.pathname.startsWith("/library")
+        ? { title: "我的资料库", description: "收藏与研究资料" }
+        : { title: "PaperWiki Chat", description: "从对话开始你的研究" }
 
   const signOut = async () => {
     await logout()
@@ -134,7 +143,7 @@ export function AppShell() {
           </div>
           <div className="rounded-lg border bg-sidebar-accent/40 p-3 text-xs leading-5 text-sidebar-foreground/70">
             <span className="font-semibold text-sidebar-foreground">当前阶段</span>
-            <p className="mt-1">通用对话仅使用当前会话历史，尚未接入论文与 Agent 工具。</p>
+            <p className="mt-1">Research Harness 已接入；论文调研 Agent 与报告链路将按迭代逐步开放。</p>
           </div>
         </SidebarFooter>
       </Sidebar>
@@ -146,11 +155,12 @@ export function AppShell() {
               <Menu className="size-4" />
             </SidebarTrigger>
             <div>
-              <p className="text-sm font-semibold text-foreground">PaperWiki Chat</p>
-              <p className="text-xs text-muted-foreground">从对话开始你的研究</p>
+              <p className="text-sm font-semibold text-foreground">{header.title}</p>
+              <p className="text-xs text-muted-foreground">{header.description}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <TaskCenter />
             <Button asChild variant="outline" className="hidden h-11 sm:inline-flex">
               <Link to="/papers">检索论文</Link>
             </Button>

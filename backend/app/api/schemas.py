@@ -101,3 +101,21 @@ class ChatRunRequest(BaseModel):
     source_message_id: str | None = None
     assistant_message_id: str = Field(min_length=1, max_length=100)
     message_token_limit: int = Field(default=12000, ge=0, le=100000)
+
+
+class ResearchRunCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    goal: str = Field(min_length=1, max_length=20_000)
+    thread_id: str | None = Field(default=None, max_length=100)
+
+    @field_validator("title", "goal")
+    @classmethod
+    def validate_research_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("value must not be blank")
+        return cleaned
+
+
+class ResearchDecisionResolveRequest(BaseModel):
+    option_id: str = Field(min_length=1, max_length=100)

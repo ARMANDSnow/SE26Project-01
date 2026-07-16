@@ -131,6 +131,89 @@ export type ChatMessageRepository = {
   messages: ChatMessageRow[];
 };
 
+export type ResearchRunStatus =
+  | "queued"
+  | "running"
+  | "waiting_input"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelling"
+  | "cancelled";
+
+export type ResearchStepStatus =
+  | "queued"
+  | "running"
+  | "waiting_input"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "skipped"
+  | "cancelled";
+
+export type ResearchStep = {
+  id: string;
+  run_id: string;
+  step_key: string;
+  step_type: string;
+  title: string;
+  agent_name: string;
+  status: ResearchStepStatus;
+  position: number;
+  attempt_count: number;
+  max_attempts: number;
+  output: Record<string, unknown>;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
+export type ResearchDecision = {
+  id: string;
+  run_id: string;
+  step_id?: string | null;
+  question: string;
+  options: Array<{ id: string; label: string; description?: string }>;
+  recommended_option?: string | null;
+  status: "pending" | "resolved" | "cancelled";
+  answer?: { option_id: string } | null;
+  created_at: string;
+  resolved_at?: string | null;
+};
+
+export type ResearchRun = {
+  id: string;
+  user_id: number;
+  thread_id?: string | null;
+  title: string;
+  goal: string;
+  mode: "harness" | "topic" | "paper";
+  status: ResearchRunStatus;
+  requested_action?: "pause" | "cancel" | null;
+  state_version: number;
+  plan_version: number;
+  budget: Record<string, unknown>;
+  usage: Record<string, unknown>;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  updated_at: string;
+  completed_at?: string | null;
+  steps?: ResearchStep[];
+  decisions?: ResearchDecision[];
+  latest_event_id?: number;
+};
+
+export type ResearchEvent = {
+  id: number;
+  run_id: string;
+  step_id?: string | null;
+  event_type: string;
+  summary: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
 export type Stats = {
   papers: number;
   processed: number;

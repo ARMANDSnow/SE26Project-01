@@ -10,6 +10,8 @@ backend/data/uploads/
 __pycache__/
 .pytest_cache/
 .playwright-cli/
+playwright-report/
+test-results/
 .DS_Store
 .env
 .env.*

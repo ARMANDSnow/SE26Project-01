@@ -22,6 +22,7 @@ files = [
     "backend/app/services/system.py",
     "backend/app/services/pdf_import.py",
     "backend/app/services/remote_pdf.py",
+    "backend/app/services/research.py",
     "backend/app/services/sources/arxiv.py",
     "backend/app/services/sources/sigops.py",
     "backend/app/services/sources/usenix.py",

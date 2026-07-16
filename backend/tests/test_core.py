@@ -32,11 +32,26 @@ from backend.app.db.migrations import (
     MigrationError,
     V3_MIGRATION,
     V4_MIGRATION,
+    V5_MIGRATION,
     apply_migrations,
 )
 from backend.app.main import app
 from backend.app.models import AssetId, AssetInfo, PaperCandidate, PaperSource
 from backend.app.repositories.uploads import paper_is_accessible
+from backend.app.repositories.research import (
+    ResearchConflictError,
+    claim_next_step,
+    create_harness_run,
+    fail_step,
+    finish_step,
+    get_run_snapshot,
+    heartbeat_step,
+    request_action,
+    recover_expired_leases,
+    reconcile_requested_actions,
+    resolve_decision,
+    retry_run,
+)
 from backend.app.services.agents import SummaryAgent, process_paper
 from backend.app.services.asset_store import LocalAssetStore
 from backend.app.services.sources.common import MetadataPage
@@ -173,6 +188,79 @@ def test_v3_uploads_migrate_as_legacy_public_documents() -> None:
         "moderation_status": "approved",
     }
     assert conn.execute("SELECT 1 FROM paper_uploads WHERE paper_id = 8").fetchone() is None
+
+
+def test_v4_research_schema_migrates_to_v5() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("CREATE TABLE users(id INTEGER PRIMARY KEY)")
+    conn.execute(
+        "CREATE TABLE chat_threads(id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id))"
+    )
+    conn.execute("PRAGMA user_version = 4")
+
+    assert apply_migrations(conn, [V5_MIGRATION], target_version=5) == [5]
+    run_columns = {row["name"] for row in conn.execute("PRAGMA table_info(research_runs)")}
+    step_columns = {row["name"] for row in conn.execute("PRAGMA table_info(research_steps)")}
+    assert {"user_id", "requested_action", "state_version"} <= run_columns
+    assert {"lease_owner", "lease_generation", "lease_expires_at"} <= step_columns
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_v5_migration_matches_fresh_research_tables_and_rolls_back_on_failure() -> None:
+    fresh = sqlite3.connect(":memory:")
+    fresh.row_factory = sqlite3.Row
+    init_schema(fresh)
+    migrated = sqlite3.connect(":memory:")
+    migrated.row_factory = sqlite3.Row
+    migrated.execute("PRAGMA foreign_keys = ON")
+    migrated.execute("CREATE TABLE users(id INTEGER PRIMARY KEY)")
+    migrated.execute(
+        "CREATE TABLE chat_threads(id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id))"
+    )
+    migrated.execute("PRAGMA user_version = 4")
+    apply_migrations(migrated, [V5_MIGRATION], target_version=5)
+
+    for table in ("research_runs", "research_steps", "research_events", "research_decisions"):
+        fresh_columns = [tuple(row) for row in fresh.execute(f"PRAGMA table_info({table})")]
+        migrated_columns = [tuple(row) for row in migrated.execute(f"PRAGMA table_info({table})")]
+        assert migrated_columns == fresh_columns
+        fresh_fks = [tuple(row) for row in fresh.execute(f"PRAGMA foreign_key_list({table})")]
+        migrated_fks = [tuple(row) for row in migrated.execute(f"PRAGMA foreign_key_list({table})")]
+        assert migrated_fks == fresh_fks
+
+    rollback = sqlite3.connect(":memory:")
+    rollback.execute("CREATE TABLE users(id INTEGER PRIMARY KEY)")
+    rollback.execute("CREATE TABLE chat_threads(id TEXT PRIMARY KEY, user_id INTEGER NOT NULL)")
+    rollback.execute("PRAGMA user_version = 4")
+
+    def fail_v6(conn: sqlite3.Connection) -> None:
+        conn.execute("CREATE TABLE must_rollback(id INTEGER)")
+        raise RuntimeError("injected migration failure")
+
+    with pytest.raises(RuntimeError, match="injected"):
+        apply_migrations(
+            rollback,
+            [V5_MIGRATION, Migration(version=6, name="fail", apply=fail_v6)],
+            target_version=6,
+        )
+    assert rollback.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert rollback.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'research_runs'"
+    ).fetchone() is None
+    assert rollback.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'must_rollback'"
+    ).fetchone() is None
+
+
+def test_init_schema_rejects_forged_v5_without_research_tables() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE papers(id INTEGER PRIMARY KEY)")
+    conn.execute("PRAGMA user_version = 5")
+
+    with pytest.raises(IncompatibleSchemaError, match="schema"):
+        init_schema(conn)
 
 
 def test_upload_without_visibility_metadata_is_hidden_by_default() -> None:
@@ -1290,6 +1378,247 @@ def test_api_creates_and_lists_general_chat_threads(api_client):
     listed = api_client.get("/api/chat/threads")
     assert listed.status_code == 200
     assert [item["id"] for item in listed.json()["items"]] == [created.json()["id"]]
+
+
+def test_research_step_completion_is_fenced_and_pause_wins() -> None:
+    conn = memory_db()
+    created = create_harness_run(
+        conn,
+        user_id=1,
+        title="Harness fencing",
+        goal="Verify safe pause",
+    )
+    step = claim_next_step(conn, worker_id="worker-a", lease_seconds=60)
+    assert step is not None
+    assert heartbeat_step(
+        conn,
+        step_id=step["id"],
+        worker_id="worker-b",
+        lease_generation=step["lease_generation"],
+        lease_seconds=60,
+    ) is False
+    request_action(conn, created["id"], 1, "pause")
+    assert finish_step(
+        conn,
+        step_id=step["id"],
+        worker_id="worker-a",
+        lease_generation=step["lease_generation"],
+        output={"must_not_commit": True},
+    ) is True
+    snapshot = get_run_snapshot(conn, created["id"], 1)
+    assert snapshot["status"] == "paused"
+    assert snapshot["steps"][0]["status"] == "paused"
+    assert snapshot["steps"][0]["output"] == {}
+
+
+def test_research_expired_lease_reclaim_rejects_old_worker() -> None:
+    conn = memory_db()
+    run = create_harness_run(conn, user_id=1, title="Lease recovery", goal="Fence old owner")
+    first = claim_next_step(conn, worker_id="worker-a", lease_seconds=60)
+    assert first is not None
+    conn.execute(
+        "UPDATE research_steps SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
+        (first["id"],),
+    )
+    conn.commit()
+    assert heartbeat_step(
+        conn,
+        step_id=first["id"],
+        worker_id="worker-a",
+        lease_generation=first["lease_generation"],
+        lease_seconds=60,
+    ) is False
+    assert finish_step(
+        conn,
+        step_id=first["id"],
+        worker_id="worker-a",
+        lease_generation=first["lease_generation"],
+        output={"expired": True},
+    ) is False
+    assert recover_expired_leases(conn) == 1
+    second = claim_next_step(conn, worker_id="worker-b", lease_seconds=60)
+    assert second is not None
+    assert second["id"] == first["id"]
+    assert second["lease_generation"] == first["lease_generation"] + 1
+    assert finish_step(
+        conn,
+        step_id=first["id"],
+        worker_id="worker-a",
+        lease_generation=first["lease_generation"],
+        output={"stale": True},
+    ) is False
+    assert finish_step(
+        conn,
+        step_id=second["id"],
+        worker_id="worker-b",
+        lease_generation=second["lease_generation"],
+        output={"scaffold_only": True},
+    ) is True
+    assert get_run_snapshot(conn, run["id"], 1)["steps"][0]["output"] == {
+        "scaffold_only": True
+    }
+
+
+def test_research_manual_retry_grants_new_attempt_without_leaking_error() -> None:
+    conn = memory_db()
+    run = create_harness_run(conn, user_id=1, title="Retry", goal="Retry a failed step")
+    step = claim_next_step(conn, worker_id="worker-a", lease_seconds=60)
+    assert step is not None
+    assert fail_step(
+        conn,
+        step_id=step["id"],
+        worker_id="worker-a",
+        lease_generation=step["lease_generation"],
+        error_code="provider_failed",
+        error_message="Authorization: Bearer super-secret /Users/private/file",
+    ) is True
+    failed = get_run_snapshot(conn, run["id"], 1)
+    assert "super-secret" not in str(failed)
+    retried = retry_run(conn, run["id"], 1)
+    assert retried["status"] == "queued"
+    claimed = claim_next_step(conn, worker_id="worker-b", lease_seconds=60)
+    assert claimed is not None
+    assert claimed["attempt_count"] == 2
+    assert claimed["max_attempts"] == 2
+
+
+def test_research_decision_resolution_requeues_waiting_step() -> None:
+    conn = memory_db()
+    run = create_harness_run(conn, user_id=1, title="Decision", goal="Resume a waiting step")
+    step_id = run["steps"][0]["id"]
+    conn.execute("UPDATE research_runs SET status = 'waiting_input' WHERE id = ?", (run["id"],))
+    conn.execute("UPDATE research_steps SET status = 'waiting_input' WHERE id = ?", (step_id,))
+    conn.execute(
+        """
+        INSERT INTO research_decisions(
+            id, run_id, step_id, question, options_json, recommended_option
+        ) VALUES ('decision-1', ?, ?, 'Continue?', '[{"id":"continue","label":"Continue"}]', 'continue')
+        """,
+        (run["id"], step_id),
+    )
+    conn.commit()
+
+    with pytest.raises(ResearchConflictError, match="queued or running"):
+        request_action(conn, run["id"], 1, "pause")
+    resolved = resolve_decision(conn, "decision-1", 1, "continue")
+    assert resolved["status"] == "queued"
+    assert resolved["steps"][0]["status"] == "queued"
+    claimed = claim_next_step(conn, worker_id="worker-a", lease_seconds=60)
+    assert claimed is not None
+    assert claimed["id"] == step_id
+
+
+def test_research_cancel_cancels_waiting_decision_and_blocks_answer() -> None:
+    conn = memory_db()
+    run = create_harness_run(conn, user_id=1, title="Cancel decision", goal="Cancel safely")
+    step_id = run["steps"][0]["id"]
+    conn.execute("UPDATE research_runs SET status = 'waiting_input' WHERE id = ?", (run["id"],))
+    conn.execute("UPDATE research_steps SET status = 'waiting_input' WHERE id = ?", (step_id,))
+    conn.execute(
+        """
+        INSERT INTO research_decisions(id, run_id, step_id, question, options_json)
+        VALUES ('decision-cancel', ?, ?, 'Continue?', '[{"id":"yes","label":"Yes"}]')
+        """,
+        (run["id"], step_id),
+    )
+    conn.commit()
+    request_action(conn, run["id"], 1, "cancel")
+    assert reconcile_requested_actions(conn) == 1
+    cancelled = get_run_snapshot(conn, run["id"], 1)
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["steps"][0]["status"] == "cancelled"
+    assert cancelled["decisions"][0]["status"] == "cancelled"
+    with pytest.raises(ResearchConflictError, match="already resolved"):
+        resolve_decision(conn, "decision-cancel", 1, "yes")
+
+
+def test_research_api_runs_deterministic_harness_and_isolates_owner(api_client):
+    first_session = api_client.cookies.get("paperwiki_session")
+    created = api_client.post(
+        "/api/research/runs",
+        json={"title": "RAG research harness", "goal": "Prepare a deterministic scaffold"},
+    )
+    assert created.status_code == 201
+    run_id = created.json()["id"]
+
+    completed = None
+    for _ in range(50):
+        snapshot = api_client.get(f"/api/research/runs/{run_id}")
+        assert snapshot.status_code == 200
+        if snapshot.json()["status"] == "completed":
+            completed = snapshot.json()
+            break
+        import time
+
+        time.sleep(0.02)
+    assert completed is not None
+    assert [step["status"] for step in completed["steps"]] == [
+        "completed",
+        "completed",
+        "completed",
+    ]
+    assert completed["steps"][-1]["output"]["scaffold_only"] is True
+    assert completed["steps"][-1]["output"]["research_claims"] == []
+    assert api_client.get("/api/research/runs").json()["items"][0]["id"] == run_id
+
+    registered = api_client.post(
+        "/api/auth/register",
+        json={"username": "research_other", "password": "other-password"},
+    )
+    assert registered.status_code == 201
+    second_session = api_client.cookies.get("paperwiki_session")
+    assert first_session and second_session
+    first_headers = {"Cookie": f"paperwiki_session={first_session}"}
+    second_headers = {"Cookie": f"paperwiki_session={second_session}"}
+    for method, path in (
+        ("get", f"/api/research/runs/{run_id}"),
+        ("get", f"/api/research/runs/{run_id}/events?after=0"),
+        ("post", f"/api/research/runs/{run_id}/pause"),
+        ("post", f"/api/research/runs/{run_id}/cancel"),
+        ("post", f"/api/research/runs/{run_id}/retry"),
+    ):
+        response = getattr(api_client, method)(path, headers=second_headers)
+        assert response.status_code == 404
+
+    events = api_client.get(
+        f"/api/research/runs/{run_id}/events",
+        headers={**first_headers, "Last-Event-ID": "0"},
+    )
+    assert events.status_code == 200
+    event_ids = [
+        int(line.removeprefix("id: "))
+        for line in events.text.splitlines()
+        if line.startswith("id: ")
+    ]
+    assert event_ids == sorted(set(event_ids))
+    assert "event: run.completed" in events.text
+    resumed = api_client.get(
+        f"/api/research/runs/{run_id}/events",
+        headers={**first_headers, "Last-Event-ID": str(event_ids[1])},
+    )
+    resumed_ids = [
+        int(line.removeprefix("id: "))
+        for line in resumed.text.splitlines()
+        if line.startswith("id: ")
+    ]
+    assert resumed_ids == [event_id for event_id in event_ids if event_id > event_ids[1]]
+
+
+def test_research_sse_rejects_invalid_last_event_id(api_client):
+    created = api_client.post(
+        "/api/research/runs",
+        json={"title": "Invalid cursor", "goal": "Check cursor validation"},
+    ).json()
+    response = api_client.get(
+        f"/api/research/runs/{created['id']}/events",
+        headers={"Last-Event-ID": "not-an-integer"},
+    )
+    assert response.status_code == 400
+    too_large = api_client.get(
+        f"/api/research/runs/{created['id']}/events",
+        headers={"Last-Event-ID": "9223372036854775808"},
+    )
+    assert too_large.status_code == 400
 
 
 def test_api_streams_and_persists_general_chat(api_client, monkeypatch):

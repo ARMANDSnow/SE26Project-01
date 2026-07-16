@@ -25,6 +25,10 @@ import {
   toggleFavorite,
   uploadPaper,
   fetchCurrentUser,
+  fetchResearchRun,
+  fetchResearchRuns,
+  createResearchRun,
+  controlResearchRun,
 } from "@/api"
 
 export type PaperFilters = {
@@ -57,6 +61,8 @@ export const queryKeys = {
   subscriptions: ["subscriptions"] as const,
   libraryFolders: ["library-folders"] as const,
   libraryItems: (folderId?: number) => ["library-items", folderId ?? "all"] as const,
+  researchRuns: ["research-runs"] as const,
+  researchRun: (id: string) => ["research-run", id] as const,
 }
 
 export function useCurrentUserQuery() {
@@ -66,6 +72,52 @@ export function useCurrentUserQuery() {
     retry: false,
     staleTime: 60_000,
     refetchOnWindowFocus: true,
+  })
+}
+
+export function useResearchRunsQuery() {
+  return useQuery({
+    queryKey: queryKeys.researchRuns,
+    queryFn: fetchResearchRuns,
+    refetchInterval: (query) =>
+      query.state.data?.some((run) => ["queued", "running", "cancelling"].includes(run.status))
+        ? 1_000
+        : false,
+  })
+}
+
+export function useResearchRunQuery(id: string) {
+  return useQuery({
+    queryKey: queryKeys.researchRun(id),
+    queryFn: () => fetchResearchRun(id),
+    enabled: id.length > 0,
+    refetchInterval: (query) =>
+      query.state.data && ["queued", "running", "cancelling"].includes(query.state.data.status)
+        ? 500
+        : false,
+  })
+}
+
+export function useCreateResearchRunMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: createResearchRun,
+    onSuccess: (run) => {
+      queryClient.setQueryData(queryKeys.researchRun(run.id), run)
+      queryClient.invalidateQueries({ queryKey: queryKeys.researchRuns })
+    },
+  })
+}
+
+export function useResearchRunControlMutation(runId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (action: "pause" | "resume" | "cancel" | "retry") =>
+      controlResearchRun(runId, action),
+    onSuccess: (run) => {
+      queryClient.setQueryData(queryKeys.researchRun(run.id), run)
+      queryClient.invalidateQueries({ queryKey: queryKeys.researchRuns })
+    },
   })
 }
 

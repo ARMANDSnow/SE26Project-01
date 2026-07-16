@@ -1,4 +1,4 @@
-import type { ChatMessageRepository, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, Stats, Subscription, User, WikiSearchResult } from "./types";
+import type { ChatMessageRepository, ChatThread, FolderRecommendation, GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperDocument, PaperSummary, QaResponse, ResearchRun, Stats, Subscription, User, WikiSearchResult } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -39,6 +39,33 @@ export async function logout(): Promise<void> {
     credentials: "include",
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+
+export async function fetchResearchRuns(): Promise<ResearchRun[]> {
+  const data = await request<{ items: ResearchRun[] }>("/api/research/runs")
+  return data.items
+}
+
+export async function fetchResearchRun(runId: string): Promise<ResearchRun> {
+  return request<ResearchRun>(`/api/research/runs/${runId}`)
+}
+
+export async function createResearchRun(payload: {
+  title: string
+  goal: string
+  thread_id?: string
+}): Promise<ResearchRun> {
+  return request<ResearchRun>("/api/research/runs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function controlResearchRun(
+  runId: string,
+  action: "pause" | "resume" | "cancel" | "retry",
+): Promise<ResearchRun> {
+  return request<ResearchRun>(`/api/research/runs/${runId}/${action}`, { method: "POST" })
 }
 
 export async function fetchStats(): Promise<Stats> {

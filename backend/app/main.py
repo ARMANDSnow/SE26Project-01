@@ -6,16 +6,23 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api.routers import auth, chat, ingest, knowledge, library, papers, system
+from .api.routers import auth, chat, ingest, knowledge, library, papers, research, system
 from .auth.session import MemorySessionStore
 from .config import get_settings
 from .db.schema import init_db
+from .services.research import ResearchExecutor
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     init_db()
-    yield
+    executor = ResearchExecutor()
+    application.state.research_executor = executor
+    executor.start()
+    try:
+        yield
+    finally:
+        executor.stop()
 
 
 def create_app() -> FastAPI:
@@ -29,7 +36,6 @@ def create_app() -> FastAPI:
             "http://127.0.0.1:5174",
             "http://localhost:5174",
         ],
-        allow_origin_regex=r"^http://(127\.0\.0\.1|localhost):\d+$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -41,6 +47,7 @@ def create_app() -> FastAPI:
     application.include_router(chat.router)
     application.include_router(knowledge.router)
     application.include_router(library.router)
+    application.include_router(research.router)
     return application
 
 

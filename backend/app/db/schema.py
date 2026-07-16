@@ -5,11 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from .connection import connect
-from .migrations import V3_MIGRATION, V4_MIGRATION, apply_migrations
+from .migrations import V3_MIGRATION, V4_MIGRATION, V5_MIGRATION, apply_migrations
+from .migrations.v5 import RESEARCH_SCHEMA_SQL
 
 
 PAPER_CHUNKS_FTS_TABLE = "paper_chunks_fts"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class IncompatibleSchemaError(RuntimeError):
@@ -58,6 +59,24 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
     upload_columns = {
         str(row[1]) for row in conn.execute("PRAGMA table_info(paper_uploads)").fetchall()
     }
+    research_run_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(research_runs)").fetchall()
+    }
+    research_step_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(research_steps)").fetchall()
+    }
+    research_event_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(research_events)").fetchall()
+    }
+    research_decision_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(research_decisions)").fetchall()
+    }
+    index_names = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name IS NOT NULL"
+        ).fetchall()
+    }
     required_paper_columns = {"source", "source_id", "asset_id", "processing_status"}
     if not required_paper_columns.issubset(paper_columns) or "title_hash" in paper_columns:
         raise IncompatibleSchemaError(
@@ -92,6 +111,43 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
     }.issubset(upload_columns):
         raise IncompatibleSchemaError(
             f"Database upload schema does not match version {SCHEMA_VERSION}; rebuild it with: "
+            f"{_schema_reset_command(conn)}"
+        )
+    if not {
+        "user_id",
+        "thread_id",
+        "status",
+        "requested_action",
+        "state_version",
+    }.issubset(research_run_columns) or not {
+        "run_id",
+        "status",
+        "idempotency_key",
+        "lease_owner",
+        "lease_generation",
+        "lease_expires_at",
+    }.issubset(research_step_columns):
+        raise IncompatibleSchemaError(
+            f"Database research schema does not match version {SCHEMA_VERSION}; rebuild it with: "
+            f"{_schema_reset_command(conn)}"
+        )
+    if not {"run_id", "step_id", "event_type", "summary", "payload_json"}.issubset(
+        research_event_columns
+    ) or not {
+        "run_id",
+        "step_id",
+        "question",
+        "options_json",
+        "status",
+        "answer_json",
+    }.issubset(research_decision_columns) or not {
+        "idx_research_runs_user_status",
+        "idx_research_steps_runnable",
+        "idx_research_events_run",
+        "idx_research_decisions_one_pending",
+    }.issubset(index_names):
+        raise IncompatibleSchemaError(
+            f"Database research event schema does not match version {SCHEMA_VERSION}; rebuild it with: "
             f"{_schema_reset_command(conn)}"
         )
 
@@ -211,10 +267,10 @@ def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = No
 def init_schema(conn: sqlite3.Connection) -> None:
     tables = _schema_tables(conn)
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    if tables and version in {2, 3}:
+    if tables and version in {2, 3, 4}:
         apply_migrations(
             conn,
-            [V3_MIGRATION, V4_MIGRATION],
+            [V3_MIGRATION, V4_MIGRATION, V5_MIGRATION],
             target_version=SCHEMA_VERSION,
         )
     _assert_schema_compatible(conn)
@@ -445,6 +501,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_paper_uploads_visibility ON paper_uploads(visibility, moderation_status);
         """
     )
+    conn.executescript(RESEARCH_SCHEMA_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ").replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ").replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS "))
     init_paper_chunks_fts(conn)
     rebuild_paper_chunks_fts(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
