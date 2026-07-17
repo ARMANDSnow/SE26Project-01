@@ -71,6 +71,7 @@ export function PaperCard({ paper, compact = false, onFavorite, favoriteBusy = f
         {onFavorite ? (
           <Button
             aria-label={paper.is_favorite ? "取消收藏" : "收藏"}
+            aria-pressed={paper.is_favorite}
             variant={paper.is_favorite ? "secondary" : "outline"}
             size="icon"
             className="size-11"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, TypeVar
 
 from ..db.connection import connect
@@ -68,6 +69,14 @@ from .research_tools import (
 
 
 ModelT = TypeVar("ModelT", bound=StrictResearchModel)
+
+
+def _valid_arxiv_categories(categories: list[str]) -> list[str]:
+    return [
+        category.strip()
+        for category in categories
+        if re.fullmatch(r"[a-z]+(?:-[a-z]+)?\.[A-Za-z][A-Za-z.-]*", category.strip())
+    ]
 
 
 class TopicResearchPipeline:
@@ -266,7 +275,11 @@ class TopicResearchPipeline:
         )
         output, summary = self.tools.invoke(
             "local_paper_search",
-            {"query": plan.queries[0], "category": plan.categories[0] if plan.categories else "", "limit": 20},
+            {
+                "query": plan.queries[0],
+                "category": (_valid_arxiv_categories(plan.categories) or [""])[0],
+                "limit": 20,
+            },
             context,
         )
         local = LocalSearchOutput.model_validate(output)
@@ -309,7 +322,11 @@ class TopicResearchPipeline:
         )
         output, summary = self.tools.invoke(
             "arxiv_search",
-            {"queries": plan.queries, "categories": plan.categories, "max_results": 30},
+            {
+                "queries": plan.queries,
+                "categories": _valid_arxiv_categories(plan.categories),
+                "max_results": 30,
+            },
             context,
         )
         arxiv = ArxivSearchOutput.model_validate(output)

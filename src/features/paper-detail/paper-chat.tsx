@@ -51,10 +51,10 @@ export function PaperChat({ paperId, enabled }: { paperId: number; enabled: bool
     <div className="flex min-h-[560px] min-w-0 flex-col overflow-hidden rounded-xl border bg-card">
       <div className="flex items-center gap-2 border-b p-3">
         <Select value={selectedId} onValueChange={setSelectedId} disabled={loading || !threads.length}>
-          <SelectTrigger className="h-10 min-w-0 flex-1"><SelectValue placeholder="选择对话" /></SelectTrigger>
+          <SelectTrigger className="h-11 min-w-0 flex-1"><SelectValue placeholder="选择对话" /></SelectTrigger>
           <SelectContent>{threads.map((thread) => <SelectItem key={thread.id} value={thread.id}>{thread.title}</SelectItem>)}</SelectContent>
         </Select>
-        <Button size="icon" variant="outline" className="size-10" onClick={addThread} aria-label="新建对话"><Plus className="size-4" /></Button>
+        <Button size="icon" variant="outline" className="size-11" onClick={addThread} aria-label="新建对话"><Plus className="size-4" /></Button>
       </div>
       {!enabled ? (
         <div className="m-auto grid max-w-sm gap-2 p-6 text-center">

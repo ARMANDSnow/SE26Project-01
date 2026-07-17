@@ -105,6 +105,9 @@ class SearchAgent:
             SearchQueries,
             system_prompt=(
                 "Create concise paper metadata search queries for the supplied ResearchBrief. "
+                "Preserve explicitly named papers or methods as distinctive query terms. "
+                "Categories must be valid arXiv category codes such as cs.AI or cs.CL; "
+                "do not put research-topic names in categories. "
                 "Return SearchQueries schema version 1 only."
             ),
             input_data=brief.model_dump(mode="json"),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from typing import Any
 
@@ -80,30 +81,51 @@ class PaperToolbox:
             """,
             tuple(params),
         ).fetchall()
-        needle = cleaned_query.lower()
-        items = []
+        needle = cleaned_query.lower().strip("\"'“”")
+        query_token_list = [
+            token
+            for token in re.findall(r"[a-z0-9][a-z0-9._+-]{2,}", needle)
+            if token not in {"and", "the", "for", "with", "arxiv", "paper", "papers"}
+        ]
+        query_tokens = set(query_token_list)
+        leading_token = query_token_list[0] if query_token_list else ""
+        ranked_items: list[tuple[float, str, int, dict[str, Any]]] = []
         for row in rows:
             authors = json.loads(row["authors_json"])
             haystack = " ".join([row["title"], row["abstract"], " ".join(authors), row["primary_category"]]).lower()
-            if needle and needle not in haystack:
+            full_phrase_match = bool(needle and needle in haystack)
+            matched_tokens = {token for token in query_tokens if token in haystack}
+            if needle and not full_phrase_match and not matched_tokens:
                 continue
-            items.append(
-                {
-                    "paper_id": int(row["id"]),
-                    "source": row["source"],
-                    "source_id": row["source_id"],
-                    "source_url": row["source_url"],
-                    "venue": row["venue"],
-                    "title": row["title"],
-                    "authors": authors,
-                    "abstract_snippet": str(row["abstract"])[:500],
-                    "category": row["primary_category"],
-                    "published_at": row["published_at"],
-                    "processing_status": row["processing_status"],
-                }
+            title = str(row["title"]).lower()
+            title_matches = {token for token in matched_tokens if token in title}
+            score = (100.0 if full_phrase_match else 0.0) + (
+                len(matched_tokens) / max(len(query_tokens), 1)
+            ) + (2.0 * len(title_matches) / max(len(query_tokens), 1))
+            if leading_token and leading_token in title:
+                score += 10.0
+            ranked_items.append(
+                (
+                    score,
+                    str(row["published_at"]),
+                    int(row["id"]),
+                    {
+                        "paper_id": int(row["id"]),
+                        "source": row["source"],
+                        "source_id": row["source_id"],
+                        "source_url": row["source_url"],
+                        "venue": row["venue"],
+                        "title": row["title"],
+                        "authors": authors,
+                        "abstract_snippet": str(row["abstract"])[:500],
+                        "category": row["primary_category"],
+                        "published_at": row["published_at"],
+                        "processing_status": row["processing_status"],
+                    },
+                )
             )
-            if len(items) >= bounded_limit:
-                break
+        ranked_items.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        items = [item[3] for item in ranked_items[:bounded_limit]]
         return {"items": items, "count": len(items)}
 
     def search_text(

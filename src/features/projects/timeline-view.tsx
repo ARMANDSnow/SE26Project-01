@@ -23,7 +23,7 @@ function eventSortValue(event: ResearchTimeline["events"][number]) {
   return event.date_range?.start ?? event.date ?? event.date_range?.end ?? ""
 }
 
-export function TimelineView({ projectId, artifact }: { projectId: string; artifact?: ResearchProjectArtifact<ResearchTimeline> | null }) {
+export function TimelineView({ artifact }: { artifact?: ResearchProjectArtifact<ResearchTimeline> | null }) {
   const [showAllEvents, setShowAllEvents] = useState(false)
   const content = artifact?.content
   const events = content?.events ?? []
@@ -51,6 +51,5 @@ export function TimelineView({ projectId, artifact }: { projectId: string; artif
       {content?.turning_points.length ? <section className="mt-4 rounded-xl border p-4" aria-labelledby="project-turning-points-heading"><h3 id="project-turning-points-heading" className="font-semibold">关键转折</h3><ul className="mt-2 list-disc space-y-2 pl-5 text-sm text-muted-foreground">{content.turning_points.map((point, index) => <li key={`turning-point-${index}`} className="break-words [overflow-wrap:anywhere]">{point.text} <CitationLabels keys={point.citation_keys} /></li>)}</ul></section> : null}
       {content?.unresolved_questions.length ? <section className="mt-4 rounded-xl border border-dashed p-4"><h3 className="font-semibold">尚未解决的问题</h3><ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">{content.unresolved_questions.map((question) => <li key={question} className="break-words">{question}</li>)}</ul></section> : null}
     </ArtifactState>
-    <span className="sr-only">项目 {projectId}</span>
   </section>
 }

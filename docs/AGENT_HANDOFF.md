@@ -1,13 +1,14 @@
 # Agent Handoff
 
-最后更新：2026-07-17，Iter16 可复现研究质量评测与验收证据 closeout。
+最后更新：2026-07-17，全功能真实网页巡检与 Bugfix closeout。
 
 ## Current Status
 
+- 2026-07-17 完成全功能真实网页巡检与 Bugfix：真实导入/Docling/概要/Paper Chat/目录推荐/项目/17 步 topic Run/Citation 定位均从网页完成。修复长文 Markdown 失真、显式命名论文被本地检索漏掉、根目录聚合计数矛盾、移动触控尺寸和收藏/项目无障碍问题。验证为 146 tests、strict mypy、build、9 Playwright passed / 6 skipped，真实浏览器 console error 为 0；详见 `docs/iterations/bugfix_2026-07-17_full-web-ui-audit.md`。
 - 2026-07-17 完成 Iter16：新增 5 篇公开 RAG 论文/60 adjudicated 案例的 Citation entailment/coverage gold set、strict prediction scorer 与可选单请求 LLM judge、规范化 JSON/Markdown 报告、认证 v9/120 论文/100 并发 smoke、executor 重启恢复和连续三视口答辩路径。另经用户授权完成隔离真实普通 Chat 前端 smoke，并修复空 provider 文本被误记成功及非流式兼容问题；固定 60-case 真实 judge 仍未授权运行，质量报告明确为 `not_evaluated`，不得声明 `>90%` 已达成。详见 `docs/iterations/iteration_iter16_research-quality-evaluation.md` 和 `evaluation/README.md`。
 - 2026-07-17 完成 fresh v9 与 iter15 真实数据副本的三视口网页走查；真实普通 Chat 和 7,406-token 全文 Paper Chat 成功。修复 UTC 时间误显示、全文就绪仍标待处理、Select 32px 触点、时间线乱序/英文类型、论文内部 ID 暴露和 30 篇候选一次铺满，并约束后续 Timeline Agent 使用中文叙述。验证为 122 tests、strict mypy、build、9 Playwright passed / 6 skipped；详见 `docs/iterations/iteration_frontend-audit-2026-07-17.md`。
 
-- 当前分支：`codex/agentic-research-refactor`；开工时 HEAD `5c5fa37` 与远端 0 ahead / 0 behind，说明 iter15 已在远端。Iter16 工作树改动尚未 commit/push。
+- 当前分支：`codex/agentic-research-refactor`。Iter16 已先作为干净基线提交 `38a5dcc`；本轮网页巡检补丁按用户要求只 commit、不 push。
 - iter15 已在隔离数据库副本上完成真实 `gpt-5.5-medium` 项目分析：成功 Run 为 7/7 步、3/3 provider 调用，五类项目 Artifact 全部完成；另完成普通 Chat 和约 22k token 全文 Paper Chat。桌面凭据只注入隔离进程，未打印或写入仓库。
 - 真实验证修复了 Run-derived metadata dependency hash 与 manual retry durable identity；修复后同一成功 Run 的 Planner/Cluster/Timeline 各恰好一次调用。严格 Cluster claim/Citation 校验曾拒绝一份不合法模型输出，证明语义关系 fail closed。
 - iter15 将 schema 升至 v9：新增 owner-only 研究项目/项目成员、`mode='project'` 七步 Run、项目级追加版本 Artifact、dependency ledger 和项目 Citation reference。fresh、v8→v9、v2→v9、失败回滚与伪造 v9 fail-closed 已覆盖。
@@ -77,7 +78,7 @@ npm run build
 git diff --check
 ```
 
-结果：144 个后端测试通过；strict mypy 覆盖 58 个源文件并通过；前端生产构建通过。隔离端口 Playwright 为 9 passed、6 skipped：1440px、1024px、390px 的连续路径覆盖 Chat → topic Run → 固定报告 → Citation Evidence → 论文 Chunk 定位 → 研究项目 → Graph Evidence，并保留 Coverage/Decision、版本、键盘/焦点、reduced-motion、无溢出、44px、Harness、Chat/Paper Chat 回归。认证性能 smoke 使用隔离 v9/120-paper fixture：100 requests / 100 workers、0 failures、p95 0.3129s、max 0.3160s、Run create 0.0058s。经用户授权的额外真实普通 Chat 浏览器 smoke 使用隔离 v9 库、正确 `/v1` API 前缀、可用 `gpt-5.5` 与 `LLM_STREAMING=false`，三视口显示非空回答“真实链路成功”，无新增控制台错误；截图位于 `output/playwright/iter16-real-frontend/`。离线 dataset validation 为 60/60 通过，固定 60-case 真实 judge 未运行，macro-F1/supported precision/false-accept 明确未验证。未访问默认旧库，也未调用 arXiv、PDF 或 Docling。
+结果：146 个后端测试通过；strict mypy 通过；前端生产构建通过。隔离端口 Playwright 为 9 passed、6 skipped：1440px、1024px、390px 的连续路径覆盖 Chat → topic Run → 固定报告 → Citation Evidence → 论文 Chunk 定位 → 研究项目 → Graph Evidence，并保留 Coverage/Decision、版本、键盘/焦点、reduced-motion、无溢出、44px、Harness、Chat/Paper Chat 回归。认证性能 smoke 使用隔离 v9/120-paper fixture：100 requests / 100 workers、0 failures、p95 0.3129s、max 0.3160s、Run create 0.0058s。经用户授权的全功能真实网页巡检使用隔离 v9 库、正确 `/v1` API 前缀、可用真实模型与 `LLM_STREAMING=false`，完成普通 Chat、8 篇真实 arXiv 导入、13,970-token SmartRAG Docling、概要、Paper Chat、目录推荐、项目、17/17 步 topic Run、报告和 Citation Evidence 定位；修复后桌面/移动视觉及语义 DOM 复核无新增 console error。离线 dataset validation 为 60/60 通过，固定 60-case 真实 judge 未运行，macro-F1/supported precision/false-accept 明确未验证。默认旧库未修改。
 
 ## Known Risks
 
@@ -88,6 +89,7 @@ git diff --check
 - 尚未实现分享链接、团队空间、上传删除和对象存储级 ACL；相同 PDF blob 可物理去重，但逻辑权限仍绑定各自 paper/upload 记录。
 - Research SSE 当前每连接 1 秒短读轮询，尚未加入用户级 SSE/Run 创建配额；长任务公开前需补资源限制。
 - Playwright 的 topic 数据、慢步骤、Decision 和错误态使用测试网络 fixture；生产没有 seed/debug API。真实 PDF/Docling 的浏览器长任务仍需专门的集成环境。
+- metadata search 现用轻量 token overlap 召回长查询中的显式命名论文；权限、category 和上限仍严格，但大规模语料后宜迁移到 FTS/BM25。修复后使用首次真实模型查询计划做了确定性复现，尚未再次付费跑完整 17 步 topic Run。
 - auto 模式的模型分类器与普通 Chat 都依赖真实 LLM 配置；17 步 topic Run 已完成一次两篇论文的真实付费 smoke，但更大规模、多用户并发、进程中断和真实 provider ambiguous-call 恢复仍主要由依赖注入覆盖。
 - durable model operation 的 `started/ambiguous` 状态会阻止自动重发；后续应增加受控人工 Decision/运维恢复，而不是静默 retry。
 - 报告事实文本仍使用已验证 Claim/Matrix 原句白名单。Iter16 的 Citation entailment gold set/scorer 是离线验收工具，尚未接入生产 Validator；真实 judge 和人工复核/导出门禁完成前不能放宽自由改写。
@@ -104,6 +106,7 @@ git diff --check
 3. 为首次严格模型输出失败提供更明确的“新建分析版本”解释，并增加真实 provider ambiguous-call 人工 Decision。
 4. 引入可取消进程 worker/任务队列、Redis Session 与用户级 Run/SSE/模型配额。
 5. 如需使用旧 116 篇本地论文，先设计可审查、不破坏的 v0 legacy 迁移，不要直接 reset。
+6. 为通用 Markdown renderer 增加组件级测试，并将 metadata token ranking 逐步替换为可解释的 FTS/BM25。
 
 ## Git Notes
 
@@ -116,4 +119,5 @@ git diff --check
 - iter14：`docs/iterations/iteration_iter14_cited-research-synthesis.md`。
 - iter15：`docs/iterations/iteration_iter15_research-landscape-projects.md`。
 - iter16：`docs/iterations/iteration_iter16_research-quality-evaluation.md`。
-- Iter16 尚未 commit/push；如后续授权提交，先检查 `git status`、`git diff --check` 和暂存范围。push 前先 fetch/rebase 并保留远端用户改动。
+- 全功能网页巡检：`docs/iterations/bugfix_2026-07-17_full-web-ui-audit.md`。
+- 本轮按用户要求只 commit、不 push；push 前仍需重新 fetch/rebase 并保留远端用户改动。

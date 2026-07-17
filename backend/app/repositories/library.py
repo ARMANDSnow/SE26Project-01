@@ -118,6 +118,8 @@ def list_library_folders(conn: sqlite3.Connection, user_id: int = 1) -> list[dic
         }
         for row in rows
     ]
+    root = next(folder for folder in payload if folder["id"] == defaults["root_id"])
+    root["item_count"] = sum(folder["item_count"] for folder in payload)
     children: dict[int | None, list[dict[str, Any]]] = {}
     for folder in payload:
         children.setdefault(folder["parent_id"], []).append(folder)

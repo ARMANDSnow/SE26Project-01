@@ -64,6 +64,7 @@ export function PaperTable({ papers, onFavorite, favoriteBusy = false }: PaperTa
                 <div className="flex justify-end gap-2">
                   <Button
                     aria-label={paper.is_favorite ? "取消收藏" : "收藏"}
+                    aria-pressed={paper.is_favorite}
                     variant="ghost"
                     size="icon"
                     className="size-11"

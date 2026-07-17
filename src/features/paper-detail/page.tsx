@@ -135,9 +135,9 @@ export function PaperDetailPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Button asChild variant="ghost" className="min-h-11 px-2"><Link to="/papers"><ArrowLeft className="size-4" />返回论文库</Link></Button>
         <div className="inline-flex rounded-lg border bg-card p-1" aria-label="工作台布局">
-          <Button size="sm" variant={layout === "reading" ? "secondary" : "ghost"} onClick={() => setLayout("reading")}><PanelLeft className="size-4" />阅读</Button>
-          <Button size="sm" variant={layout === "split" ? "secondary" : "ghost"} onClick={() => setLayout("split")}><Columns2 className="size-4" />并排</Button>
-          <Button size="sm" variant={layout === "chat" ? "secondary" : "ghost"} onClick={() => setLayout("chat")}><Bot className="size-4" />Chat</Button>
+          <Button size="sm" className="min-h-11" variant={layout === "reading" ? "secondary" : "ghost"} onClick={() => setLayout("reading")}><PanelLeft className="size-4" />阅读</Button>
+          <Button size="sm" className="min-h-11" variant={layout === "split" ? "secondary" : "ghost"} onClick={() => setLayout("split")}><Columns2 className="size-4" />并排</Button>
+          <Button size="sm" className="min-h-11" variant={layout === "chat" ? "secondary" : "ghost"} onClick={() => setLayout("chat")}><Bot className="size-4" />Chat</Button>
         </div>
       </div>
 
@@ -159,7 +159,7 @@ export function PaperDetailPage() {
           </div>
           <div className="flex flex-wrap items-start gap-2 lg:justify-end">
             <AddToProjectDialog item={{ item_type: "paper", paper_id: paper.id }} />
-            <Button variant={paper.is_favorite ? "secondary" : "outline"} size="icon" className="size-11" onClick={onFavorite} disabled={busy} aria-label="收藏">
+            <Button variant={paper.is_favorite ? "secondary" : "outline"} size="icon" className="size-11" onClick={onFavorite} disabled={busy} aria-label={paper.is_favorite ? "取消收藏" : "收藏"} aria-pressed={paper.is_favorite}>
               <Star className={cn("size-4", paper.is_favorite && "fill-current")} />
             </Button>
             <Button variant="outline" className="min-h-11" onClick={onParse} disabled={busy || !paper.pdf.available}>
@@ -191,8 +191,8 @@ export function PaperDetailPage() {
                   <TabsTrigger value="notes"><NotebookPen className="size-4" />笔记</TabsTrigger>
                 </TabsList>
                 {workspaceTab === "source" ? <div className="inline-flex rounded-md border p-0.5">
-                  <Button size="sm" variant={sourceView === "pdf" ? "secondary" : "ghost"} onClick={() => setSourceView("pdf")}>PDF</Button>
-                  <Button size="sm" variant={sourceView === "text" ? "secondary" : "ghost"} onClick={() => setSourceView("text")} disabled={!documentReady}>解析文本</Button>
+                  <Button size="sm" className="min-h-11" variant={sourceView === "pdf" ? "secondary" : "ghost"} onClick={() => setSourceView("pdf")}>PDF</Button>
+                  <Button size="sm" className="min-h-11" variant={sourceView === "text" ? "secondary" : "ghost"} onClick={() => setSourceView("text")} disabled={!documentReady}>解析文本</Button>
                 </div> : null}
               </div>
               <TabsContent value="source" className="mt-0 min-h-0 flex-1 overflow-auto p-0">

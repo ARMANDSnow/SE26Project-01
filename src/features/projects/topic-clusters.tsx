@@ -3,7 +3,7 @@ import { Link } from "react-router"
 import type { ResearchProjectArtifact, TopicClusters } from "@/types"
 import { ArtifactState, CitationLabels } from "./artifact-state"
 
-export function TopicClustersView({ projectId, artifact }: { projectId: string; artifact?: ResearchProjectArtifact<TopicClusters> | null }) {
+export function TopicClustersView({ artifact }: { artifact?: ResearchProjectArtifact<TopicClusters> | null }) {
   const content = artifact?.content
   return <section aria-labelledby="project-clusters-heading">
     <div className="mb-4"><h2 id="project-clusters-heading" className="text-lg font-semibold">主题簇</h2><p className="mt-1 text-sm text-muted-foreground">论文可属于多个主题；依据不足的论文单独列出，不强行归类。</p></div>
@@ -22,6 +22,5 @@ export function TopicClustersView({ projectId, artifact }: { projectId: string; 
       </div>
       {content?.unclassified_paper_ids.length ? <section className="mt-4 rounded-xl border border-dashed p-4"><h3 className="font-semibold">依据不足 / 未分类</h3><p className="mt-1 break-words text-sm text-muted-foreground">另有 {content.unclassified_paper_ids.length} 篇论文暂无足够的有效引用支持稳定归类，可在项目资料范围中查看。</p></section> : null}
     </ArtifactState>
-    <span className="sr-only">项目 {projectId}</span>
   </section>
 }

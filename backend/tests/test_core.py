@@ -616,6 +616,18 @@ def test_classic_qa_does_not_fall_back_to_unparsed_metadata():
     assert "已解析" in result["answer"]
 
 
+def test_metadata_search_recalls_named_paper_from_a_long_research_query():
+    conn = memory_db()
+    add_test_paper(conn, source_id="smartrag.0001", title="SmartRAG: Structured Retrieval on Mobile Devices")
+
+    result = PaperToolbox(conn).search_metadata(
+        query="SmartRAG structured retrieval augmented generation mobile arXiv"
+    )
+
+    assert result["items"]
+    assert result["items"][0]["title"].startswith("SmartRAG")
+
+
 def test_qa_uses_explicit_test_double(monkeypatch):
     conn = memory_db()
     monkeypatch.setattr(
@@ -1312,6 +1324,8 @@ def test_library_folder_recommendation_requires_user_approval(api_client, monkey
     folders = api_client.get("/api/library/folders").json()["items"]
     root = next(folder for folder in folders if folder["is_root"])
     inbox = next(folder for folder in folders if folder["name"] == "待整理")
+    assert root["item_count"] == 1
+    assert inbox["item_count"] == 1
     created = api_client.post(
         "/api/library/folders",
         json={"name": "可信 RAG", "parent_id": root["id"], "description": "检索增强与证据引用"},
@@ -1338,6 +1352,8 @@ def test_library_folder_recommendation_requires_user_approval(api_client, monkey
     assert moved.status_code == 200
     assert moved.json()["folder_id"] == created["id"]
     assert api_client.get(f"/api/library/items?folder_id={inbox['id']}").json()["items"] == []
+    folders_after_move = api_client.get("/api/library/folders").json()["items"]
+    assert next(folder for folder in folders_after_move if folder["is_root"])["item_count"] == 1
 
 
 def test_library_favorites_are_isolated_by_session_and_ignore_user_header(api_client):

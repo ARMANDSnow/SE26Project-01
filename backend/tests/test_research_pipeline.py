@@ -53,7 +53,7 @@ from backend.app.services.research_contracts import (
     ComparisonMatrix, PaperBrief, ResearchReport, ScreeningResult, SearchQueries,
     SynthesisClaims, SynthesisPlan,
 )
-from backend.app.services.topic_research import TopicResearchPipeline
+from backend.app.services.topic_research import TopicResearchPipeline, _valid_arxiv_categories
 from backend.app.services.research_tools import build_research_tool_registry
 from backend.tests.fixtures import add_test_paper, populate_test_library
 
@@ -747,6 +747,12 @@ class DeterministicStructuredModel:
         else:  # pragma: no cover - fails loudly if an agent contract expands
             raise AssertionError(f"unexpected structured model: {model}")
         return model.model_validate(payload)
+
+
+def test_topic_search_uses_only_valid_arxiv_category_codes() -> None:
+    assert _valid_arxiv_categories(
+        ["Retrieval-Augmented Generation", "cs.AI", " cs.CL ", "mobile systems", "eess.SP"]
+    ) == ["cs.AI", "cs.CL", "eess.SP"]
 
 
 def test_topic_pipeline_completes_and_reuses_paper_document_with_injected_dependencies(

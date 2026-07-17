@@ -99,8 +99,8 @@ export function ResearchProjectPage() {
 
     {type ? <VersionPicker type={type} selected={versions[type]} versions={type === "topic_clusters" ? clusterVersions.data : type === "research_timeline" ? timelineVersions.data : graphVersions.data} onChange={(version) => setVersions((current) => ({ ...current, [type]: version }))} /> : null}
     <div id="project-tabpanel" role="tabpanel" aria-labelledby={`project-tab-${view}`}>{view === "scope" ? <ProjectItems items={itemsQuery.data ?? []} loading={itemsQuery.isLoading} readOnly={readOnly} onRemove={(id) => removeItem.mutate(id)} onReorder={(ids) => reorder.mutate(ids)} /> : null}
-    {view === "clusters" ? <TopicClustersView projectId={projectId} artifact={clusters.data} /> : null}
-    {view === "timeline" ? <TimelineView projectId={projectId} artifact={timeline.data} /> : null}
+    {view === "clusters" ? <TopicClustersView artifact={clusters.data} /> : null}
+    {view === "timeline" ? <TimelineView artifact={timeline.data} /> : null}
     {view === "graph" ? <GraphView projectId={projectId} artifact={graph.data} /> : null}
     {view === "versions" ? <VersionHistory groups={[{ label: "主题簇", items: clusterVersions.data }, { label: "时间线", items: timelineVersions.data }, { label: "关系图", items: graphVersions.data }]} /> : null}</div>
 
@@ -129,7 +129,7 @@ function AnalysisControls({ projectId, analysis, readOnly, canAnalyze, pending, 
     </div></div>
     {analysis ? <><dl className="mt-4 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">{[["模型调用", `${analysis.usage.model_calls}/${analysis.budget.max_model_calls}`], ["工具调用", `${analysis.usage.tool_calls}/${analysis.budget.max_tool_calls}`], ["成功操作", analysis.usage.successful_calls], ["运行时间", `${Math.round(analysis.usage.wall_clock_seconds ?? 0)} 秒`]].map(([label, value]) => <div key={label} className="rounded-lg bg-muted/50 p-3"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 font-medium tabular-nums">{value}</dd></div>)}</dl><details className="mt-3 border-t pt-3"><summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium">查看七步审计记录</summary><ol className="grid gap-2 pt-2 sm:grid-cols-2">{(analysis.steps ?? []).map((step, index) => <li key={step.id} className="min-w-0 rounded-lg bg-muted/45 p-3 text-sm"><span className="text-xs text-muted-foreground">{index + 1}. {statusLabel[step.status as keyof typeof statusLabel] ?? step.status}</span><span className="mt-1 block break-words font-medium [overflow-wrap:anywhere]">{step.title}</span></li>)}</ol></details></> : null}
     {pendingDecision ? <div className="mt-4 rounded-xl border border-[var(--status-waiting)] bg-[var(--status-waiting-bg)] p-4"><h3 className="font-semibold">需要你的决定</h3><p className="mt-1 text-sm">{pendingDecision.question}</p><div className="mt-3 grid gap-2 sm:grid-cols-2">{pendingDecision.options.map((option) => <Button key={option.id} variant={option.id === pendingDecision.recommended_option ? "default" : "outline"} className="h-auto min-h-11 whitespace-normal py-2 text-left" disabled={decisionMutation.isPending} onClick={() => decisionMutation.mutate({ decisionId: pendingDecision.id, optionId: option.id })}>{option.label}{option.id === pendingDecision.recommended_option ? " · 推荐" : ""}</Button>)}</div></div> : null}
-    <span className="sr-only" aria-live="polite">{analysis ? `项目分析${statusLabel[analysis.status]}` : "项目分析尚未开始"}</span><span className="sr-only">{projectId}</span>
+    <span className="sr-only" aria-live="polite">{analysis ? `项目分析${statusLabel[analysis.status]}` : "项目分析尚未开始"}</span>
   </section>
 }
 
