@@ -1,0 +1,95 @@
+{
+  "metadata": {
+    "dataset_version": "rag-citation-entailment-v1",
+    "dataset_sha256": "dc9f7f74c4680175c2ba3ca9e5de6baf33eb832f5381f71ae34afec6803bd20a",
+    "evaluator_version": "research-quality-evaluator-v1",
+    "prompt_version": "rag-entailment-judge-v1",
+    "prompt_sha256": "2be5d55adbb8c0d15fbaa6eeaa939a1e0b37f57d15d0bf1d406462b1e2d8f523",
+    "model_identifier": "not-run",
+    "evaluation_mode": "validation",
+    "judge_json_mode": null,
+    "judge_max_attempts": null,
+    "threshold": 0.9
+  },
+  "status": "not_evaluated",
+  "status_text": "未验证：仅完成数据集校验，未运行真实 judge 或提供 prediction。",
+  "threshold_met": null,
+  "adjudicated_cases": 60,
+  "paper_count": 5,
+  "label_distribution": {
+    "contradicted": 20,
+    "insufficient": 20,
+    "supported": 20
+  },
+  "confusion_matrix": null,
+  "label_metrics": null,
+  "accuracy": null,
+  "macro_f1": null,
+  "supported_precision": null,
+  "false_accept_rate": null,
+  "coverage": {
+    "eligible": 50,
+    "cited": 50,
+    "ratio": 1.0,
+    "deterministic_relations": 10
+  },
+  "artifact_results": {
+    "research_report": {
+      "cases": 10,
+      "accuracy": null,
+      "macro_f1": null,
+      "coverage": {
+        "eligible": 10,
+        "cited": 10,
+        "ratio": 1.0,
+        "deterministic_relations": 0
+      }
+    },
+    "comparison_matrix": {
+      "cases": 10,
+      "accuracy": null,
+      "macro_f1": null,
+      "coverage": {
+        "eligible": 10,
+        "cited": 10,
+        "ratio": 1.0,
+        "deterministic_relations": 0
+      }
+    },
+    "topic_clusters": {
+      "cases": 10,
+      "accuracy": null,
+      "macro_f1": null,
+      "coverage": {
+        "eligible": 10,
+        "cited": 10,
+        "ratio": 1.0,
+        "deterministic_relations": 0
+      }
+    },
+    "research_timeline": {
+      "cases": 15,
+      "accuracy": null,
+      "macro_f1": null,
+      "coverage": {
+        "eligible": 10,
+        "cited": 10,
+        "ratio": 1.0,
+        "deterministic_relations": 5
+      }
+    },
+    "research_graph": {
+      "cases": 15,
+      "accuracy": null,
+      "macro_f1": null,
+      "coverage": {
+        "eligible": 10,
+        "cited": 10,
+        "ratio": 1.0,
+        "deterministic_relations": 5
+      }
+    }
+  },
+  "failed_cases": [],
+  "predictions": []
+}

@@ -1,6 +1,6 @@
 # PaperWiki 产品规划
 
-本目录记录 PaperWiki 从“论文功能集合”重构为“Agent 驱动的科研论文工作台”的产品方案。路线图中 Iter11–15 已实现；当前后续重点是 Citation entailment/coverage 评测、ambiguous-call 人工恢复和可取消进程 worker。
+本目录记录 PaperWiki 从“论文功能集合”重构为“Agent 驱动的科研论文工作台”的产品方案。路线图中 Iter11–16 的已授权范围已实现；当前后续重点是对固定 gold set 运行经授权的真实 judge、人工复核/导出门禁、ambiguous-call 人工恢复和可取消进程 worker。
 
 ## 已确认的产品决策
 
@@ -29,7 +29,7 @@
 
 ## 当前实现与目标实现的边界
 
-仓库当前已具备 Chat Research 路由、持久化 Research Run/Step/Event/Decision/Artifact、17 步 topic workflow、durable Evidence/Citation、跨论文对比与严格验证的版本化研究报告。“我的资料库”已支持 owner-only 研究项目、固定 Run/论文/报告范围、主题簇、时间线、可追溯关系图、Artifact 版本与 stale/inaccessible 投影。当前主要缺口转为：项目分析真实付费 smoke、Citation entailment 评测、可取消跨进程 worker 与多实例 Session/配额。
+仓库当前已具备 Chat Research 路由、持久化 Research Run/Step/Event/Decision/Artifact、17 步 topic workflow、durable Evidence/Citation、跨论文对比与严格验证的版本化研究报告。“我的资料库”已支持 owner-only 研究项目、固定 Run/论文/报告范围、主题簇、时间线、可追溯关系图、Artifact 版本与 stale/inaccessible 投影。Iter16 已增加 5 篇公开论文/60 案例的 Citation entailment/coverage gold set、离线 scorer/strict judge、认证性能和连续演示证据；真实 judge 未获付费授权，因此 `>90%` 仍明确未验证。当前主要缺口转为：人工复核/导出门禁、可取消跨进程 worker、多实例 Session/配额和 provider ambiguous-call 恢复。
 
 后续迭代必须在界面和文档中持续区分“已实现”“本轮实现”“规划中”，避免把路线图能力包装成当前能力。
 

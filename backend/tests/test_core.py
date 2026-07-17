@@ -67,6 +67,7 @@ from backend.app.services.sources.sigops import (
 from backend.app.services.http_safety import UnsafeUrlError, _TrustedRedirectHandler
 from backend.app.services.paper_tools import PaperToolbox
 from backend.app.services.research_tools import _arxiv_discovery_terms
+from backend.app.services.research import ResearchExecutor
 from backend.app.services.sources.arxiv import build_query
 from backend.app.services.sources.usenix import _detail_to_paper
 from backend.app.services.search import answer_question, build_graph, search_wiki
@@ -1627,6 +1628,73 @@ def test_research_expired_lease_reclaim_rejects_old_worker() -> None:
     assert get_run_snapshot(conn, run["id"], 1)["steps"][0]["output"] == {
         "scaffold_only": True
     }
+
+
+def test_research_executor_restart_recovers_expired_lease_and_fences_old_worker(
+    tmp_path, monkeypatch
+) -> None:
+    database = tmp_path / "restart-recovery.sqlite3"
+    monkeypatch.setenv("DATABASE_PATH", str(database))
+    get_settings.cache_clear()
+    init_db(database)
+    with connect(database) as conn:
+        conn.execute(
+            """
+            INSERT INTO users(id, name, username, password_hash, is_active)
+            VALUES (1, 'Restart User', 'restart_user', '!unit-test-only', 1)
+            """
+        )
+        conn.commit()
+        run = create_harness_run(
+            conn,
+            user_id=1,
+            title="Restart recovery",
+            goal="Recover the expired step without external calls",
+        )
+        stale = claim_next_step(conn, worker_id="worker-before-restart", lease_seconds=60)
+        assert stale is not None
+        conn.execute(
+            "UPDATE research_steps SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
+            (stale["id"],),
+        )
+        conn.commit()
+
+    executor = ResearchExecutor(lease_seconds=1, heartbeat_seconds=1, poll_seconds=0.01)
+    executor.start()
+    try:
+        completed = None
+        for _ in range(200):
+            with connect(database) as conn:
+                snapshot = get_run_snapshot(conn, run["id"], 1)
+            if snapshot["status"] == "completed":
+                completed = snapshot
+                break
+            import time
+
+            time.sleep(0.01)
+        assert completed is not None
+        assert [step["status"] for step in completed["steps"]] == [
+            "completed",
+            "completed",
+            "completed",
+        ]
+        with connect(database) as conn:
+            assert finish_step(
+                conn,
+                step_id=stale["id"],
+                worker_id="worker-before-restart",
+                lease_generation=stale["lease_generation"],
+                output={"stale": True},
+            ) is False
+            events = conn.execute(
+                "SELECT id FROM research_events WHERE run_id = ? ORDER BY id",
+                (run["id"],),
+            ).fetchall()
+        event_ids = [int(row["id"]) for row in events]
+        assert event_ids == sorted(set(event_ids))
+    finally:
+        executor.stop()
+        get_settings.cache_clear()
 
 
 def test_research_manual_retry_grants_new_attempt_without_leaking_error() -> None:

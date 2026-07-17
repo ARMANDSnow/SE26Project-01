@@ -245,8 +245,8 @@ PaperWiki 是一个由 AI Agent 驱动的科研论文工作台：用户用自然
 | 收藏、笔记、评论、对比 | 已有基础 | 保留并接入 Agent 产物 | 用户流程测试 |
 | 阅读历史和关注主题 | 已有基础 | 增加调研历史和主题订阅入口 | API + UI 验收 |
 | Web 浏览器与响应式 | 已有 | Workflow 桌面三栏、移动单栏/抽屉 | 多尺寸 Playwright |
-| 准确率 > 90% | 尚无充分真实基准 | 建立真实 gold set，分别评测检索和引用 | 固定评测报告 |
-| 100 数据、100 并发、<3s | 有历史 smoke | 对非 LLM API 重跑；长任务立即返回 Run ID | 性能 smoke 报告 |
+| 准确率 > 90% | 已有 5 篇/60 案例 Citation gold set 与离线 scorer；真实 judge 未运行，仍未验证 | 经单独付费授权运行固定 judge；后续补检索/抽取独立基准 | 固定评测报告，未授权时必须显示“未验证” |
+| 100 数据、100 并发、<3s | 已用隔离 v9/120 论文和认证 Cookie 通过 100/100 smoke | 保持非 LLM API 回归；长任务立即返回 Run ID | p95 0.3129s、max 0.3160s、Run create 0.0058s |
 | 多 Agent 协同 | 有命名 Agent 和 QA 工具循环 | 角色化 handoff、持久化步骤和可视化 | Run 事件与 schema 验收 |
 | 研究脉络分析 | 待实现 | 调研报告的时间线/主题簇 Artifact | 真实主题演示 |
 | 推荐与订阅 | 有订阅数据基础 | 后续做增量调研与推荐 | 非首版旗舰阻断项 |
@@ -350,3 +350,11 @@ PaperWiki 是一个由 AI Agent 驱动的科研论文工作台：用户用自然
 - publication/precedes 只表达已验证日期和时间排序；“改进、反驳、影响、转折”等语义必须有 Citation。当前无可靠 bibliography 数据，v1 不依标题相似度生成 `cites` 边。
 - 项目输入、Citation/Evidence、ACL 或 source hash 变化后，旧分析立即投影 stale/inaccessible；受影响事实文本被隐藏，历史版本只保留安全审计信息。
 - 资料不足时在付费调用前进入 Coverage Decision，允许添加资料、移除失效项、生成有限脉络、减少维度、仅确定性时间线、返回编辑或停止。有限模式必须明示 coverage 和缺失项。
+
+## 15. Iter16 质量评测决策
+
+- Citation entailment 评测与当前结构型 Citation Validator 分离：前者是离线开发者验收工具，后者继续只负责 locator/hash/ACL/source 关系。评测结果不回写生产数据库，也不放宽报告 exact-statement 白名单。
+- 固定数据集使用 2023 年以来 5 篇公开 RAG 论文和 60 个 adjudicated exact-statement 案例；三标签各 20 条。语义 coverage 只统计报告/矩阵事实、Cluster 摘要/区分特征、非 publication 时间线语义和 Graph 语义边；publication 与确定性关系单列。
+- `prediction_file` 用于确定性复算指标，但即使达到阈值也显示“未验证”；只有本次经授权的真实 `llm_judge` 且 macro-F1、supported precision、coverage 同时达到阈值才显示“已达标”。
+- 真实 judge 每案例只允许一次 provider 请求；缺少配置、schema/case ID 不一致、provider 失败或敏感输出均 fail closed。报告只保留模型标识、版本/hash 和脱敏配置。
+- 答辩连续验收路径固定为 Chat → topic Run → 固定报告 → Citation Evidence → 论文 Chunk 定位 → 研究项目 → Graph Evidence，并在 1440/1024/390 下验证键盘、焦点、reduced-motion 和无溢出。

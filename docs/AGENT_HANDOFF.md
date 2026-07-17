@@ -1,12 +1,13 @@
 # Agent Handoff
 
-最后更新：2026-07-17，前端真实网页走查与 Bug 修复 closeout。
+最后更新：2026-07-17，Iter16 可复现研究质量评测与验收证据 closeout。
 
 ## Current Status
 
+- 2026-07-17 完成 Iter16：新增 5 篇公开 RAG 论文/60 adjudicated 案例的 Citation entailment/coverage gold set、strict prediction scorer 与可选单请求 LLM judge、规范化 JSON/Markdown 报告、认证 v9/120 论文/100 并发 smoke、executor 重启恢复和连续三视口答辩路径。另经用户授权完成隔离真实普通 Chat 前端 smoke，并修复空 provider 文本被误记成功及非流式兼容问题；固定 60-case 真实 judge 仍未授权运行，质量报告明确为 `not_evaluated`，不得声明 `>90%` 已达成。详见 `docs/iterations/iteration_iter16_research-quality-evaluation.md` 和 `evaluation/README.md`。
 - 2026-07-17 完成 fresh v9 与 iter15 真实数据副本的三视口网页走查；真实普通 Chat 和 7,406-token 全文 Paper Chat 成功。修复 UTC 时间误显示、全文就绪仍标待处理、Select 32px 触点、时间线乱序/英文类型、论文内部 ID 暴露和 30 篇候选一次铺满，并约束后续 Timeline Agent 使用中文叙述。验证为 122 tests、strict mypy、build、9 Playwright passed / 6 skipped；详见 `docs/iterations/iteration_frontend-audit-2026-07-17.md`。
 
-- 当前分支：`codex/agentic-research-refactor`；iter15 已完成本地提交，未 push。
+- 当前分支：`codex/agentic-research-refactor`；开工时 HEAD `5c5fa37` 与远端 0 ahead / 0 behind，说明 iter15 已在远端。Iter16 工作树改动尚未 commit/push。
 - iter15 已在隔离数据库副本上完成真实 `gpt-5.5-medium` 项目分析：成功 Run 为 7/7 步、3/3 provider 调用，五类项目 Artifact 全部完成；另完成普通 Chat 和约 22k token 全文 Paper Chat。桌面凭据只注入隔离进程，未打印或写入仓库。
 - 真实验证修复了 Run-derived metadata dependency hash 与 manual retry durable identity；修复后同一成功 Run 的 Planner/Cluster/Timeline 各恰好一次调用。严格 Cluster claim/Citation 校验曾拒绝一份不合法模型输出，证明语义关系 fail closed。
 - iter15 将 schema 升至 v9：新增 owner-only 研究项目/项目成员、`mode='project'` 七步 Run、项目级追加版本 Artifact、dependency ledger 和项目 Citation reference。fresh、v8→v9、v2→v9、失败回滚与伪造 v9 fail-closed 已覆盖。
@@ -76,7 +77,7 @@ npm run build
 git diff --check
 ```
 
-结果：122 个后端测试通过；strict mypy 覆盖 57 个源文件并通过；前端生产构建通过。隔离端口 Playwright 为 9 passed、6 skipped：1440px、1024px、390px 覆盖项目创建/恢复、Coverage/Decision、主题簇/时间线/图谱、Citation→Evidence、版本、键盘/焦点、reduced-motion、无溢出与 44px，并保留 topic 17→7、Harness、Chat/Paper Chat 回归。真实项目分析、普通 Chat 与 Paper Chat smoke 已完成；未重复 arXiv/PDF/Docling 网络获取。完整性审计为 49 个 valid 节点、55 条 valid 边、22 条有 Citation 的语义边、0 stale/inaccessible dependency、0 重复 model identity、0 外键违规。
+结果：144 个后端测试通过；strict mypy 覆盖 58 个源文件并通过；前端生产构建通过。隔离端口 Playwright 为 9 passed、6 skipped：1440px、1024px、390px 的连续路径覆盖 Chat → topic Run → 固定报告 → Citation Evidence → 论文 Chunk 定位 → 研究项目 → Graph Evidence，并保留 Coverage/Decision、版本、键盘/焦点、reduced-motion、无溢出、44px、Harness、Chat/Paper Chat 回归。认证性能 smoke 使用隔离 v9/120-paper fixture：100 requests / 100 workers、0 failures、p95 0.3129s、max 0.3160s、Run create 0.0058s。经用户授权的额外真实普通 Chat 浏览器 smoke 使用隔离 v9 库、正确 `/v1` API 前缀、可用 `gpt-5.5` 与 `LLM_STREAMING=false`，三视口显示非空回答“真实链路成功”，无新增控制台错误；截图位于 `output/playwright/iter16-real-frontend/`。离线 dataset validation 为 60/60 通过，固定 60-case 真实 judge 未运行，macro-F1/supported precision/false-accept 明确未验证。未访问默认旧库，也未调用 arXiv、PDF 或 Docling。
 
 ## Known Risks
 
@@ -89,8 +90,8 @@ git diff --check
 - Playwright 的 topic 数据、慢步骤、Decision 和错误态使用测试网络 fixture；生产没有 seed/debug API。真实 PDF/Docling 的浏览器长任务仍需专门的集成环境。
 - auto 模式的模型分类器与普通 Chat 都依赖真实 LLM 配置；17 步 topic Run 已完成一次两篇论文的真实付费 smoke，但更大规模、多用户并发、进程中断和真实 provider ambiguous-call 恢复仍主要由依赖注入覆盖。
 - durable model operation 的 `started/ambiguous` 状态会阻止自动重发；后续应增加受控人工 Decision/运维恢复，而不是静默 retry。
-- 报告事实文本当前使用已验证 Claim/Matrix 原句白名单；更自然的改写需要 Citation entailment gold set 与独立验证器后才能放宽。
-- 当前没有前端 LLM 配置页；真实模型只能在启动后端前通过 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_CHAT_MODEL` 和必要时的 `LLM_JSON_RESPONSE_FORMAT` 环境变量配置，修改后需重启后端。兼容服务的 `LLM_BASE_URL` 必须是 API 前缀（通常含 `/v1`）。topic Run 可能使用多次付费调用，运行 smoke 前必须单独确认。前端不得读取或持久化真实 Key。
+- 报告事实文本仍使用已验证 Claim/Matrix 原句白名单。Iter16 的 Citation entailment gold set/scorer 是离线验收工具，尚未接入生产 Validator；真实 judge 和人工复核/导出门禁完成前不能放宽自由改写。
+- 当前没有前端 LLM 配置页；真实模型只能在启动后端前通过 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_CHAT_MODEL`、必要时的 `LLM_JSON_RESPONSE_FORMAT` 和 `LLM_STREAMING` 环境变量配置，修改后需重启后端。兼容服务的 `LLM_BASE_URL` 必须是 API 前缀（通常含 `/v1`），模型名应先与该 Key 的 `/models` 列表核对；仅支持非流式 Chat Completions 时设置 `LLM_STREAMING=false`。topic Run 可能使用多次付费调用，运行 smoke 前必须单独确认。前端不得读取或持久化真实 Key。
 - 当前验证的兼容网关/模型拒绝 `response_format=json_object`（脱敏 `provider_http_400`）；使用该组合需显式配置 `LLM_JSON_RESPONSE_FORMAT=false`。结构化调用仍注入完整 JSON Schema 并做严格 Pydantic 校验；模型层不隐藏重试，保证一次预算预占对应一次 provider 请求。
 - 仓库现存默认 `backend/data/arxiv_wiki.sqlite3` 是用户旧 v0 库（116 篇），本轮没有修改或重建；验证全部用独立 `DATABASE_PATH`。如需承接该数据，必须另立 legacy v0 迁移任务。
 - `database.py` 仍作为兼容 facade；`conversations.py`、`documents.py`、`search.py` 和 `paper_tools.py` 仍包含历史领域 SQL。
@@ -98,10 +99,11 @@ git diff --check
 
 ## Next Candidates
 
-1. 建立 Cluster/Timeline/Graph Citation entailment/覆盖率 gold set、人工复核队列和报告导出前再验证。
-2. 为首次严格模型输出失败提供更明确的“新建分析版本”解释，并增加真实 provider ambiguous-call 人工 Decision。
-3. 引入可取消进程 worker/任务队列、Redis Session 与用户级 Run/SSE/模型配额。
-4. 如需使用旧 116 篇本地论文，先设计可审查、不破坏的 v0 legacy 迁移，不要直接 reset。
+1. 经用户单独付费授权后，在固定 60-case gold set 上运行真实 judge；若未达到阈值，保留失败案例并迭代 prompt/evaluator，不得更新产品文案为已达标。
+2. 设计 schema v10 人工复核队列、报告导出前 entailment 再验证和自由改写门禁；离线 scorer 不直接授权生产内容。
+3. 为首次严格模型输出失败提供更明确的“新建分析版本”解释，并增加真实 provider ambiguous-call 人工 Decision。
+4. 引入可取消进程 worker/任务队列、Redis Session 与用户级 Run/SSE/模型配额。
+5. 如需使用旧 116 篇本地论文，先设计可审查、不破坏的 v0 legacy 迁移，不要直接 reset。
 
 ## Git Notes
 
@@ -113,4 +115,5 @@ git diff --check
 - iter13：`docs/iterations/iteration_iter13_topic-research-pipeline.md`。
 - iter14：`docs/iterations/iteration_iter14_cited-research-synthesis.md`。
 - iter15：`docs/iterations/iteration_iter15_research-landscape-projects.md`。
-- 尚未 push；推送前先 fetch/rebase 并保留远端用户改动。
+- iter16：`docs/iterations/iteration_iter16_research-quality-evaluation.md`。
+- Iter16 尚未 commit/push；如后续授权提交，先检查 `git status`、`git diff --check` 和暂存范围。push 前先 fetch/rebase 并保留远端用户改动。

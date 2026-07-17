@@ -26,6 +26,37 @@ def _is_gpt5_family(model: str) -> bool:
     return normalized.startswith("gpt-5")
 
 
+def _extract_text_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        return ""
+    chunks: list[str] = []
+    for part in value:
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text")
+        if isinstance(text, str):
+            chunks.append(text)
+            continue
+        if isinstance(text, dict) and isinstance(text.get("value"), str):
+            chunks.append(text["value"])
+    return "".join(chunks)
+
+
+def _extract_choice_text(data: Any, *, streaming: bool) -> str:
+    try:
+        choice = data["choices"][0]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    if not isinstance(choice, dict):
+        return ""
+    container = choice.get("delta") if streaming else choice.get("message")
+    if not isinstance(container, dict):
+        return ""
+    return _extract_text_content(container.get("content"))
+
+
 class LLMClient:
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -136,25 +167,48 @@ class LLMClient:
 
     def stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
         self._require_configured()
+        if not self.settings.llm_streaming:
+            message = self.chat(messages, timeout_seconds=90, max_attempts=1)
+            content = _extract_text_content(message.get("content"))
+            if not content.strip():
+                raise LLMProviderError("provider_empty_content")
+            yield content
+            return
         payload = self._payload(messages, stream=True)
         url = f"{self.settings.llm_base_url}/chat/completions"
+        yielded_text = False
+        non_sse_lines: list[str] = []
         try:
             with httpx.Client(timeout=90, follow_redirects=False) as client:
                 with client.stream("POST", url, headers=self._headers(), json=payload) as response:
                     response.raise_for_status()
                     for line in response.iter_lines():
                         if not line.startswith("data:"):
+                            if line.strip():
+                                non_sse_lines.append(line)
                             continue
                         raw = line[5:].strip()
                         if raw == "[DONE]":
                             break
                         try:
                             data = json.loads(raw)
-                            delta = data["choices"][0]["delta"].get("content")
-                        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                        except json.JSONDecodeError:
                             continue
-                        if isinstance(delta, str) and delta:
+                        delta = _extract_choice_text(data, streaming=True)
+                        if delta:
+                            yielded_text = True
                             yield delta
+                    if not yielded_text and non_sse_lines:
+                        try:
+                            data = json.loads("\n".join(non_sse_lines))
+                        except json.JSONDecodeError:
+                            data = None
+                        content = _extract_choice_text(data, streaming=False)
+                        if content:
+                            yielded_text = True
+                            yield content
+                    if not yielded_text:
+                        raise LLMProviderError("provider_empty_content")
         except httpx.HTTPStatusError as exc:
             raise LLMProviderError(f"provider_http_{exc.response.status_code}") from exc
         except (httpx.TimeoutException, httpx.NetworkError, OSError) as exc:

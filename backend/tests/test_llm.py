@@ -120,3 +120,81 @@ def test_gpt5_chat_uses_compatible_payload_without_spoofed_sdk_headers(monkeypat
     assert captured["headers"]["accept"] == "application/json"
     assert captured["headers"]["authorization"] == "Bearer unit-test-placeholder"
     get_settings.cache_clear()
+
+
+def test_llm_stream_parses_text_content_parts(monkeypatch):
+    configure_real_client(monkeypatch)
+    install_transport(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200,
+            text=(
+                'data: {"choices":[{"delta":{"content":'
+                '[{"type":"text","text":"你好"},{"type":"text","text":{"value":"，世界"}}]}}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+            headers={"content-type": "text/event-stream"},
+        ),
+    )
+
+    assert list(LLMClient().stream([{"role": "user", "content": "test"}])) == ["你好，世界"]
+    get_settings.cache_clear()
+
+
+def test_llm_stream_accepts_compatible_non_stream_json(monkeypatch):
+    configure_real_client(monkeypatch)
+    install_transport(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "fallback"}}]},
+        ),
+    )
+
+    assert list(LLMClient().stream([{"role": "user", "content": "test"}])) == ["fallback"]
+    get_settings.cache_clear()
+
+
+def test_llm_stream_can_use_explicit_single_request_non_stream_mode(monkeypatch):
+    configure_real_client(monkeypatch)
+    monkeypatch.setenv("LLM_STREAMING", "false")
+    get_settings.cache_clear()
+    captured = {}
+
+    def handler(request):
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "compatible"}],
+                        }
+                    }
+                ]
+            },
+        )
+
+    install_transport(monkeypatch, handler)
+
+    assert list(LLMClient().stream([{"role": "user", "content": "test"}])) == ["compatible"]
+    assert captured["payload"]["stream"] is False
+    get_settings.cache_clear()
+
+
+def test_llm_stream_rejects_empty_provider_response(monkeypatch):
+    configure_real_client(monkeypatch)
+    install_transport(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200,
+            text='data: {"choices":[{"delta":{"content":null}}]}\n\ndata: [DONE]\n\n',
+            headers={"content-type": "text/event-stream"},
+        ),
+    )
+
+    with pytest.raises(LLMProviderError, match="provider_empty_content"):
+        list(LLMClient().stream([{"role": "user", "content": "test"}]))
+    get_settings.cache_clear()

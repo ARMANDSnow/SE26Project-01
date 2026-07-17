@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "recorded_date": "2026-07-17",
+  "database_schema_version": 9,
+  "isolated_fixture_papers": 120,
+  "authenticated": true,
+  "session_transport": "HttpOnly session cookie obtained through test registration",
+  "requests": 100,
+  "workers": 100,
+  "covered_endpoints": [
+    "/api/papers",
+    "/api/wiki/search",
+    "/api/history",
+    "/api/graph",
+    "/api/research/runs",
+    "/api/research/projects"
+  ],
+  "failures": 0,
+  "p95_seconds": 0.3129,
+  "max_seconds": 0.316,
+  "latency_threshold_seconds": 3.0,
+  "run_create_seconds": 0.0058,
+  "run_create_threshold_seconds": 0.5,
+  "passed": true,
+  "external_calls": {
+    "llm": 0,
+    "arxiv": 0,
+    "pdf": 0,
+    "docling": 0
+  },
+  "notes": "The temporary backend was stopped after the smoke. No default user database or production seed/debug API was used."
+}

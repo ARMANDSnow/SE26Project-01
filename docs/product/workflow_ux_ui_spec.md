@@ -495,3 +495,10 @@ flowchart LR
 - Workflow 窄面板只显示状态、Coverage、执行摘要和关键结论；完整报告改为固定版本路由，每次只展示“报告 / 对比 / 主张 / 引用”之一。用户文案显示“引用 1、原文证据、论文阅读卡”，`C1` 等仅存在默认折叠技术详情。
 - 图谱桌面使用 SVG 关系线和 HTML button 节点；1024px 允许详情降级；390px 不渲染宽画布，使用节点/关系列表和等价详情操作。语义边支持键盘打开 Evidence Inspector，关闭后焦点返回原边。
 - 设计限制为一层主容器，优先标题、留白和分隔线，减少嵌套卡片、Badge、渐变、光晕和持续动画。模式选择器使用 44px `rounded-xl` Radix Select，reduced-motion 下停用不必要动效。
+
+## 17. Iter16 连续验收路径
+
+- 不新增生产导航或质量分数 UI；离线 judge 未验证时，不在报告、Citation Inspector 或项目页展示“>90% 已达成”。
+- Playwright 旗舰路径必须连续验证：Chat 启动 topic Run → Workflow 打开当前固定报告 → 键盘打开 Citation Evidence → 跳转并聚焦论文 Chunk → 进入研究项目 → 键盘打开 Graph 语义边 Evidence。
+- desktop-1440 使用侧栏 Workflow，tablet-1024 使用 Drawer，mobile-390 使用全屏 Workflow 与项目关系列表；三档均检查 `prefers-reduced-motion`、弹层关闭后焦点返回、页面无横向溢出。
+- publication/contains/precedes 等确定性关系可显示来源元数据但不得伪装成语义 Citation；支持/反驳/改进/影响等语义边继续通过 Evidence Inspector 展示当前有效引用。

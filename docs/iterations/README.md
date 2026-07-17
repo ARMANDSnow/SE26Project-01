@@ -7,6 +7,7 @@ Agent 续写入口：
 
 | Iteration | Title | Status | Notes |
 | --- | --- | --- | --- |
+| [iter16](iteration_iter16_research-quality-evaluation.md) | 可复现研究质量评测与验收证据 | Complete | 5 篇公开论文/60 案例 gold set、离线 strict judge/scorer、认证 120 论文/100 并发 smoke、重启恢复与连续三视口演示；真实 judge 未授权，质量阈值明确未验证。 |
 | [iter15](iteration_iter15_research-landscape-projects.md) | 可追溯研究脉络、主题簇与项目化资料库 | Complete | schema v9、owner-only 研究项目、项目级版本 Artifact/DAG、七步 Project workflow、主题簇/时间线/图谱、资料库 UI 与 Workflow 降噪；120 tests、mypy、build、9 项 Playwright 通过。 |
 | [iter15 前端审计](iteration_frontend-audit-2026-07-17.md) | 真实网页走查与 Bug 修复 | Complete | fresh v9 与 iter15 真实数据副本三视口走查、普通 Chat/全文 Paper Chat 真模型验证；修复时间、状态、触点、时间线、内部 ID 和长列表体验；122 tests、mypy、build、9 项 Playwright 通过。 |
 | [iter14](iteration_iter14_cited-research-synthesis.md) | 可追溯调研综合与研究报告 | Complete | schema v8、durable Evidence/Citation/model ledger、17 步综合、严格引用验证、版本化报告与响应式引用交互；112 tests、mypy、build、6 项 Playwright 和真实 arXiv/PDF/Docling/模型 smoke 通过。 |

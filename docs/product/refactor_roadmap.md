@@ -435,6 +435,7 @@ src/components/chat/
 
 目标：完成进阶展示和长期沉淀。
 
+- **状态：已完成（2026-07-17）**。schema v9、owner-only 项目、七步 project Run、版本化主题簇/时间线/关系图、dependency DAG、反向链接和三视口 UI 已交付。
 - 时间线/主题簇 Artifact；
 - 恢复概念图谱前端；
 - 资料库支持项目、报告、集合、图谱类型；
@@ -447,15 +448,14 @@ src/components/chat/
 
 目标：把课程指标变成可展示证据。
 
-- 真实 arXiv gold set；
-- 检索、抽取、引用支持度分项指标；
-- 100+ 论文、100 并发非 LLM smoke；
-- 完整 Playwright 演示路径；
-- 错误注入、暂停恢复、后端重启恢复；
-- bundle 拆分、响应式、无障碍和动画优化；
-- 答辩演示数据与录屏兜底。
+- **状态：本轮授权范围已完成（2026-07-17）**。生产 schema/API/UI 保持 v9；未执行未经授权的付费 judge。
+- 固定 5 篇公开 arXiv 论文、60 adjudicated 案例的 Citation entailment/coverage gold set；三标签均衡，覆盖报告、矩阵、主题簇、时间线和语义图谱边。
+- strict prediction scorer 与可选单请求 LLM judge，分开报告 macro-F1、supported precision、false-accept、语义 coverage、确定性关系和 Artifact 分项；真实 judge 未运行时明确“未验证”。
+- 隔离 v9/120 论文、认证 Cookie、100 requests/100 workers 非 LLM smoke 已通过，p95/max <3s，Run 创建 <500ms。
+- lease 过期/重启恢复/旧 worker fencing 与 SSE 续传回归通过；连续 Playwright 路径覆盖 Chat → Run → 固定报告 → Citation Evidence → 论文定位 → 项目 → Graph Evidence。
+- 1440/1024/390、键盘焦点、reduced-motion、44px 与无横向溢出继续通过；未为本轮制造新的生产演示 seed 或 UI 体系。
 
-验收：课程要求覆盖矩阵每一项都有代码、测试或报告证据。
+验收：代码、测试、性能记录和 validation-only 报告已落库；课程 `>90%` 质量指标必须等真实 judge 获得单独授权并达到阈值后才能勾选。
 
 ## 9. 测试策略
 

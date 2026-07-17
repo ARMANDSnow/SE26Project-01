@@ -127,6 +127,64 @@ async function installTopicFixtures(page: Page, state: { status: string; title: 
     state.status = "running"
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(topicRun("control-run", state.title, state.status)) })
   })
+  await page.route("**/api/papers/101/chunks**", async (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{ id: 501, paper_id: 101, source_hash: sourceHash, chunk_index: 0, heading: "Method", content: "Evidence-constrained generation improves citation accuracy.", char_start: 0, char_end: 120, token_count: 8, created_at: now }] }) }))
+  await page.route("**/api/papers/101/chat/threads", async (route) => {
+    const thread = { id: "continuous-paper-thread", paper_id: 101, title: "论文对话", message_token_limit: 12000, archived: false, created_at: now, updated_at: now }
+    return route.fulfill({ status: route.request().method() === "POST" ? 200 : 200, contentType: "application/json", body: JSON.stringify(route.request().method() === "POST" ? thread : { items: [thread] }) })
+  })
+  await page.route("**/api/chat/threads/continuous-paper-thread/messages", async (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ messages: [] }) }))
+  await page.route("**/api/papers/101", async (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+    id: 101, source: "arxiv", source_id: "2501.00001", source_url: "https://arxiv.org/abs/2501.00001",
+    title: "A Very Long Paper Title About Retrieval-Augmented Generation Evidence Grounding Without Horizontal Overflow on Mobile Screens",
+    authors: ["Ada Lovelace"], abstract: "Evidence-grounded retrieval.", categories: ["cs.CL"], primary_category: "cs.CL", published_at: "2025-01-01", processing_status: "processed", is_favorite: false,
+    pdf: { available: false, cached: false, view_url: null, download_url: null }, upload: null, wiki: [], concepts: [], notes: [], summaries: [],
+    document: { parser_name: "docling", parser_version: "fixture", source_hash: sourceHash, content_markdown: "# Method\n\nEvidence-constrained generation improves citation accuracy.", token_count: 8, status: "completed", parsed_at: now },
+  }) }))
+}
+
+async function installContinuousProjectFixture(page: Page) {
+  const projectId = "continuous-project"
+  const project = { id: projectId, owner_user_id: 1, title: "连续验收研究项目", description: "固定报告、论文与 Graph Evidence 的连续演示。", status: "active", item_count: 3, current_item_count: 3, stale_item_count: 0, inaccessible_item_count: 0, latest_analysis_run_id: "continuous-project-run", latest_analysis_status: "completed", created_at: now, updated_at: now }
+  const run = {
+    id: "continuous-project-run", user_id: 1, project_id: projectId, thread_id: null, title: "连续验收研究脉络", goal: "验证 Graph Evidence", mode: "project", status: "completed", requested_action: null, state_version: 8, plan_version: 1,
+    budget: { kind: "project", max_candidates: 50, max_fulltext_papers: 50, max_model_calls: 3, max_tool_calls: 20, max_wall_clock_seconds: 900 },
+    usage: { candidate_papers: 1, fulltext_papers: 1, model_calls: 2, tool_calls: 5, successful_calls: 7, failed_calls: 0, wall_clock_seconds: 21 },
+    error_code: null, error_message: null, created_at: now, started_at: now, updated_at: now, completed_at: now, latest_event_id: 8,
+    steps: ["校验项目资料", "规划研究脉络", "生成主题簇", "构建研究时间线", "构建关系图", "核验图谱与引用", "完成研究脉络"].map((title, index) => ({ id: `continuous-step-${index}`, run_id: "continuous-project-run", step_key: `project-${index}`, step_type: `project.${index}`, title, agent_name: "Project Agent", status: "completed", position: index, attempt_count: 1, max_attempts: 2, output: {}, started_at: now, completed_at: now })),
+    decisions: [],
+  }
+  const graph = {
+    id: "continuous-graph-v1", project_id: projectId, run_id: run.id, artifact_type: "research_graph", version: 1, status: "completed", dependency_status: "current", is_current: true,
+    content: { nodes: [
+      { node_id: `project:${projectId}`, node_type: "project", label: "连续验收研究项目", entity_ref: projectId, status: "valid" },
+      { node_id: "paper:101", node_type: "paper", label: "Grounded Retrieval", entity_ref: "paper:101", status: "valid" },
+      { node_id: "claim:1", node_type: "synthesis_claim", label: "证据约束提高可追溯性", entity_ref: "claim-1", status: "valid" },
+    ], edges: [
+      { edge_id: "contains-continuous", source_node_id: `project:${projectId}`, target_node_id: "paper:101", relation_type: "contains", citation_keys: [], status: "valid" },
+      { edge_id: "supports-continuous", source_node_id: "paper:101", target_node_id: "claim:1", relation_type: "supports", citation_keys: ["PC1"], status: "valid" },
+    ], citation_keys: ["PC1"], schema_version: 1 },
+    input_item_ids: ["item-run", "item-paper", "item-report"], citation_keys: ["PC1"], created_at: now, updated_at: now,
+  }
+  await page.route("**/api/research/projects**", async (route) => {
+    const url = new URL(route.request().url())
+    const path = url.pathname
+    const respond = (value: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) })
+    if (path.endsWith("/backlinks")) return respond({ items: [{ project_id: projectId, project_title: project.title, project_status: "active", item_id: "item-paper", dependency_status: "current" }] })
+    if (path === `/api/research/projects/${projectId}/items`) return respond({ items: [
+      { id: "item-run", project_id: projectId, item_type: "run", run_id: "topic-run", position: 0, dependency_status: "current", title: "RAG 调研任务", subtitle: "固定研究范围", added_at: now, updated_at: now },
+      { id: "item-paper", project_id: projectId, item_type: "paper", paper_id: 101, position: 1, dependency_status: "current", title: "Grounded Retrieval", subtitle: "Ada", added_at: now, updated_at: now },
+      { id: "item-report", project_id: projectId, item_type: "research_report", artifact_id: "research-report-v2", artifact_version: 2, position: 2, dependency_status: "current", title: "可追溯研究报告", subtitle: "固定报告版本", added_at: now, updated_at: now },
+    ], project_revision: 3 })
+    if (path.endsWith("/coverage")) return respond({ status: "ready", total_items: 3, current_items: 3, stale_items: 0, inaccessible_items: 0, paper_count: 1, report_count: 1, valid_citation_count: 1, missing_inputs: [], warnings: [], can_analyze: true, updated_at: now })
+    if (path.endsWith("/analysis")) return respond({ project_id: projectId, run, tool_summaries: [] })
+    if (path.endsWith("/artifacts/topic-clusters/versions") || path.endsWith("/artifacts/timeline/versions")) return respond({ items: [] })
+    if (path.endsWith("/artifacts/graph/versions")) return respond({ items: [graph] })
+    if (path.endsWith("/artifacts/graph")) return respond(graph)
+    if (path.endsWith("/entities/edge/supports-continuous/evidence")) return respond({ entity_id: "supports-continuous", entity_kind: "edge", dependency_status: "current", citations: [{ citation_id: "continuous-citation", citation_label: "PC1", status: "valid", paper_id: 101, paper_title: "Grounded Retrieval", heading: "Method", excerpt: "Evidence fencing improves traceability.", chunk_id: 501, char_start: 0, char_end: 43 }] })
+    if (path === `/api/research/projects/${projectId}`) return respond(project)
+    return route.fallback()
+  })
+  return projectId
 }
 
 async function register(page: Page) {
@@ -206,12 +264,14 @@ test("routes deep research into a persisted data card and responsive workflow", 
   await workflow.getByRole("tab", { name: "综合报告" }).click()
   await expect(workflow.getByRole("heading", { name: "可追溯 RAG 证据链研究报告" })).toBeVisible()
   await expect(workflow.getByText("证据白名单能提高调研结论的可追溯性。")).toBeVisible()
+  const workflowUrl = page.url()
   const fullReportLink = workflow.getByRole("link", { name: "打开完整报告" })
   await fullReportLink.click()
   await expect(page).toHaveURL(/\/runs\/[^/]+\/reports\/2/)
   if (testInfo.project.name === "mobile-390") {
     await page.getByRole("combobox", { name: "报告内容" }).click()
     await page.getByRole("option", { name: "引用", exact: true }).click()
+    await page.keyboard.press("Escape")
   } else {
     await page.getByRole("tab", { name: "引用", exact: true }).click()
   }
@@ -222,7 +282,35 @@ test("routes deep research into a persisted data card and responsive workflow", 
   await expect(page.getByText("Method", { exact: true })).toBeVisible()
   await page.keyboard.press("Escape")
   await expect(citationButton).toBeFocused()
-  await page.goBack()
+  await citationButton.click()
+  const locateEvidence = page.getByRole("link", { name: "在论文中定位" })
+  await expect(locateEvidence).toBeVisible()
+  await locateEvidence.click()
+  await expect(page).toHaveURL(/\/papers\/101\?chunk=501/)
+  const locatedEvidence = page.getByRole("status", { name: "Citation Evidence 定位" })
+  await expect(locatedEvidence).toBeVisible()
+  await expect(locatedEvidence).toBeFocused()
+  await expect(locatedEvidence.getByText("Evidence-constrained generation improves citation accuracy.")).toBeVisible()
+
+  const projectId = await installContinuousProjectFixture(page)
+  await page.goto(`/library/projects/${projectId}`)
+  await expect(page.getByRole("heading", { name: "连续验收研究项目" })).toBeVisible()
+  if (testInfo.project.name === "mobile-390") {
+    await page.getByRole("combobox", { name: "项目内容" }).click()
+    await page.getByRole("option", { name: "关系图" }).click()
+  } else {
+    await page.getByRole("tab", { name: "关系图" }).click()
+  }
+  const graphEdge = page.getByRole("button", { name: /支持/ }).last()
+  await graphEdge.focus()
+  await graphEdge.click()
+  await expect(page.getByRole("heading", { name: "引用与原文证据" })).toBeVisible()
+  await expect(page.getByText("Evidence fencing improves traceability.")).toBeVisible()
+  await page.keyboard.press("Escape")
+  await expect(graphEdge).toBeFocused()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false)
+
+  await page.goto(workflowUrl)
   workflow = testInfo.project.name === "desktop-1440" ? page.locator("aside:visible") : page.locator('[role="dialog"]:visible')
   await workflow.getByRole("tab", { name: "综合报告" }).click()
   const versionSelect = workflow.getByLabel("版本")
