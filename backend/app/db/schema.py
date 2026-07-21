@@ -12,16 +12,19 @@ from .migrations import (
     V6_MIGRATION,
     V7_MIGRATION,
     V8_MIGRATION,
+    V9_MIGRATION,
+    V10_MIGRATION,
     apply_migrations,
 )
 from .migrations.v5 import RESEARCH_SCHEMA_SQL
 from .migrations.v7 import RESEARCH_DATA_SCHEMA_SQL
 from .migrations.v8 import migrate_v7_to_v8
-from .migrations.v9 import MIGRATION as V9_MIGRATION, migrate_v8_to_v9
+from .migrations.v9 import migrate_v8_to_v9
+from .migrations.v10 import migrate_v9_to_v10
 
 
 PAPER_CHUNKS_FTS_TABLE = "paper_chunks_fts"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 class IncompatibleSchemaError(RuntimeError):
@@ -413,6 +416,13 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
     upload_columns = {
         str(row[1]) for row in conn.execute("PRAGMA table_info(paper_uploads)").fetchall()
     }
+    processing_job_rows = conn.execute(
+        "PRAGMA table_info(paper_processing_jobs)"
+    ).fetchall()
+    processing_job_specs = {
+        str(row[1]): (str(row[2]).upper(), int(row[3]), int(row[5]))
+        for row in processing_job_rows
+    }
     chat_message_column_rows = conn.execute("PRAGMA table_info(chat_messages)").fetchall()
     chat_message_columns = {str(row[1]) for row in chat_message_column_rows}
     chat_message_specs = {str(row[1]): (str(row[2]).upper(), int(row[3]), row[4]) for row in chat_message_column_rows}
@@ -433,6 +443,28 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
         for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name IS NOT NULL"
         ).fetchall()
+    }
+    expected_job_specs = {
+        "id": ("TEXT", 0, 1),
+        "paper_id": ("INTEGER", 1, 0),
+        "requested_by_user_id": ("INTEGER", 1, 0),
+        "input_fingerprint": ("TEXT", 1, 0),
+        "status": ("TEXT", 1, 0),
+        "phase": ("TEXT", 1, 0),
+        "attempt_count": ("INTEGER", 1, 0),
+        "max_attempts": ("INTEGER", 1, 0),
+        "next_attempt_at": ("TEXT", 1, 0),
+        "lease_owner": ("TEXT", 0, 0),
+        "lease_generation": ("INTEGER", 1, 0),
+        "lease_expires_at": ("TEXT", 0, 0),
+        "heartbeat_at": ("TEXT", 0, 0),
+        "last_progress_at": ("TEXT", 0, 0),
+        "error_code": ("TEXT", 0, 0),
+        "error_message": ("TEXT", 0, 0),
+        "created_at": ("TEXT", 1, 0),
+        "started_at": ("TEXT", 0, 0),
+        "updated_at": ("TEXT", 1, 0),
+        "completed_at": ("TEXT", 0, 0),
     }
     required_paper_columns = {"source", "source_id", "asset_id", "processing_status"}
     if not required_paper_columns.issubset(paper_columns) or "title_hash" in paper_columns:
@@ -469,6 +501,38 @@ def _assert_schema_compatible(conn: sqlite3.Connection) -> None:
         raise IncompatibleSchemaError(
             f"Database upload schema does not match version {SCHEMA_VERSION}; rebuild it with: "
             f"{_schema_reset_command(conn)}"
+        )
+    job_fks = {
+        (str(row[3]), str(row[2]), str(row[4]), str(row[6]).upper())
+        for row in conn.execute("PRAGMA foreign_key_list(paper_processing_jobs)").fetchall()
+    }
+    job_indexes = _index_signature(conn, "paper_processing_jobs")
+    job_sql = _table_sql(conn, "paper_processing_jobs")
+    if (
+        processing_job_specs != expected_job_specs
+        or not {
+            ("paper_id", "papers", "id", "CASCADE"),
+            ("requested_by_user_id", "users", "id", "RESTRICT"),
+        }.issubset(job_fks)
+        or job_indexes.get("idx_paper_processing_jobs_runnable") != (
+            0,
+            ("status", "next_attempt_at", "lease_expires_at", "created_at"),
+        )
+        or job_indexes.get("idx_paper_processing_jobs_requester") != (
+            0,
+            ("requested_by_user_id", "status", "updated_at"),
+        )
+        or "paper_id integer not null unique references papers(id) on delete cascade" not in job_sql
+        or "check(length(input_fingerprint) = 64)" not in job_sql
+        or "'queued', 'running', 'retry_wait', 'completed', 'failed'" not in job_sql
+        or "'queued', 'download', 'parse', 'index', 'completed'" not in job_sql
+        or "check(max_attempts between 1 and 10)" not in job_sql
+        or "status = 'running' and lease_owner is not null and lease_expires_at is not null" not in job_sql
+        or "status != 'completed' or phase = 'completed'" not in job_sql
+    ):
+        raise IncompatibleSchemaError(
+            f"Database paper processing schema does not match version {SCHEMA_VERSION}; "
+            f"rebuild it with: {_schema_reset_command(conn)}"
         )
     if "content_parts_json" not in chat_message_columns or chat_message_specs.get(
         "content_parts_json"
@@ -634,7 +698,7 @@ def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = No
 def init_schema(conn: sqlite3.Connection) -> None:
     tables = _schema_tables(conn)
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    if tables and version in {2, 3, 4, 5, 6, 7, 8}:
+    if tables and version in {2, 3, 4, 5, 6, 7, 8, 9}:
         apply_migrations(
             conn,
             [
@@ -645,6 +709,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
                 V7_MIGRATION,
                 V8_MIGRATION,
                 V9_MIGRATION,
+                V10_MIGRATION,
             ],
             target_version=SCHEMA_VERSION,
         )
@@ -885,6 +950,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'research_projects'"
     ).fetchone():
         migrate_v8_to_v9(conn)
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'paper_processing_jobs'"
+    ).fetchone():
+        migrate_v9_to_v10(conn)
     init_paper_chunks_fts(conn)
     rebuild_paper_chunks_fts(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

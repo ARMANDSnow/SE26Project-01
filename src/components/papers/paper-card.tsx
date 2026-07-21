@@ -2,7 +2,7 @@ import { BookOpen, Clock3, FileText, Star } from "lucide-react"
 import { Link } from "react-router"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { ProcessingBadge } from "@/components/common/status-badge"
+import { PreparationBadge } from "@/components/common/status-badge"
 import { uniqueValues } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import type { Paper } from "@/types"
@@ -29,7 +29,7 @@ export function PaperCard({ paper, compact = false, onFavorite, favoriteBusy = f
           <Badge className="h-6 rounded-full bg-primary/10 px-2 text-xs font-semibold text-primary hover:bg-primary/10">
             {paper.primary_category}
           </Badge>
-          <ProcessingBadge status={paper.processing_status} />
+          <PreparationBadge status={paper.preparation.status} />
         </div>
 
         <div className="space-y-2">

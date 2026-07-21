@@ -1142,13 +1142,13 @@ def create_project_analysis_run(
             ),
         )
         steps: tuple[tuple[str, str, str, str, list[str]], ...] = (
-            ("validate_project_inputs", "project.validate", "校验项目资料", "Landscape Planner Agent", []),
-            ("landscape_planning", "project.plan", "制定脉络计划", "Landscape Planner Agent", ["validate_project_inputs"]),
-            ("topic_clustering", "project.clusters", "生成主题簇", "Topic Clustering Agent", ["landscape_planning"]),
-            ("timeline_construction", "project.timeline", "构建研究时间线", "Timeline Agent", ["landscape_planning"]),
-            ("graph_construction", "project.graph", "构建研究关系图", "Graph Validation Agent", ["topic_clustering", "timeline_construction"]),
-            ("graph_citation_validation", "project.validation", "校验图谱与引用", "Graph Validation Agent", ["graph_construction"]),
-            ("finalize_research_landscape", "project.finalize", "完成研究脉络", "Landscape Planner Agent", ["graph_citation_validation"]),
+            ("validate_project_inputs", "project.validate", "校验项目资料", "项目资料校验", []),
+            ("landscape_planning", "project.plan", "制定脉络计划", "研究脉络规划", ["validate_project_inputs"]),
+            ("topic_clustering", "project.clusters", "生成主题簇", "主题簇生成", ["landscape_planning"]),
+            ("timeline_construction", "project.timeline", "构建研究时间线", "研究时间线生成", ["landscape_planning"]),
+            ("graph_construction", "project.graph", "构建研究关系图", "研究关系图生成", ["topic_clustering", "timeline_construction"]),
+            ("graph_citation_validation", "project.validation", "校验图谱与引用", "研究关系图校验", ["graph_construction"]),
+            ("finalize_research_landscape", "project.finalize", "完成研究脉络", "研究脉络整理", ["graph_citation_validation"]),
         )
         for position, (key, step_type, title, agent, dependencies) in enumerate(steps):
             conn.execute(

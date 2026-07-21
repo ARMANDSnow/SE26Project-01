@@ -1,14 +1,15 @@
 # Agent Handoff
 
-最后更新：2026-07-17，全功能真实网页巡检与 Bugfix closeout。
+最后更新：2026-07-21，Iter17 去 Agent 化与异步论文加工基建 closeout。
 
 ## Current Status
 
+- 2026-07-21 完成 Iter17：schema v10 新增持久化论文加工任务、租约/心跳/generation fencing、有界重试与失败隔离。arXiv/USENIX/SIGOPS 仍由用户手动触发来源抓取，元数据入库和 PDF 上传后自动异步下载、独立子进程 Docling、分块与 FTS；下载有总时限，上传请求不解析 PDF，关键写入重验用户/ACL/source hash。固定流程组件完成职责型去 Agent 化，`agent_name` 仅兼容保留。验证为 158 tests、strict mypy、build；三路收尾复核无阻断项。详见 `docs/iterations/iteration_iter17_async-paper-processing.md`。
 - 2026-07-17 完成全功能真实网页巡检与 Bugfix：真实导入/Docling/概要/Paper Chat/目录推荐/项目/17 步 topic Run/Citation 定位均从网页完成。修复长文 Markdown 失真、显式命名论文被本地检索漏掉、根目录聚合计数矛盾、移动触控尺寸和收藏/项目无障碍问题。验证为 146 tests、strict mypy、build、9 Playwright passed / 6 skipped，真实浏览器 console error 为 0；详见 `docs/iterations/bugfix_2026-07-17_full-web-ui-audit.md`。
 - 2026-07-17 完成 Iter16：新增 5 篇公开 RAG 论文/60 adjudicated 案例的 Citation entailment/coverage gold set、strict prediction scorer 与可选单请求 LLM judge、规范化 JSON/Markdown 报告、认证 v9/120 论文/100 并发 smoke、executor 重启恢复和连续三视口答辩路径。另经用户授权完成隔离真实普通 Chat 前端 smoke，并修复空 provider 文本被误记成功及非流式兼容问题；固定 60-case 真实 judge 仍未授权运行，质量报告明确为 `not_evaluated`，不得声明 `>90%` 已达成。详见 `docs/iterations/iteration_iter16_research-quality-evaluation.md` 和 `evaluation/README.md`。
 - 2026-07-17 完成 fresh v9 与 iter15 真实数据副本的三视口网页走查；真实普通 Chat 和 7,406-token 全文 Paper Chat 成功。修复 UTC 时间误显示、全文就绪仍标待处理、Select 32px 触点、时间线乱序/英文类型、论文内部 ID 暴露和 30 篇候选一次铺满，并约束后续 Timeline Agent 使用中文叙述。验证为 122 tests、strict mypy、build、9 Playwright passed / 6 skipped；详见 `docs/iterations/iteration_frontend-audit-2026-07-17.md`。
 
-- 当前分支：`codex/agentic-research-refactor`。Iter16 已先作为干净基线提交 `38a5dcc`；本轮网页巡检补丁按用户要求只 commit、不 push。
+- 当前分支：`codex/iter17-async-paper-processing`。本轮从 `main` @ `5026606` 开始；工作树原有的 `package-lock.json` 用户改动未纳入 Iter17 提交。
 - iter15 已在隔离数据库副本上完成真实 `gpt-5.5-medium` 项目分析：成功 Run 为 7/7 步、3/3 provider 调用，五类项目 Artifact 全部完成；另完成普通 Chat 和约 22k token 全文 Paper Chat。桌面凭据只注入隔离进程，未打印或写入仓库。
 - 真实验证修复了 Run-derived metadata dependency hash 与 manual retry durable identity；修复后同一成功 Run 的 Planner/Cluster/Timeline 各恰好一次调用。严格 Cluster claim/Citation 校验曾拒绝一份不合法模型输出，证明语义关系 fail closed。
 - iter15 将 schema 升至 v9：新增 owner-only 研究项目/项目成员、`mode='project'` 七步 Run、项目级追加版本 Artifact、dependency ledger 和项目 Citation reference。fresh、v8→v9、v2→v9、失败回滚与伪造 v9 fail-closed 已覆盖。
@@ -47,7 +48,7 @@
 - iter08 已建立 `api -> services -> repositories -> db` 外层分层；`main.py` 只负责生命周期、中间件、内存 SessionStore 和 Router 挂载。
 - iter09 已加入用户名/密码认证：Argon2id 哈希、内存 Session、HttpOnly SameSite=Lax Cookie，以及注册、登录、登出和当前用户 API。
 - 业务 Router 统一通过 `CurrentUser` 解析身份，不再信任 `X-User-ID`；除 health/auth 入口外，35 个业务 API method/path 全部要求登录。
-- SQLite schema version 为 9；启动时支持 v2→v3→v4→v5→v6→v7→v8→v9 连续前迁，失败 DDL 回滚且伪造/缺约束 v9 fail closed。
+- SQLite schema version 为 10；启动时支持 v2→v3→v4→v5→v6→v7→v8→v9→v10 连续前迁，失败 DDL 回滚且伪造/缺约束 v10 fail closed。
 - arXiv/USENIX/SIGOPS 等论文继续全局共享；用户上传通过独立 `paper_uploads` 记录 owner、visibility、provenance、moderation status 与原始文件名，新上传默认 private。
 - 私有上传访问控制覆盖目录、详情、PDF、Chunk、处理/解析/概要、资料库、历史、论文 Chat、Wiki/FTS/Graph、classic/agentic QA 与只读论文工具；缺失授权元数据的 upload 默认不可见。
 - 资料库/收藏、笔记、阅读历史、订阅、统计和聊天继续按用户隔离；公开上传收回为 private 后，其他用户遗留关联数据保留但立即从读取视图隐藏。
@@ -97,16 +98,16 @@ git diff --check
 - 当前验证的兼容网关/模型拒绝 `response_format=json_object`（脱敏 `provider_http_400`）；使用该组合需显式配置 `LLM_JSON_RESPONSE_FORMAT=false`。结构化调用仍注入完整 JSON Schema 并做严格 Pydantic 校验；模型层不隐藏重试，保证一次预算预占对应一次 provider 请求。
 - 仓库现存默认 `backend/data/arxiv_wiki.sqlite3` 是用户旧 v0 库（116 篇），本轮没有修改或重建；验证全部用独立 `DATABASE_PATH`。如需承接该数据，必须另立 legacy v0 迁移任务。
 - `database.py` 仍作为兼容 facade；`conversations.py`、`documents.py`、`search.py` 和 `paper_tools.py` 仍包含历史领域 SQL。
-- Docling 解析与远程 PDF 下载仍是同步长任务；最终提交已有 lease/source-hash CAS，失去 lease 后不会成为数据库真相，但 Python 线程不能抢占正在运行的 CPU 解析。大批量使用需要可取消进程 worker/任务队列。
+- 普通导入/上传后的 PDF 下载与 Docling 已异步化并可超时终止，但 topic DeepResearch 动态发现论文仍通过 `research_tools.py` 同步等待全文；它尚未复用 v10 加工任务，也没有“非关键论文失败后继续”的步骤策略，不能宣称原 17 步阻塞问题完全解决。
+- 论文加工执行器当前仍是 FastAPI 进程内的 SQLite 单机单槽监督器；可跨重启恢复，但多实例扩容前应抽为独立服务/专用队列。极端超大正文的预计算阶段只有写前延长租约保护，后续可增加循环级心跳。
 
 ## Next Candidates
 
-1. 经用户单独付费授权后，在固定 60-case gold set 上运行真实 judge；若未达到阈值，保留失败案例并迭代 prompt/evaluator，不得更新产品文案为已达标。
-2. 设计 schema v10 人工复核队列、报告导出前 entailment 再验证和自由改写门禁；离线 scorer 不直接授权生产内容。
-3. 为首次严格模型输出失败提供更明确的“新建分析版本”解释，并增加真实 provider ambiguous-call 人工 Decision。
-4. 引入可取消进程 worker/任务队列、Redis Session 与用户级 Run/SSE/模型配额。
-5. 如需使用旧 116 篇本地论文，先设计可审查、不破坏的 v0 legacy 迁移，不要直接 reset。
-6. 为通用 Markdown renderer 增加组件级测试，并将 metadata token ranking 逐步替换为可解释的 FTS/BM25。
+1. 下一轮按已确认范围一起处理库内搜索工具、文件夹范围语义、DeepResearch 作为 Chat 能力接入，以及唯一工具型 Agent/`qa_agent.py` 的兼容迁移；不要重新把固定步骤命名为 Agent。
+2. 让 topic DeepResearch 复用 v10 持久化加工任务：等待已有任务、对单篇 fetch/parse 失败做可审计的跳过/降级、保留足够论文时继续，必要时稍后续跑而不是整条 Run 卡死。
+3. 在上述统一执行入口上增加 Context Engineering：明确保留研究目标、已确认事实、论文原始定位与引用链，分层压缩过程信息，并确保摘要可回到原文 Chunk/Evidence。
+4. 经用户单独付费授权后，在固定 60-case gold set 上运行真实 judge；若未达到阈值，保留失败案例并迭代 prompt/evaluator，不得更新产品文案为已达标。
+5. 多实例部署前引入独立任务执行服务/专用队列、Redis Session 与用户级 Run/SSE/模型配额；如需旧 116 篇本地论文，另做可审查的 v0 legacy 迁移。
 
 ## Git Notes
 
@@ -119,5 +120,6 @@ git diff --check
 - iter14：`docs/iterations/iteration_iter14_cited-research-synthesis.md`。
 - iter15：`docs/iterations/iteration_iter15_research-landscape-projects.md`。
 - iter16：`docs/iterations/iteration_iter16_research-quality-evaluation.md`。
+- iter17：`docs/iterations/iteration_iter17_async-paper-processing.md`。
 - 全功能网页巡检：`docs/iterations/bugfix_2026-07-17_full-web-ui-audit.md`。
-- 本轮按用户要求只 commit、不 push；push 前仍需重新 fetch/rebase 并保留远端用户改动。
+- Iter17 按完整迭代规范 commit、不 push；push 前仍需 fetch/rebase 并保留远端及本地用户改动。

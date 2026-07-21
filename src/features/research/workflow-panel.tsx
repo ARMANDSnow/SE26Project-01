@@ -114,7 +114,7 @@ function WorkflowStep({ step, expanded, onToggle, instanceId }: {
       </button>
       {expanded ? (
         <div id={detailId} className="min-w-0 border-t px-4 py-3 text-xs leading-5 text-muted-foreground">
-          <p className="font-medium text-foreground">技术详情</p><p className="mt-1">执行者：{step.agent_name}</p>
+          <p className="font-medium text-foreground">技术详情</p><p className="mt-1">执行组件：{step.agent_name}</p>
           {step.output.scaffold_only ? <p className="mt-1">Harness 骨架输出；未执行论文检索、导入或模型研究。</p> : null}
           {tools.length ? (
             <section className="mt-3" aria-label="工具执行摘要">

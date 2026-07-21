@@ -22,17 +22,17 @@ from ..repositories.research_citations import (
     list_citations,
     list_current_evidence,
 )
-from .research_agents import (
-    CoordinatorAgent,
-    CitationVerifierAgent,
-    ComparisonAgent,
-    ExtractionAgent,
+from .research_components import (
+    ResearchBriefGenerator,
+    CitationValidationService,
+    ComparisonMatrixGenerator,
+    PaperBriefExtractor,
     LLMStructuredResearchModel,
-    ReaderAgent,
-    ReportAgent,
-    ScreeningAgent,
-    SearchAgent,
-    SynthesisAgent,
+    EvidenceQueryBuilder,
+    ResearchReportGenerator,
+    CandidatePaperScreener,
+    SearchQueryPlanner,
+    ResearchSynthesisGenerator,
     StructuredResearchModel,
 )
 from .research_contracts import (
@@ -87,15 +87,15 @@ class TopicResearchPipeline:
         tools: ToolRegistry | None = None,
     ) -> None:
         structured_model = model or LLMStructuredResearchModel()
-        self.coordinator = CoordinatorAgent(structured_model)
-        self.search_agent = SearchAgent(structured_model)
-        self.screening_agent = ScreeningAgent(structured_model)
-        self.reader_agent = ReaderAgent()
-        self.extraction_agent = ExtractionAgent(structured_model)
-        self.synthesis_agent = SynthesisAgent(structured_model)
-        self.comparison_agent = ComparisonAgent(structured_model)
-        self.citation_verifier = CitationVerifierAgent()
-        self.report_agent = ReportAgent(structured_model)
+        self.brief_generator = ResearchBriefGenerator(structured_model)
+        self.search_planner = SearchQueryPlanner(structured_model)
+        self.paper_screener = CandidatePaperScreener(structured_model)
+        self.evidence_query_builder = EvidenceQueryBuilder()
+        self.brief_extractor = PaperBriefExtractor(structured_model)
+        self.synthesis_generator = ResearchSynthesisGenerator(structured_model)
+        self.comparison_generator = ComparisonMatrixGenerator(structured_model)
+        self.citation_validator = CitationValidationService()
+        self.report_generator = ResearchReportGenerator(structured_model)
         self.tools = tools or build_research_tool_registry()
 
     def handle(self, step: dict[str, Any]) -> dict[str, Any]:
@@ -229,7 +229,7 @@ class TopicResearchPipeline:
         if checkpoint:
             return {"artifact_id": checkpoint["id"], "reused_checkpoint": True}
         goal = str(step.get("input", {}).get("goal", "")).strip()
-        brief = self._model_call(context, key, ResearchBrief, {"goal": goal}, lambda: self.coordinator.build_brief(goal))
+        brief = self._model_call(context, key, ResearchBrief, {"goal": goal}, lambda: self.brief_generator.build_brief(goal))
         with connect() as conn:
             artifact = create_artifact(
                 conn,
@@ -251,7 +251,7 @@ class TopicResearchPipeline:
         brief = ResearchBrief.model_validate(
             self._latest_artifact(context.run_id, context.user_id, "research_brief")["content"]
         )
-        queries = self._model_call(context, key, SearchQueries, brief.model_dump(mode="json"), lambda: self.search_agent.plan_queries(brief))
+        queries = self._model_call(context, key, SearchQueries, brief.model_dump(mode="json"), lambda: self.search_planner.plan_queries(brief))
         with connect() as conn:
             artifact = create_artifact(
                 conn,
@@ -398,7 +398,7 @@ class TopicResearchPipeline:
             self._latest_artifact(context.run_id, context.user_id, "candidate_papers")["content"]
         ).items
         screening_input = {"brief": brief.model_dump(mode="json"), "candidates": [item.model_dump(mode="json") for item in candidates]}
-        result = self._model_call(context, key, ScreeningResult, screening_input, lambda: self.screening_agent.screen(brief, candidates))
+        result = self._model_call(context, key, ScreeningResult, screening_input, lambda: self.paper_screener.screen(brief, candidates))
         assert_safe_research_payload(result.model_dump(mode="json"))
         selected = sorted((item for item in result.items if item.selected), key=lambda item: item.score, reverse=True)
         ranks = {item.paper_id: index + 1 for index, item in enumerate(selected)}
@@ -483,7 +483,7 @@ class TopicResearchPipeline:
         brief = ResearchBrief.model_validate(
             self._latest_artifact(context.run_id, context.user_id, "research_brief")["content"]
         )
-        query = self.reader_agent.evidence_query(brief)
+        query = self.evidence_query_builder.evidence_query(brief)
         summaries: list[ToolCallSummary] = []
         read_count = 0
         for paper in list_run_papers_for_context(context):
@@ -522,7 +522,7 @@ class TopicResearchPipeline:
         brief = ResearchBrief.model_validate(
             self._latest_artifact(context.run_id, context.user_id, "research_brief")["content"]
         )
-        query = self.reader_agent.evidence_query(brief)
+        query = self.evidence_query_builder.evidence_query(brief)
         summaries: list[ToolCallSummary] = []
         artifact_ids: list[str] = []
         extracted_ids: list[int] = []
@@ -569,7 +569,7 @@ class TopicResearchPipeline:
                 paper_key,
                 PaperBrief,
                 extraction_input,
-                lambda: self.extraction_agent.extract(
+                lambda: self.brief_extractor.extract(
                     brief=brief,
                     paper=candidate,
                     source_hash=source_hash,
@@ -703,7 +703,7 @@ class TopicResearchPipeline:
         brief = ResearchBrief.model_validate(self._latest_artifact(context.run_id, context.user_id, "research_brief")["content"])
         paper_briefs = self._current_paper_briefs(context)
         plan_input = {"research_brief": brief.model_dump(mode="json"), "paper_briefs": [item.model_dump(mode="json") for item in paper_briefs]}
-        plan = self._model_call(context, key, SynthesisPlan, plan_input, lambda: self.synthesis_agent.plan(brief, paper_briefs))
+        plan = self._model_call(context, key, SynthesisPlan, plan_input, lambda: self.synthesis_generator.plan(brief, paper_briefs))
         with connect() as conn:
             artifact = create_artifact(conn, run_id=context.run_id, source_step_id=context.step_id,
                 worker_id=context.worker_id, lease_generation=context.lease_generation,
@@ -719,7 +719,7 @@ class TopicResearchPipeline:
         briefs = self._current_paper_briefs(context)
         candidates = self._citation_candidates(context)
         matrix_input = {"plan": plan.model_dump(mode="json"), "paper_briefs": [item.model_dump(mode="json") for item in briefs], "citation_candidates": candidates}
-        matrix = self._model_call(context, key, ComparisonMatrix, matrix_input, lambda: self.comparison_agent.compare(plan, briefs, candidates))
+        matrix = self._model_call(context, key, ComparisonMatrix, matrix_input, lambda: self.comparison_generator.compare(plan, briefs, candidates))
         self._validate_matrix(matrix, candidates, briefs)
         with connect() as conn:
             artifact = create_artifact(conn, run_id=context.run_id, source_step_id=context.step_id,
@@ -739,7 +739,7 @@ class TopicResearchPipeline:
         paper_by_key = {str(item["citation_key"]): int(item["paper_id"]) for item in candidates}
         allowed_papers = set(paper_by_key.values())
         claims_input = {"plan": plan.model_dump(mode="json"), "comparison_matrix": matrix.model_dump(mode="json"), "citation_candidates": candidates}
-        claims = self._model_call(context, key, SynthesisClaims, claims_input, lambda: self.synthesis_agent.claims(plan, matrix, candidates))
+        claims = self._model_call(context, key, SynthesisClaims, claims_input, lambda: self.synthesis_generator.claims(plan, matrix, candidates))
         for claim in claims.claims:
             cited_keys = [*claim.supporting_citations, *claim.contradicting_citations]
             if any(citation_key not in allowed_keys for citation_key in cited_keys):
@@ -819,7 +819,7 @@ class TopicResearchPipeline:
             if not cited_papers.issubset(set(claim.covered_paper_ids)):
                 raise ResearchStepError("citation_claim_invalid", "主张覆盖论文与 Citation 身份不一致。")
         statuses = {str(item["citation_key"]): str(item["status"]) for item in citations}
-        result = self.citation_verifier.result(statuses=statuses, claims=claims)
+        result = self.citation_validator.result(statuses=statuses, claims=claims)
         required_claims = {claim.claim_id for claim in claims.claims if claim.claim_type in {"finding", "agreement", "disagreement"}}
         if set(result.verified_claim_ids) != required_claims or result.stale_citation_keys or result.inaccessible_citation_keys or result.invalid_citation_keys:
             raise ResearchStepError("citation_validation_failed", "事实性主张的引用未全部通过严格校验。")
@@ -870,7 +870,7 @@ class TopicResearchPipeline:
         validation = CitationValidationResult.model_validate(validation_artifact["content"])
         versions = {"synthesis_plan": int(plan_artifact["version"]), "comparison_matrix": int(matrix_artifact["version"]), "synthesis_claims": int(claims_artifact["version"]), "citation_registry": int(registry_artifact["version"]), "citation_validation_result": int(validation_artifact["version"])}
         report_input = {"plan": plan.model_dump(mode="json"), "comparison_matrix": matrix.model_dump(mode="json"), "verified_claims": claims.model_dump(mode="json"), "valid_citation_keys": validation.valid_citation_keys, "generated_from_artifact_versions": versions}
-        report = self._model_call(context, key, ResearchReport, report_input, lambda: self.report_agent.write(plan=plan, matrix=matrix, claims=claims,
+        report = self._model_call(context, key, ResearchReport, report_input, lambda: self.report_generator.write(plan=plan, matrix=matrix, claims=claims,
             valid_citation_keys=validation.valid_citation_keys, generated_from_artifact_versions=versions))
         used = self._report_citation_keys(report)
         if not used or used != set(report.citation_keys) or not used.issubset(set(validation.valid_citation_keys)) or report.generated_from_artifact_versions != versions:

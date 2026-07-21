@@ -105,7 +105,7 @@ export function PapersPage() {
             year: Number(year) || new Date().getFullYear(),
             max_results: SOURCE_INGEST_MAX_RESULTS,
           })
-      toast.success(`已导入 ${result.count} 篇论文，抓取 ${result.fetched_count} 篇，去重 ${result.duplicate_count} 篇。`)
+      toast.success(`已导入 ${result.count} 篇论文，其中 ${result.queued_count} 篇已进入后台加工。`)
     } catch {
       toast.warning("论文导入失败，请确认会议年份、来源页面和网络连接。")
     }
@@ -126,7 +126,7 @@ export function PapersPage() {
         year: Number(year) || new Date().getFullYear(),
         visibility: uploadVisibility,
       })
-      toast.success(`已${uploadVisibility === "private" ? "私有" : "公开"}上传《${paper.title}》`)
+      toast.success(`已${uploadVisibility === "private" ? "私有" : "公开"}上传《${paper.title}》，后台将自动解析全文。`)
     } catch {
       toast.error("PDF 上传或读取失败，请确认文件未加密且不超过 30 MB。")
     } finally {

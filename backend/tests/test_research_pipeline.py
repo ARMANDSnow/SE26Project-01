@@ -47,7 +47,7 @@ from backend.app.repositories.research_data import (
 from backend.app.repositories.research_citations import list_citations, register_opened_evidence, request_report_regeneration
 from backend.app.services.conversations import create_thread
 from backend.app.services.llm import LLMProviderError
-from backend.app.services.research_agents import CoordinatorAgent, LLMStructuredResearchModel
+from backend.app.services.research_components import LLMStructuredResearchModel, ResearchBriefGenerator
 from backend.app.services.research_contracts import ResearchBrief, ResearchStepError, canonical_arxiv_id
 from backend.app.services.research_contracts import (
     ComparisonMatrix, PaperBrief, ResearchReport, ScreeningResult, SearchQueries,
@@ -124,11 +124,11 @@ def test_structured_model_includes_schema_and_respects_json_mode_setting(
         return json.dumps(brief("Recoverable research"), ensure_ascii=False)
 
     monkeypatch.setattr(
-        "backend.app.services.research_agents.LLMClient.complete",
+        "backend.app.services.research_components.LLMClient.complete",
         complete,
     )
 
-    result = CoordinatorAgent(LLMStructuredResearchModel()).build_brief("Recoverable research")
+    result = ResearchBriefGenerator(LLMStructuredResearchModel()).build_brief("Recoverable research")
 
     assert result.topic == "Recoverable research"
     assert [json_mode for json_mode, _ in calls] == [False]
@@ -158,12 +158,12 @@ def test_structured_model_provider_error_does_not_make_a_hidden_retry(
         raise LLMProviderError("provider_http_400")
 
     monkeypatch.setattr(
-        "backend.app.services.research_agents.LLMClient.complete",
+        "backend.app.services.research_components.LLMClient.complete",
         complete,
     )
 
     with pytest.raises(ResearchStepError) as exc_info:
-        CoordinatorAgent(LLMStructuredResearchModel()).build_brief("Recoverable research")
+        ResearchBriefGenerator(LLMStructuredResearchModel()).build_brief("Recoverable research")
 
     assert exc_info.value.code == "structured_model_output_invalid"
     assert calls == [True]

@@ -19,7 +19,7 @@ import { toast } from "sonner"
 import { AppEmptyState } from "@/components/common/empty-state"
 import { LoadingState } from "@/components/common/loading-state"
 import { MarkdownBlock } from "@/components/common/markdown-block"
-import { ProcessingBadge } from "@/components/common/status-badge"
+import { PreparationBadge } from "@/components/common/status-badge"
 import { AddToProjectDialog } from "@/components/research/add-to-project-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -52,7 +52,7 @@ export function PaperDetailPage() {
   const hasEvidenceTarget = Number.isInteger(evidenceChunkId) && evidenceChunkId > 0
   const paperQuery = usePaperQuery(id)
   const projectBacklinks = useResearchProjectBacklinksQuery({ item_type: "paper", paper_id: id }, Number.isInteger(id) && id > 0)
-  const chunksQuery = usePaperChunksQuery(id)
+  const chunksQuery = usePaperChunksQuery(id, paperQuery.data?.preparation.status === "ready")
   const favoriteMutation = useFavoriteMutation()
   const parseMutation = useParsePaperDocumentMutation()
   const summaryMutation = useGeneratePaperSummaryMutation()
@@ -87,13 +87,14 @@ export function PaperDetailPage() {
   }
 
   const documentReady = paper.document?.status === "completed"
+  const preparationActive = ["queued", "download", "parse", "index", "retry_wait"].includes(paper.preparation.status)
   const pdfUrl = paper.pdf.view_url
   const busy = favoriteMutation.isPending || parseMutation.isPending || summaryMutation.isPending || addNoteMutation.isPending
 
   const onParse = async () => {
     try {
       await parseMutation.mutateAsync(paper.id)
-      toast.success("Docling 已完成论文全文解析。")
+      toast.success("论文已进入后台加工队列。")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "论文解析失败")
     }
@@ -146,10 +147,8 @@ export function PaperDetailPage() {
           <div className="min-w-0 space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <Badge className="rounded-full bg-primary/10 text-primary hover:bg-primary/10">{paper.primary_category}</Badge>
-              <ProcessingBadge status={documentReady ? "processed" : paper.processing_status} />
-              <Badge variant={documentReady ? "secondary" : "outline"} className="rounded-full">
-                {paper.document?.status === "processing" ? "正在解析全文" : documentReady ? `全文 ${paper.document?.token_count.toLocaleString()} tokens` : paper.document?.status === "failed" ? "全文解析失败" : "尚未解析全文"}
-              </Badge>
+              <PreparationBadge status={paper.preparation.status} />
+              {documentReady ? <Badge variant="secondary" className="rounded-full">全文 {paper.document?.token_count.toLocaleString()} tokens</Badge> : null}
             </div>
             <h1 className="text-2xl font-semibold leading-tight md:text-3xl">{paper.title}</h1>
             <p className="line-clamp-3 max-w-5xl text-sm leading-6 text-muted-foreground">{paper.abstract}</p>
@@ -162,9 +161,9 @@ export function PaperDetailPage() {
             <Button variant={paper.is_favorite ? "secondary" : "outline"} size="icon" className="size-11" onClick={onFavorite} disabled={busy} aria-label={paper.is_favorite ? "取消收藏" : "收藏"} aria-pressed={paper.is_favorite}>
               <Star className={cn("size-4", paper.is_favorite && "fill-current")} />
             </Button>
-            <Button variant="outline" className="min-h-11" onClick={onParse} disabled={busy || !paper.pdf.available}>
-              {parseMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />}{documentReady ? "重新解析全文" : "解析全文"}
-            </Button>
+            {paper.preparation.status !== "ready" ? <Button variant="outline" className="min-h-11" onClick={onParse} disabled={busy || preparationActive || !paper.pdf.source_available}>
+              {parseMutation.isPending || preparationActive ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />}{preparationActive ? "后台加工中" : documentReady ? "重新加工全文" : paper.preparation.status === "failed" ? "重试全文加工" : "加入加工队列"}
+            </Button> : null}
             <Button className="min-h-11" onClick={onSummary} disabled={busy || !documentReady}>
               {summaryMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}{currentSummary ? "重新生成概要" : "生成概要"}
             </Button>
@@ -176,7 +175,7 @@ export function PaperDetailPage() {
 
       <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground"><span>所属研究项目：</span>{projectBacklinks.isLoading ? <span>正在读取…</span> : (projectBacklinks.data ?? []).length ? projectBacklinks.data?.map((item) => <Button key={item.project_id} asChild variant="link" className="h-auto min-h-11 px-1"><Link to={`/library/projects/${item.project_id}`}>{item.project_title}</Link></Button>) : <span>尚未加入</span>}</div>
 
-      {paper.document?.status === "failed" ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">Docling 解析失败：{paper.document.error}</div> : null}
+      {paper.preparation.status === "failed" ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">全文加工失败：{paper.preparation.error_message ?? paper.document?.error ?? "未知错误"}</div> : null}
 
       <div className={cn("grid min-h-[620px] gap-4", layout === "split" && "xl:grid-cols-2")}>
         {layout !== "chat" ? (
@@ -196,7 +195,7 @@ export function PaperDetailPage() {
                 </div> : null}
               </div>
               <TabsContent value="source" className="mt-0 min-h-0 flex-1 overflow-auto p-0">
-                {workspaceTab === "source" && sourceView === "pdf" && pdfUrl ? <iframe title={paper.title} src={pdfUrl} className="h-[720px] w-full bg-muted" /> : documentReady ? <div className="p-5">{hasEvidenceTarget ? chunksQuery.isLoading ? <p className="mb-4 text-sm text-muted-foreground" aria-live="polite">正在定位 Citation Evidence…</p> : chunksQuery.isError ? <p className="mb-4 text-sm text-destructive" role="alert">Evidence 定位失败；未用全文缓存伪装定位结果。</p> : evidenceChunk ? <section ref={evidenceRef} tabIndex={-1} className="mb-5 min-w-0 rounded-xl border border-primary/35 bg-primary/5 p-4 outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Citation Evidence 定位" role="status"><p className="text-xs font-semibold text-primary">Citation Evidence · Chunk {evidenceChunk.id}</p><h2 className="mt-1 break-words text-sm font-semibold [overflow-wrap:anywhere]">{evidenceChunk.heading || "未命名章节"}</h2><p className="mt-1 text-xs text-muted-foreground">字符 {evidenceChunk.char_start}–{evidenceChunk.char_end}</p><blockquote className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"><mark className="rounded bg-[var(--status-waiting-bg)] px-0.5 text-foreground">{evidenceChunk.content}</mark></blockquote></section> : <p className="mb-4 text-sm text-destructive" role="alert">当前论文与 source hash 下不存在该 Evidence Chunk。</p> : null}<MarkdownBlock content={paper.document?.content_markdown ?? ""} className="max-w-none" /></div> : <AppEmptyState title="尚未生成可阅读的全文" description="点击“解析全文”，使用 Docling 读取完整 PDF。" />}
+                {workspaceTab === "source" && sourceView === "pdf" && pdfUrl ? <iframe title={paper.title} src={pdfUrl} className="h-[720px] w-full bg-muted" /> : documentReady ? <div className="p-5">{hasEvidenceTarget ? chunksQuery.isLoading ? <p className="mb-4 text-sm text-muted-foreground" aria-live="polite">正在定位 Citation Evidence…</p> : chunksQuery.isError ? <p className="mb-4 text-sm text-destructive" role="alert">Evidence 定位失败；未用全文缓存伪装定位结果。</p> : evidenceChunk ? <section ref={evidenceRef} tabIndex={-1} className="mb-5 min-w-0 rounded-xl border border-primary/35 bg-primary/5 p-4 outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Citation Evidence 定位" role="status"><p className="text-xs font-semibold text-primary">Citation Evidence · Chunk {evidenceChunk.id}</p><h2 className="mt-1 break-words text-sm font-semibold [overflow-wrap:anywhere]">{evidenceChunk.heading || "未命名章节"}</h2><p className="mt-1 text-xs text-muted-foreground">字符 {evidenceChunk.char_start}–{evidenceChunk.char_end}</p><blockquote className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"><mark className="rounded bg-[var(--status-waiting-bg)] px-0.5 text-foreground">{evidenceChunk.content}</mark></blockquote></section> : <p className="mb-4 text-sm text-destructive" role="alert">当前论文与 source hash 下不存在该 Evidence Chunk。</p> : null}<MarkdownBlock content={paper.document?.content_markdown ?? ""} className="max-w-none" /></div> : <AppEmptyState title={paper.preparation.status === "failed" ? "全文加工失败" : paper.preparation.status === "not_queued" ? "暂无可用全文" : "全文正在后台准备"} description={paper.preparation.status === "failed" ? "可点击顶部按钮重试。" : paper.preparation.status === "not_queued" ? paper.pdf.source_available ? "尚未加入加工队列，可点击顶部按钮开始。" : "当前论文没有可用 PDF 来源。" : "导入后会自动下载、解析并建立索引，无需停留在本页。"} />}
               </TabsContent>
               <TabsContent value="summary" className="mt-0 min-h-0 flex-1 overflow-auto p-5">
                 {currentSummary ? <div className="grid gap-4"><div className="text-xs text-muted-foreground">{currentSummary.model} · {formatLocalDateTime(currentSummary.created_at)}</div><MarkdownBlock content={currentSummary.content} className="max-w-none" /></div> : <AppEmptyState title="还没有全文概要" description={documentReady ? "点击顶部“生成概要”。" : "请先完成论文全文解析。"} />}

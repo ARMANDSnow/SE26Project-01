@@ -31,6 +31,12 @@ class Settings:
         }
         self.llm_context_window = int(os.getenv("LLM_CONTEXT_WINDOW", "131072"))
         self.llm_max_output_tokens = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "4096"))
+        self.paper_processing_enabled = os.getenv(
+            "PAPER_PROCESSING_ENABLED", "true"
+        ).lower() in {"1", "true", "yes"}
+        self.paper_processing_timeout_seconds = max(
+            30, int(os.getenv("PAPER_PROCESSING_TIMEOUT_SECONDS", "600"))
+        )
         categories = os.getenv("ARXIV_DEFAULT_CATEGORIES", "cs.AI,cs.CL,cs.LG")
         self.default_categories = [item.strip() for item in categories.split(",") if item.strip()]
 
