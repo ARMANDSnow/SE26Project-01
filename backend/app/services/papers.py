@@ -20,6 +20,7 @@ from ..repositories.papers import (
     paper_exists,
     upsert_paper,
 )
+from ..repositories.paper_processing import enqueue_paper_processing, processing_projection
 from .remote_pdf import PaperPdfService
 
 
@@ -50,8 +51,13 @@ def register_uploaded_paper(
     if detail is None:
         conn.rollback()
         raise RuntimeError("paper could not be loaded after insert")
+    enqueue_paper_processing(
+        conn,
+        paper_id=int(paper_id),
+        requested_by_user_id=owner_user_id,
+    )
     conn.commit()
-    return detail
+    return get_paper_detail(conn, int(paper_id), user_id=owner_user_id) or detail
 
 
 def list_catalog(
@@ -112,7 +118,9 @@ def resolve_pdf(conn: sqlite3.Connection, paper_id: int, user_id: int) -> PaperP
     if title is None:
         return None
     pdf_service = PaperPdfService(conn)
-    asset = pdf_service.ensure(paper_id)
+    asset = pdf_service.get(paper_id)
+    if asset is None:
+        raise RuntimeError("paper PDF is not ready")
     return PaperPdf(
         asset_id=asset.id,
         path=pdf_service.store.path_for(asset.id),
@@ -122,6 +130,25 @@ def resolve_pdf(conn: sqlite3.Connection, paper_id: int, user_id: int) -> PaperP
 
 def can_access_paper(conn: sqlite3.Connection, paper_id: int, user_id: int) -> bool:
     return paper_is_accessible(conn, paper_id, user_id)
+
+
+def queue_document_processing(
+    conn: sqlite3.Connection,
+    paper_id: int,
+    user_id: int,
+) -> dict[str, Any]:
+    if not paper_is_accessible(conn, paper_id, user_id):
+        raise ValueError("paper not found")
+    disposition = enqueue_paper_processing(
+        conn,
+        paper_id=paper_id,
+        requested_by_user_id=user_id,
+    )
+    conn.commit()
+    return {
+        "disposition": disposition,
+        "preparation": processing_projection(conn, paper_id),
+    }
 
 
 def change_upload_visibility(

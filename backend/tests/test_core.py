@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from io import BytesIO
 from types import SimpleNamespace
 from urllib.request import Request
@@ -54,8 +55,9 @@ from backend.app.repositories.research import (
     resolve_decision,
     retry_run,
 )
-from backend.app.services.agents import SummaryAgent, process_paper
+from backend.app.services.paper_analysis import PaperSummaryGenerator, process_paper
 from backend.app.services.asset_store import LocalAssetStore
+from backend.app.services.remote_pdf import PaperPdfService, RemotePdfError
 from backend.app.services.sources.common import MetadataPage
 from backend.app.services.sources.sigops import (
     SigopsAcceptedPapersParser,
@@ -395,6 +397,7 @@ def api_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.sqlite3"))
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("PAPER_PROCESSING_ENABLED", "false")
     get_settings.cache_clear()
     with TestClient(app) as client:
         registered = client.post(
@@ -565,26 +568,40 @@ def test_process_paper_generates_required_wiki_sections(monkeypatch):
             [{"name": "Test concept", "description": "A test-only LLM response", "relation": "topic", "weight": 0.8}],
         )
 
-    monkeypatch.setattr(SummaryAgent, "summarize", summarize)
+    monkeypatch.setattr(PaperSummaryGenerator, "summarize", summarize)
+    set_paper_asset_id(conn, pending, AssetId(f"sha256:{'b' * 64}"))
+    source_hash = conn.execute(
+        "SELECT asset_id FROM papers WHERE id = ?", (pending,)
+    ).fetchone()["asset_id"].removeprefix("sha256:")
 
-    def parse_document(conn, paper_id, user_id=1):
-        conn.execute(
-            """
-            INSERT INTO paper_documents(
-                paper_id, parser_name, parser_version, source_hash,
-                content_markdown, token_count, status, parsed_at
-            ) VALUES (?, 'test-parser', '1', ?, ?, 20, 'completed', CURRENT_TIMESTAMP)
-            """,
-            (paper_id, "b" * 64, "# Test paper\n\nA complete parsed document used by the unit test."),
-        )
-        conn.commit()
-        return {"status": "completed"}
-
-    monkeypatch.setattr("backend.app.services.agents.parse_paper_document", parse_document)
+    conn.execute(
+        """
+        INSERT INTO paper_documents(
+            paper_id, parser_name, parser_version, source_hash,
+            content_markdown, token_count, status, parsed_at
+        ) VALUES (?, 'test-parser', '1', ?, ?, 20, 'completed', CURRENT_TIMESTAMP)
+        """,
+        (pending, source_hash, "# Test paper\n\nA complete parsed document used by the unit test."),
+    )
+    conn.commit()
     result = process_paper(conn, pending)
     assert result["status"] == "processed"
     detail = get_paper_detail(conn, pending)
     assert {section["section"] for section in detail["wiki"]} >= {"summary", "concepts", "methods", "experiments"}
+
+
+def test_process_paper_does_not_parse_pdf_inside_request():
+    conn = memory_db()
+    pending = conn.execute(
+        "SELECT id FROM papers WHERE processing_status = 'pending'"
+    ).fetchone()["id"]
+
+    with pytest.raises(RuntimeError, match="后台准备"):
+        process_paper(conn, pending)
+
+    assert conn.execute(
+        "SELECT 1 FROM paper_documents WHERE paper_id = ?", (pending,)
+    ).fetchone() is None
 
 
 def test_search_uses_real_keywords_only():
@@ -801,7 +818,34 @@ def test_api_ingest_does_not_deduplicate_matching_titles(api_client, monkeypatch
     assert data["fetched_count"] == 2
     assert data["duplicate_count"] == 0
     assert data["count"] == 2
+    assert data["queued_count"] == 2
+    assert data["active_count"] == 0
     assert len(data["paper_ids"]) == 2
+
+
+def test_api_document_parse_only_enqueues_idempotent_background_work(api_client):
+    paper = api_client.get("/api/papers").json()["items"][0]
+    with connect() as conn:
+        conn.execute("DELETE FROM paper_documents WHERE paper_id = ?", (paper["id"],))
+        conn.execute("UPDATE papers SET asset_id = NULL WHERE id = ?", (paper["id"],))
+        conn.commit()
+
+    first = api_client.post(f"/api/papers/{paper['id']}/document/parse")
+    second = api_client.post(f"/api/papers/{paper['id']}/document/parse")
+
+    assert first.status_code == 202
+    assert first.json()["disposition"] == "queued"
+    assert first.json()["preparation"]["status"] == "queued"
+    assert second.status_code == 202
+    assert second.json()["disposition"] == "active"
+    assert "job" not in first.json()
+    assert "job" not in second.json()
+    with connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM paper_processing_jobs WHERE paper_id = ?", (paper["id"],)
+        ).fetchone()[0] == 1
+    detail = api_client.get(f"/api/papers/{paper['id']}").json()
+    assert detail["preparation"]["status"] == "queued"
 
 
 def test_sigops_toc_parser_reads_title_authors_and_abstract():
@@ -947,11 +991,9 @@ def test_api_ingests_usenix_source(api_client, monkeypatch):
 
 def test_api_upload_records_local_pdf(api_client, monkeypatch):
     monkeypatch.setattr(
-        "backend.app.api.routers.papers.save_and_extract_pdf",
+        "backend.app.api.routers.papers.save_uploaded_pdf",
         lambda file, store: SimpleNamespace(
             asset=AssetInfo(id=AssetId(f"sha256:{'a' * 64}"), size_bytes=16),
-            title="Extracted PDF title",
-            text="Extracted PDF text.",
         ),
     )
     response = api_client.post(
@@ -965,6 +1007,7 @@ def test_api_upload_records_local_pdf(api_client, monkeypatch):
     assert paper["pdf"] == {
         "available": True,
         "cached": True,
+        "source_available": True,
         "view_url": f"/api/papers/{paper['id']}/pdf",
         "download_url": f"/api/papers/{paper['id']}/pdf/download",
     }
@@ -988,7 +1031,7 @@ def test_api_upload_and_download_real_pdf(api_client):
     response = api_client.post(
         "/api/papers/upload",
         files={"file": ("real.pdf", payload.getvalue(), "application/pdf")},
-        data={"year": "2025"},
+        data={"title": "Real PDF upload", "year": "2025"},
     )
     assert response.status_code == 200
     paper = response.json()
@@ -1020,11 +1063,9 @@ def test_private_and_public_upload_visibility_covers_direct_and_indirect_reads(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "backend.app.api.routers.papers.save_and_extract_pdf",
+        "backend.app.api.routers.papers.save_uploaded_pdf",
         lambda file, store: SimpleNamespace(
             asset=AssetInfo(id=AssetId(f"sha256:{'c' * 64}"), size_bytes=16),
-            title="Private visibility sentinel",
-            text="Private visibility sentinel content.",
         ),
     )
     first_user = api_client.get("/api/auth/me").json()
@@ -1033,7 +1074,7 @@ def test_private_and_public_upload_visibility_covers_direct_and_indirect_reads(
     uploaded = api_client.post(
         "/api/papers/upload",
         files={"file": ("private-sentinel.pdf", b"%PDF-1.4 mock", "application/pdf")},
-        data={"year": "2025", "visibility": "private"},
+        data={"title": "Private visibility sentinel", "year": "2025", "visibility": "private"},
     )
     assert uploaded.status_code == 200
     paper_id = uploaded.json()["id"]
@@ -1185,7 +1226,7 @@ def test_private_and_public_upload_visibility_covers_direct_and_indirect_reads(
     assert first_user["id"] != second_user["id"]
 
 
-def test_api_remote_pdf_downloads_once_and_serves_cache(api_client, monkeypatch):
+def test_remote_pdf_is_downloaded_by_processing_service_then_served_from_cache(api_client, monkeypatch):
     with connect() as conn:
         paper_id = conn.execute("SELECT id FROM papers ORDER BY id LIMIT 1").fetchone()["id"]
         conn.execute(
@@ -1219,6 +1260,11 @@ def test_api_remote_pdf_downloads_once_and_serves_cache(api_client, monkeypatch)
         return FakeResponse()
 
     monkeypatch.setattr("backend.app.services.remote_pdf.open_trusted_url", fake_urlopen)
+    pending = api_client.get(f"/api/papers/{paper_id}/pdf")
+    assert pending.status_code == 409
+    with connect() as conn:
+        PaperPdfService(conn).ensure(paper_id)
+
     first = api_client.get(f"/api/papers/{paper_id}/pdf")
     second = api_client.get(f"/api/papers/{paper_id}/pdf")
     not_modified = api_client.get(
@@ -1244,7 +1290,7 @@ def test_api_remote_pdf_downloads_once_and_serves_cache(api_client, monkeypatch)
         (b"%PDF-1.4 complete\n%%EOF\n", {"Content-Length": "999"}),
     ],
 )
-def test_api_remote_pdf_rejects_incomplete_downloads(api_client, monkeypatch, body, headers):
+def test_remote_pdf_processing_rejects_incomplete_downloads(api_client, monkeypatch, body, headers):
     with connect() as conn:
         paper_id = conn.execute("SELECT id FROM papers ORDER BY id LIMIT 1").fetchone()["id"]
         conn.execute(
@@ -1278,12 +1324,48 @@ def test_api_remote_pdf_rejects_incomplete_downloads(api_client, monkeypatch, bo
         lambda *_args, **_kwargs: FakeResponse(),
     )
 
-    response = api_client.get(f"/api/papers/{paper_id}/pdf")
-
-    assert response.status_code == 502
-    assert response.json() == {"detail": "remote PDF download failed"}
+    with connect() as conn:
+        with pytest.raises(RemotePdfError, match="remote PDF download failed"):
+            PaperPdfService(conn).ensure(paper_id)
     with connect() as conn:
         assert conn.execute("SELECT asset_id FROM papers WHERE id = ?", (paper_id,)).fetchone()["asset_id"] is None
+
+
+def test_remote_pdf_processing_has_total_wall_clock_timeout(api_client, monkeypatch):
+    with connect() as conn:
+        paper_id = conn.execute("SELECT id FROM papers ORDER BY id LIMIT 1").fetchone()["id"]
+        conn.execute(
+            "UPDATE papers SET pdf_url = ?, asset_id = NULL WHERE id = ?",
+            ("https://www.usenix.org/system/files/slow.pdf", paper_id),
+        )
+        conn.commit()
+
+    class SlowResponse:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def geturl(self):
+            return "https://www.usenix.org/system/files/slow.pdf"
+
+        def read(self, _size=-1):
+            time.sleep(0.03)
+            return b"%PDF-1.4 slow\n%%EOF\n"
+
+    monkeypatch.setattr(
+        "backend.app.services.remote_pdf.open_trusted_url",
+        lambda *_args, **_kwargs: SlowResponse(),
+    )
+    with connect() as conn:
+        with pytest.raises(RemotePdfError, match="remote PDF download failed"):
+            PaperPdfService(conn).ensure(paper_id, total_timeout_seconds=0.01)
+        assert conn.execute(
+            "SELECT asset_id FROM papers WHERE id = ?", (paper_id,)
+        ).fetchone()["asset_id"] is None
 
 
 def test_research_sensitive_reads_disable_http_caching(api_client) -> None:

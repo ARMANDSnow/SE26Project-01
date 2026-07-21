@@ -24,13 +24,13 @@ from ..repositories.research_data import (
     begin_model_call,
     complete_model_call_and_settle,
 )
-from .research_agents import (
-    GraphValidationAgent,
+from .research_components import (
+    ResearchGraphValidator,
     LLMStructuredResearchModel,
-    LandscapePlannerAgent,
+    ResearchLandscapePlanner,
     StructuredResearchModel,
-    TimelineAgent,
-    TopicClusteringAgent,
+    ResearchTimelineGenerator,
+    TopicClusterGenerator,
 )
 from .research_contracts import (
     ProjectAnalysisValidation,
@@ -63,10 +63,10 @@ class ProjectResearchPipeline:
 
     def __init__(self, *, model: StructuredResearchModel | None = None) -> None:
         structured_model = model or LLMStructuredResearchModel()
-        self.planner = LandscapePlannerAgent(structured_model)
-        self.clustering_agent = TopicClusteringAgent(structured_model)
-        self.timeline_agent = TimelineAgent(structured_model)
-        self.graph_validator = GraphValidationAgent()
+        self.planner = ResearchLandscapePlanner(structured_model)
+        self.cluster_generator = TopicClusterGenerator(structured_model)
+        self.timeline_generator = ResearchTimelineGenerator(structured_model)
+        self.graph_validator = ResearchGraphValidator()
 
     def handle(self, step: dict[str, Any]) -> dict[str, Any]:
         if not str(step.get("step_type", "")).startswith("project."):
@@ -613,7 +613,7 @@ class ProjectResearchPipeline:
                 key,
                 TopicClusters,
                 {"plan": plan.model_dump(mode="json"), **model_input},
-                lambda: self.clustering_agent.cluster(plan=plan, inputs=model_input),
+                lambda: self.cluster_generator.cluster(plan=plan, inputs=model_input),
             )
         allowed_papers = {int(item["paper_id"]) for item in scope["papers"] if isinstance(item.get("paper_id"), int)}
         allowed_claims = {str(item["claim_id"]) for item in scope["claims"] if isinstance(item.get("claim_id"), str)}
@@ -711,7 +711,7 @@ class ProjectResearchPipeline:
                 key,
                 ResearchTimeline,
                 {"plan": plan.model_dump(mode="json"), **model_input},
-                lambda: self.timeline_agent.build(plan=plan, inputs=model_input),
+                lambda: self.timeline_generator.build(plan=plan, inputs=model_input),
             )
         allowed_papers = {int(item["paper_id"]) for item in scope["papers"] if isinstance(item.get("paper_id"), int)}
         allowed_claims = {str(item["claim_id"]) for item in scope["claims"] if isinstance(item.get("claim_id"), str)}

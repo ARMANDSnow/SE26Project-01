@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
+from tempfile import SpooledTemporaryFile
 from pathlib import Path
-from typing import BinaryIO, Callable
+from typing import BinaryIO, Callable, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 from ..config import get_settings
 from ..repositories.papers import get_paper_record, set_paper_asset_id
 from ..models import AssetInfo, PaperId, PaperSource
-from .asset_store import AssetNotFoundError, AssetStore, AssetStoreError, LocalAssetStore
+from .asset_store import MAX_PDF_BYTES, AssetNotFoundError, AssetStore, AssetStoreError, LocalAssetStore
 from .http_safety import UnsafeUrlError, open_trusted_url, validate_trusted_https_url
 
 
 REMOTE_PDF_TIMEOUT_SECONDS = 20
+REMOTE_PDF_TOTAL_TIMEOUT_SECONDS = 60
 ALLOWED_REMOTE_PDF_HOSTS = {
     "arxiv.org",
     "dl.acm.org",
@@ -25,10 +28,54 @@ ALLOWED_REMOTE_PDF_HOSTS = {
     "www.usenix.org",
 }
 _download_lock = threading.Lock()
+_REMOTE_READ_CHUNK = 1024 * 1024
 
 
 class RemotePdfError(ValueError):
     pass
+
+
+def _store_validated_remote_pdf(
+    response: BinaryIO,
+    store: AssetStore,
+    content_length: str | None,
+    *,
+    progress: Callable[[], None] | None = None,
+    total_timeout_seconds: float = REMOTE_PDF_TOTAL_TIMEOUT_SECONDS,
+) -> AssetInfo:
+    """Validate a complete response before publishing it to the shared blob store."""
+    with SpooledTemporaryFile(max_size=4 * 1024 * 1024) as temporary:
+        deadline = time.monotonic() + total_timeout_seconds
+        total = 0
+        first_bytes = b""
+        tail = b""
+        while True:
+            if time.monotonic() >= deadline:
+                raise RemotePdfError("remote PDF download exceeded its total timeout")
+            if progress is not None:
+                progress()
+            chunk = response.read(_REMOTE_READ_CHUNK)
+            if time.monotonic() >= deadline:
+                raise RemotePdfError("remote PDF download exceeded its total timeout")
+            if not chunk:
+                break
+            if not isinstance(chunk, bytes):
+                raise RemotePdfError("remote PDF response was not bytes")
+            if not first_bytes:
+                first_bytes = chunk[:5]
+            total += len(chunk)
+            if total > MAX_PDF_BYTES:
+                raise RemotePdfError("remote PDF exceeds the size limit")
+            tail = (tail + chunk)[-4096:]
+            temporary.write(chunk)
+        if content_length is not None and total != int(content_length):
+            raise RemotePdfError("remote PDF download was incomplete")
+        if not first_bytes.startswith(b"%PDF-"):
+            raise RemotePdfError("remote response is not a PDF")
+        if b"%%EOF" not in tail:
+            raise RemotePdfError("remote PDF is missing its EOF marker")
+        temporary.seek(0)
+        return store.put_pdf(cast(BinaryIO, temporary))
 
 
 def _has_pdf_eof(store: AssetStore, asset: AssetInfo) -> bool:
@@ -77,6 +124,8 @@ class PaperPdfService:
         paper_id: PaperId | int,
         *,
         before_attach: Callable[[sqlite3.Connection], None] | None = None,
+        progress: Callable[[], None] | None = None,
+        total_timeout_seconds: float = REMOTE_PDF_TOTAL_TIMEOUT_SECONDS,
     ) -> AssetInfo:
         existing = self.get(paper_id)
         if existing is not None:
@@ -107,13 +156,13 @@ class PaperPdfService:
                     timeout=REMOTE_PDF_TIMEOUT_SECONDS,
                 ) as response:
                     content_length = response.headers.get("Content-Length")
-                    asset = self.store.put_pdf(response)
-                    if content_length is not None and asset.size_bytes != int(content_length):
-                        self.store.delete(asset.id)
-                        raise RemotePdfError("remote PDF download was incomplete")
-                    if not _has_pdf_eof(self.store, asset):
-                        self.store.delete(asset.id)
-                        raise RemotePdfError("remote PDF is missing its EOF marker")
+                    asset = _store_validated_remote_pdf(
+                        response,
+                        self.store,
+                        content_length,
+                        progress=progress,
+                        total_timeout_seconds=total_timeout_seconds,
+                    )
             except (HTTPError, URLError, TimeoutError, OSError, ValueError, AssetStoreError, UnsafeUrlError) as exc:
                 raise RemotePdfError("remote PDF download failed") from exc
 
@@ -145,5 +194,10 @@ class PaperPdfService:
         return self.store.path_for(asset.id)
 
 
-def ensure_local_pdf(conn: sqlite3.Connection, paper_id: PaperId | int) -> Path:
-    return PaperPdfService(conn).path_for(paper_id)
+def ensure_local_pdf(
+    conn: sqlite3.Connection,
+    paper_id: PaperId | int,
+    *,
+    store: AssetStore | None = None,
+) -> Path:
+    return PaperPdfService(conn, store=store).path_for(paper_id)

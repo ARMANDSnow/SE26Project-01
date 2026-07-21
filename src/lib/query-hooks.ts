@@ -437,6 +437,9 @@ export function usePapersQuery(filters: PaperFilters = {}) {
   return useQuery({
     queryKey: queryKeys.papers(filters),
     queryFn: () => fetchPapers(filters),
+    refetchInterval: (query) => query.state.data?.some((paper) =>
+      ["queued", "download", "parse", "index", "retry_wait"].includes(paper.preparation.status)
+    ) ? 2_000 : false,
   })
 }
 
@@ -445,14 +448,18 @@ export function usePaperQuery(id: number) {
     queryKey: queryKeys.paper(id),
     queryFn: () => fetchPaperDetail(id),
     enabled: Number.isFinite(id) && id > 0,
+    refetchInterval: (query) => {
+      const status = query.state.data?.preparation.status
+      return status && ["queued", "download", "parse", "index", "retry_wait"].includes(status) ? 2_000 : false
+    },
   })
 }
 
-export function usePaperChunksQuery(id: number) {
+export function usePaperChunksQuery(id: number, enabled = true) {
   return useQuery({
     queryKey: queryKeys.paperChunks(id),
     queryFn: () => fetchPaperChunks(id),
-    enabled: Number.isFinite(id) && id > 0,
+    enabled: enabled && Number.isFinite(id) && id > 0,
   })
 }
 
@@ -595,8 +602,8 @@ export function useParsePaperDocumentMutation() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: parsePaperDocument,
-    onSuccess: (document, paperId) => {
-      void document
+    onSuccess: (result, paperId) => {
+      void result
       queryClient.invalidateQueries({ queryKey: queryKeys.paper(paperId) })
       queryClient.invalidateQueries({ queryKey: queryKeys.paperChunks(paperId) })
     },

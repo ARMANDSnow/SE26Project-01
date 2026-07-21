@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from ...auth.dependencies import require_user
+from ...auth.dependencies import CurrentUser, require_user
 from ...config import get_settings
 from ...services.http_safety import UnsafeUrlError
 from ...services.ingestion import IngestionPersistenceError, save_ingested_papers
@@ -18,7 +18,11 @@ router = APIRouter(
 
 
 @router.post("/arxiv")
-def ingest_arxiv(payload: IngestRequest) -> dict[str, Any]:
+def ingest_arxiv(
+    payload: IngestRequest,
+    request: Request,
+    user: CurrentUser,
+) -> dict[str, Any]:
     settings = get_settings()
     categories = payload.categories or settings.default_categories
     try:
@@ -26,14 +30,22 @@ def ingest_arxiv(payload: IngestRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"arXiv 抓取失败：{exc}") from exc
     try:
-        result = save_ingested_papers(papers)
+        result = save_ingested_papers(papers, requested_by_user_id=user.id)
     except IngestionPersistenceError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    executor = getattr(request.app.state, "paper_processing_executor", None)
+    if executor is not None:
+        executor.wake()
     return {**result, "categories": categories, "keywords": payload.keywords}
 
 
 @router.post("/{source}")
-def ingest_source(source: str, payload: SourceIngestRequest) -> dict[str, Any]:
+def ingest_source(
+    source: str,
+    payload: SourceIngestRequest,
+    request: Request,
+    user: CurrentUser,
+) -> dict[str, Any]:
     normalized_source = source.strip().lower()
     try:
         if normalized_source == "usenix":
@@ -51,7 +63,10 @@ def ingest_source(source: str, payload: SourceIngestRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"{normalized_source} 抓取失败：{exc}") from exc
     try:
-        result = save_ingested_papers(papers)
+        result = save_ingested_papers(papers, requested_by_user_id=user.id)
     except IngestionPersistenceError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    executor = getattr(request.app.state, "paper_processing_executor", None)
+    if executor is not None:
+        executor.wake()
     return {**result, "source": normalized_source, "venue": payload.venue, "year": payload.year}

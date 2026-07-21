@@ -34,9 +34,10 @@ def row_to_paper(
     row: sqlite3.Row,
     is_favorite: bool | None = None,
     upload: dict[str, Any] | None = None,
+    preparation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     paper = row_to_paper_record(row)
-    pdf_available = paper.asset_id is not None or paper.pdf_url is not None
+    pdf_available = paper.asset_id is not None
     pdf_base_url = f"/api/papers/{int(paper.id)}/pdf"
     return {
         "id": int(paper.id),
@@ -54,8 +55,17 @@ def row_to_paper(
         "pdf": {
             "available": pdf_available,
             "cached": paper.asset_id is not None,
+            "source_available": paper.asset_id is not None or paper.pdf_url is not None,
             "view_url": pdf_base_url if pdf_available else None,
             "download_url": f"{pdf_base_url}/download" if pdf_available else None,
+        },
+        "preparation": preparation or {
+            "status": "not_queued",
+            "attempt_count": 0,
+            "max_attempts": 0,
+            "error_code": None,
+            "error_message": None,
+            "updated_at": None,
         },
         "processing_status": paper.processing_status,
         "is_favorite": bool(is_favorite),
@@ -226,7 +236,10 @@ def replace_paper_chunks(
                     int(chunk["char_start"]),
                     int(chunk["char_end"]),
                     int(chunk["token_count"]),
-                    json.dumps(deterministic_embedding(content), ensure_ascii=False),
+                    str(
+                        chunk.get("embedding_json")
+                        or json.dumps(deterministic_embedding(content), ensure_ascii=False)
+                    ),
                 ),
             )
     except sqlite3.Error:
@@ -381,6 +394,7 @@ def list_papers(
     user_id: int = 1,
 ) -> list[dict[str, Any]]:
     from .library import ensure_user_library
+    from .paper_processing import processing_projection
     from .uploads import accessible_paper_condition, upload_metadata_for_user
 
     ensure_user_library(conn, user_id)
@@ -403,6 +417,7 @@ def list_papers(
             row,
             paper_id in saved_ids,
             upload_metadata_for_user(conn, paper_id, user_id),
+            processing_projection(conn, paper_id),
         )
         haystack = " ".join(
             [paper["title"], paper["abstract"], " ".join(paper["authors"]), " ".join(paper["categories"])]
@@ -431,6 +446,7 @@ def list_papers(
 
 
 def get_paper_detail(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) -> dict[str, Any] | None:
+    from .paper_processing import processing_projection
     from .uploads import paper_is_accessible, upload_metadata_for_user
 
     if not paper_is_accessible(conn, paper_id, user_id):
@@ -442,7 +458,12 @@ def get_paper_detail(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) 
         "SELECT 1 FROM library_items WHERE user_id = ? AND paper_id = ?",
         (user_id, paper_id),
     ).fetchone() is not None
-    paper = row_to_paper(row, saved, upload_metadata_for_user(conn, paper_id, user_id))
+    paper = row_to_paper(
+        row,
+        saved,
+        upload_metadata_for_user(conn, paper_id, user_id),
+        processing_projection(conn, paper_id),
+    )
     sections = conn.execute(
         "SELECT section, title, content, updated_at FROM wiki_sections WHERE paper_id = ? ORDER BY id",
         (paper_id,),

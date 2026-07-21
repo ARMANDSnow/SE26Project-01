@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from backend.app.config import get_settings
 from backend.app.database import connect
 from backend.app.main import app
-from backend.app.services.research_agents import GraphValidationAgent
+from backend.app.services.research_components import ResearchGraphValidator
 from backend.app.services.project_research import ProjectResearchPipeline
 from backend.app.services.research_contracts import (
     ProjectCoverageSummary,
@@ -184,7 +184,7 @@ def test_graph_validation_rejects_model_ids_and_cross_scope_citations() -> None:
         citation_keys=[],
     )
     with pytest.raises(ResearchStepError) as exc_info:
-        GraphValidationAgent.validate(
+        ResearchGraphValidator.validate(
             graph,
             allowed_node_ids={"paper:1"},
             allowed_citation_keys={"PC1"},

@@ -6,12 +6,12 @@ import sqlite3
 from typing import Any
 
 from ..repositories.papers import attach_concepts, get_paper_detail, get_paper_record, replace_wiki_sections
-from .documents import get_paper_document, parse_paper_document
+from .documents import get_paper_document
 from .llm import LLMClient, LLMConfigurationError, LLMServiceError
 
 
-class ReaderAgent:
-    name = "ReaderAgent"
+class PaperContentBuilder:
+    name = "PaperContentBuilder"
 
     def read(self, paper: dict[str, Any]) -> dict[str, str]:
         document = paper.get("document") or {}
@@ -24,8 +24,8 @@ class ReaderAgent:
         }
 
 
-class SummaryAgent:
-    name = "SummaryAgent"
+class PaperSummaryGenerator:
+    name = "PaperSummaryGenerator"
 
     def summarize(self, reading: dict[str, str]) -> tuple[dict[str, str], list[dict[str, Any]]]:
         return self._summarize_with_llm(LLMClient(), reading)
@@ -62,7 +62,7 @@ class SummaryAgent:
             raise LLMServiceError("LLM 返回的 JSON 不符合 Wiki schema")
         normalized_sections = {
             key: str(sections.get(key, "")).strip()
-            for key in ValidatorAgent.required_sections
+            for key in PaperSummaryValidator.required_sections
         }
         normalized_concepts = [
             {
@@ -77,8 +77,8 @@ class SummaryAgent:
         return normalized_sections, normalized_concepts
 
 
-class ValidatorAgent:
-    name = "ValidatorAgent"
+class PaperSummaryValidator:
+    name = "PaperSummaryValidator"
     required_sections = {"summary", "concepts", "methods", "experiments"}
 
     def validate(self, sections: dict[str, str], concepts: list[dict[str, Any]]) -> list[str]:
@@ -120,32 +120,29 @@ def process_paper(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) -> 
     paper = get_paper_detail(conn, paper_id, user_id=user_id)
     if paper is None:
         raise ValueError("paper not found")
+    record = get_paper_record(conn, paper_id)
+    document = get_paper_document(conn, paper_id)
+    expected_hash = str(record.asset_id).removeprefix("sha256:") if record and record.asset_id else None
+    if (
+        document is None
+        or document.get("status") != "completed"
+        or document.get("source_hash") != expected_hash
+    ):
+        raise RuntimeError("论文全文仍在后台准备，请稍后重试")
     try:
-        record = get_paper_record(conn, paper_id)
-        document = get_paper_document(conn, paper_id)
-        expected_hash = str(record.asset_id).removeprefix("sha256:") if record and record.asset_id else None
-        if (
-            document is None
-            or document.get("status") != "completed"
-            or document.get("source_hash") != expected_hash
-        ):
-            parse_paper_document(conn, paper_id, user_id=user_id)
-            paper = get_paper_detail(conn, paper_id, user_id=user_id)
-            if paper is None:
-                raise ValueError("paper not found")
-        reading = ReaderAgent().read(paper)
+        reading = PaperContentBuilder().read(paper)
         if not reading["content"].strip():
             raise LLMServiceError("论文正文解析结果为空")
-        sections, concepts = SummaryAgent().summarize(reading)
+        sections, concepts = PaperSummaryGenerator().summarize(reading)
     except (LLMConfigurationError, LLMServiceError, RuntimeError):
         conn.execute("UPDATE papers SET processing_status = 'failed' WHERE id = ?", (paper_id,))
         conn.commit()
         raise
-    errors = ValidatorAgent().validate(sections, concepts)
+    errors = PaperSummaryValidator().validate(sections, concepts)
     if errors:
         conn.execute("UPDATE papers SET processing_status = 'failed' WHERE id = ?", (paper_id,))
         conn.commit()
-        return {"status": "failed", "errors": errors, "agents": ["ReaderAgent", "SummaryAgent", "ValidatorAgent"]}
+        return {"status": "failed", "errors": errors, "components": ["PaperContentBuilder", "PaperSummaryGenerator", "PaperSummaryValidator"]}
     replace_wiki_sections(conn, paper_id, sections, commit=False)
     attach_concepts(conn, paper_id, concepts, commit=False)
     conn.execute("UPDATE papers SET processing_status = 'processed' WHERE id = ?", (paper_id,))
@@ -156,6 +153,6 @@ def process_paper(conn: sqlite3.Connection, paper_id: int, user_id: int = 1) -> 
     conn.commit()
     return {
         "status": "processed",
-        "agents": ["ReaderAgent", "SummaryAgent", "ValidatorAgent"],
+        "components": ["PaperContentBuilder", "PaperSummaryGenerator", "PaperSummaryValidator"],
         "paper": get_paper_detail(conn, paper_id, user_id=user_id),
     }

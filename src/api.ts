@@ -1,6 +1,6 @@
 import type {
   ChatMessageRepository, ChatRouteMode, ChatRouteResponse, ChatThread, FolderRecommendation,
-  GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk,
+  GraphData, HistoryItem, IngestResult, LibraryFolder, LibraryItem, Note, Paper, PaperChunk, PaperProcessingEnqueueResult,
   PaperDocument, PaperSummary, ProjectEntityEvidence, QaResponse, ResearchArtifact,
   ResearchCitation, ResearchProject, ResearchProjectAnalysis, ResearchProjectArtifact,
   ResearchProjectArtifactType, ResearchProjectBacklink, ResearchProjectCoverage,
@@ -293,8 +293,8 @@ export async function processPaper(id: number): Promise<Paper> {
   return data.paper;
 }
 
-export async function parsePaperDocument(id: number): Promise<PaperDocument> {
-  return request<PaperDocument>(`/api/papers/${id}/document/parse`, { method: "POST" });
+export async function parsePaperDocument(id: number): Promise<PaperProcessingEnqueueResult> {
+  return request<PaperProcessingEnqueueResult>(`/api/papers/${id}/document/parse`, { method: "POST" });
 }
 
 export async function generatePaperSummary(id: number): Promise<PaperSummary> {

@@ -32,8 +32,18 @@ export type Note = {
 export type PaperPdf = {
   available: boolean;
   cached: boolean;
+  source_available: boolean;
   view_url: string | null;
   download_url: string | null;
+};
+
+export type PaperPreparation = {
+  status: "not_queued" | "queued" | "download" | "parse" | "index" | "retry_wait" | "ready" | "failed";
+  attempt_count: number;
+  max_attempts: number;
+  error_code?: string | null;
+  error_message?: string | null;
+  updated_at?: string | null;
 };
 
 export type PaperUpload = {
@@ -51,6 +61,7 @@ export type Paper = {
   source_url?: string;
   venue?: string;
   pdf: PaperPdf;
+  preparation: PaperPreparation;
   title: string;
   authors: string[];
   abstract: string;
@@ -667,6 +678,14 @@ export type IngestResult = {
   fetched_count: number;
   duplicate_count: number;
   paper_ids: number[];
+  queued_count: number;
+  active_count: number;
+  ready_count: number;
+};
+
+export type PaperProcessingEnqueueResult = {
+  disposition: "queued" | "active" | "ready" | "failed";
+  preparation: PaperPreparation;
 };
 
 export type Subscription = {

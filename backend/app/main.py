@@ -11,6 +11,7 @@ from .auth.session import MemorySessionStore
 from .config import get_settings
 from .db.schema import init_db
 from .services.research import ResearchExecutor
+from .services.paper_processing import PaperProcessingExecutor
 
 
 @asynccontextmanager
@@ -19,9 +20,16 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     executor = ResearchExecutor()
     application.state.research_executor = executor
     executor.start()
+    settings = get_settings()
+    paper_executor = PaperProcessingExecutor() if settings.paper_processing_enabled else None
+    application.state.paper_processing_executor = paper_executor
+    if paper_executor is not None:
+        paper_executor.start()
     try:
         yield
     finally:
+        if paper_executor is not None:
+            paper_executor.stop()
         executor.stop()
 
 

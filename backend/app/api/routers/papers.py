@@ -5,23 +5,23 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ...auth.dependencies import CurrentUser, require_user
 from ...config import get_settings
 from ...db.connection import connect
 from ...models import PaperCandidate, PaperSource
-from ...services.agents import process_paper
+from ...services.paper_analysis import process_paper
 from ...services.asset_store import AssetStoreError
 from ...services.conversations import create_summary
-from ...services.documents import parse_paper_document
 from ...services.llm import LLMConfigurationError, LLMServiceError
-from ...services.pdf_import import save_and_extract_pdf
+from ...services.pdf_import import save_uploaded_pdf
 from ...services.papers import (
     change_upload_visibility,
     can_access_paper,
     list_catalog,
+    queue_document_processing,
     read_chunks,
     read_detail,
     register_uploaded_paper,
@@ -40,6 +40,7 @@ router = APIRouter(
 
 @router.post("/upload")
 def upload_paper(
+    request: Request,
     user: CurrentUser,
     file: UploadFile = File(...),
     title: str = Form(default=""),
@@ -48,34 +49,38 @@ def upload_paper(
     visibility: Literal["private", "public"] = Form(default="private"),
 ) -> dict[str, Any]:
     try:
-        extracted = save_and_extract_pdf(file, default_asset_store())
+        saved = save_uploaded_pdf(file, default_asset_store())
     except (ValueError, AssetStoreError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"PDF 读取失败：{exc}") from exc
-    paper_title = title.strip() or extracted.title or Path(file.filename or "paper.pdf").stem
+        raise HTTPException(status_code=422, detail="PDF 上传失败") from exc
+    paper_title = title.strip() or Path(file.filename or "paper.pdf").stem
     paper = PaperCandidate(
         source=PaperSource.UPLOAD,
         source_id=uuid4().hex,
         source_url=None,
         venue="手动上传",
-        asset_id=extracted.asset.id,
+        asset_id=saved.asset.id,
         title=paper_title,
         authors=tuple(item.strip() for item in authors.split(",") if item.strip()),
-        abstract=extracted.text or "用户上传的 PDF，尚未提取到可用摘要。",
+        abstract="用户上传的 PDF，后台全文加工完成后可进行阅读与检索。",
         categories=("manual",),
         primary_category="manual",
         published_at=f"{year}-01-01",
     )
     with connect() as conn:
         try:
-            return register_uploaded_paper(
+            result = register_uploaded_paper(
                 conn,
                 paper,
                 owner_user_id=user.id,
                 visibility=visibility,
                 original_filename=Path(file.filename).name if file.filename else None,
             )
+            executor = getattr(request.app.state, "paper_processing_executor", None)
+            if executor is not None:
+                executor.wake()
+            return result
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail="论文入库后无法读取") from exc
 
@@ -157,6 +162,10 @@ def _paper_pdf_response(
         if str(exc) == "paper has no PDF source":
             raise HTTPException(status_code=404, detail="论文没有可用的 PDF") from exc
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        if str(exc) == "paper PDF is not ready":
+            raise HTTPException(status_code=409, detail="论文 PDF 正在后台准备") from exc
+        raise
     except AssetStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -219,16 +228,21 @@ def process(paper_id: int, user: CurrentUser) -> Any:
     return result
 
 
-@router.post("/{paper_id}/document/parse")
-def parse_document(paper_id: int, user: CurrentUser) -> dict[str, Any]:
+@router.post("/{paper_id}/document/parse", status_code=status.HTTP_202_ACCEPTED)
+def parse_document(
+    paper_id: int,
+    request: Request,
+    user: CurrentUser,
+) -> dict[str, Any]:
     with connect() as conn:
         try:
-            return parse_paper_document(conn, paper_id, user_id=user.id)
+            result = queue_document_processing(conn, paper_id, user.id)
         except ValueError as exc:
-            status_code = 404 if str(exc) == "paper not found" else 422
-            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=404, detail="论文不存在") from exc
+    executor = getattr(request.app.state, "paper_processing_executor", None)
+    if executor is not None:
+        executor.wake()
+    return result
 
 
 @router.post("/{paper_id}/summaries")

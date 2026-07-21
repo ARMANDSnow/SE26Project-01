@@ -5,6 +5,8 @@ from .v5 import MIGRATION as V5_MIGRATION
 from .v6 import MIGRATION as V6_MIGRATION
 from .v7 import MIGRATION as V7_MIGRATION
 from .v8 import MIGRATION as V8_MIGRATION
+from .v9 import MIGRATION as V9_MIGRATION
+from .v10 import MIGRATION as V10_MIGRATION
 
 __all__ = [
     "Migration",
@@ -15,5 +17,7 @@ __all__ = [
     "V6_MIGRATION",
     "V7_MIGRATION",
     "V8_MIGRATION",
+    "V9_MIGRATION",
+    "V10_MIGRATION",
     "apply_migrations",
 ]

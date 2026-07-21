@@ -77,8 +77,8 @@ class LLMStructuredResearchModel:
             ) from exc
 
 
-class CoordinatorAgent:
-    name = "Coordinator Agent"
+class ResearchBriefGenerator:
+    name = "研究任务整理"
 
     def __init__(self, model: StructuredResearchModel) -> None:
         self.model = model
@@ -94,8 +94,8 @@ class CoordinatorAgent:
         )
 
 
-class SearchAgent:
-    name = "Search Agent"
+class SearchQueryPlanner:
+    name = "检索规划"
 
     def __init__(self, model: StructuredResearchModel) -> None:
         self.model = model
@@ -114,8 +114,8 @@ class SearchAgent:
         )
 
 
-class ScreeningAgent:
-    name = "Screening Agent"
+class CandidatePaperScreener:
+    name = "候选论文筛选"
 
     def __init__(self, model: StructuredResearchModel) -> None:
         self.model = model
@@ -145,16 +145,16 @@ class ScreeningAgent:
         return result
 
 
-class ReaderAgent:
-    name = "Reader Agent"
+class EvidenceQueryBuilder:
+    name = "证据检索式生成"
 
     @staticmethod
     def evidence_query(brief: ResearchBrief) -> str:
         return " ".join([brief.topic, *brief.research_questions[:2]])[:500]
 
 
-class ExtractionAgent:
-    name = "Extraction Agent"
+class PaperBriefExtractor:
+    name = "论文阅读卡抽取"
 
     def __init__(self, model: StructuredResearchModel) -> None:
         self.model = model
@@ -183,8 +183,8 @@ class ExtractionAgent:
         )
 
 
-class SynthesisAgent:
-    name = "Synthesis Agent"
+class ResearchSynthesisGenerator:
+    name = "跨论文综合"
 
     def __init__(self, model: StructuredResearchModel) -> None:
         self.model = model
@@ -216,8 +216,8 @@ class SynthesisAgent:
         )
 
 
-class ComparisonAgent:
-    name = "Comparison Agent"
+class ComparisonMatrixGenerator:
+    name = "论文对比矩阵生成"
 
     def __init__(self, model: StructuredResearchModel) -> None:
         self.model = model
@@ -239,8 +239,8 @@ class ComparisonAgent:
         )
 
 
-class CitationVerifierAgent:
-    name = "Citation Verifier Agent"
+class CitationValidationService:
+    name = "引用校验"
 
     @staticmethod
     def result(
@@ -263,8 +263,8 @@ class CitationVerifierAgent:
         )
 
 
-class ReportAgent:
-    name = "Report Agent"
+class ResearchReportGenerator:
+    name = "研究报告生成"
 
     def __init__(self, model: StructuredResearchModel) -> None:
         self.model = model
@@ -315,8 +315,8 @@ class ReportAgent:
         )
 
 
-class LandscapePlannerAgent:
-    name = "Landscape Planner Agent"
+class ResearchLandscapePlanner:
+    name = "研究脉络规划"
 
     def __init__(self, model: StructuredResearchModel) -> None:
         self.model = model
@@ -333,8 +333,8 @@ class LandscapePlannerAgent:
         )
 
 
-class TopicClusteringAgent:
-    name = "Topic Clustering Agent"
+class TopicClusterGenerator:
+    name = "主题簇生成"
 
     def __init__(self, model: StructuredResearchModel) -> None:
         self.model = model
@@ -355,8 +355,8 @@ class TopicClusteringAgent:
         )
 
 
-class TimelineAgent:
-    name = "Timeline Agent"
+class ResearchTimelineGenerator:
+    name = "研究时间线生成"
 
     def __init__(self, model: StructuredResearchModel) -> None:
         self.model = model
@@ -379,10 +379,10 @@ class TimelineAgent:
         )
 
 
-class GraphValidationAgent:
+class ResearchGraphValidator:
     """Deterministic post-validator; it never asks a model to authorize relations."""
 
-    name = "Graph Validation Agent"
+    name = "研究关系图校验"
 
     @staticmethod
     def validate(

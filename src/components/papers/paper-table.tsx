@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { ProcessingBadge } from "@/components/common/status-badge"
+import { PreparationBadge } from "@/components/common/status-badge"
 import { cn } from "@/lib/utils"
 import type { Paper } from "@/types"
 
@@ -56,7 +56,7 @@ export function PaperTable({ papers, onFavorite, favoriteBusy = false }: PaperTa
               </TableCell>
               <TableCell>
                 <div className="flex flex-wrap gap-1">
-                  <ProcessingBadge status={paper.processing_status} />
+                  <PreparationBadge status={paper.preparation.status} />
                 </div>
               </TableCell>
               <TableCell className="text-muted-foreground">{paper.published_at}</TableCell>
