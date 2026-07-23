@@ -123,3 +123,7 @@ git diff --check
 - iter17：`docs/iterations/iteration_iter17_async-paper-processing.md`。
 - 全功能网页巡检：`docs/iterations/bugfix_2026-07-17_full-web-ui-audit.md`。
 - Iter17 按完整迭代规范 commit、不 push；push 前仍需 fetch/rebase 并保留远端及本地用户改动。
+## Iter18 Workspace Chat Context
+
+- 2026-07-23: Added owner-only Workspaces backed by one research project or library folder, Workspace CRUD, and persisted general-Chat context. Workspace binding now lives in the composer beside route mode and is allowed only before the first message; the backend enforces the same lock. Paper Chat cannot bind a Workspace. Validation completed before the upstream rebase: `backend/tests/test_core.py` (101 passed), frontend build, and `git diff --check`.
+- Migration note: upstream Iter17 now occupies schema v10 for async paper processing. Workspace schema changes therefore continue as schema v11 (`v10 -> v11`) after rebase; do not reuse migration version 10.

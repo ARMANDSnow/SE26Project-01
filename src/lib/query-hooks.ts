@@ -39,6 +39,8 @@ import {
   resolveResearchDecision,
   fetchGeneralChatThreads,
   createGeneralChatThread,
+  updateChatThreadTitle,
+  updateChatThreadWorkspace,
   addResearchProjectItem,
   controlResearchProjectAnalysis,
   createResearchProject,
@@ -58,6 +60,10 @@ import {
   setResearchProjectArchived,
   startResearchProjectAnalysis,
   updateResearchProject,
+  fetchWorkspaces,
+  createWorkspace,
+  updateWorkspace,
+  deleteWorkspace,
 } from "@/api"
 import type {
   ProjectEntityEvidence, ResearchProjectArtifactType, ResearchProjectItemInput, ResearchRun,
@@ -107,6 +113,7 @@ export const queryKeys = {
   researchProjectBacklinks: (item: ResearchProjectItemInput) => ["research-project-backlinks", item] as const,
   researchReportLibrary: ["research-report-library"] as const,
   chatThreads: ["chat-threads"] as const,
+  workspaces: ["workspaces"] as const,
 }
 
 function invalidateResearchProject(queryClient: ReturnType<typeof useQueryClient>, projectId: string) {
@@ -269,6 +276,10 @@ export function useResearchReportLibraryQuery() {
   return useQuery({ queryKey: queryKeys.researchReportLibrary, queryFn: fetchResearchReportLibrary, refetchOnWindowFocus: "always" })
 }
 
+export function useWorkspacesQuery() {
+  return useQuery({ queryKey: queryKeys.workspaces, queryFn: fetchWorkspaces })
+}
+
 export function useGeneralChatThreadsQuery() {
   return useQuery({ queryKey: queryKeys.chatThreads, queryFn: fetchGeneralChatThreads })
 }
@@ -276,7 +287,10 @@ export function useGeneralChatThreadsQuery() {
 export function useCreateGeneralChatThreadMutation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (title?: string) => createGeneralChatThread(title),
+    mutationFn: (payload?: string | { title?: string; workspaceId?: string }) => {
+      const value = typeof payload === "string" ? { title: payload } : payload
+      return createGeneralChatThread(value?.title, value?.workspaceId)
+    },
     onSuccess: (thread) => {
       queryClient.setQueryData(queryKeys.chatThreads, (current: typeof thread[] | undefined) => [
         thread,
@@ -284,6 +298,48 @@ export function useCreateGeneralChatThreadMutation() {
       ])
     },
   })
+}
+
+export function useUpdateChatThreadWorkspaceMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ threadId, workspaceId }: { threadId: string; workspaceId?: string }) =>
+      updateChatThreadWorkspace(threadId, workspaceId),
+    onSuccess: (thread) => {
+      queryClient.setQueryData(queryKeys.chatThreads, (current: typeof thread[] | undefined) =>
+        (current ?? []).map((item) => item.id === thread.id ? thread : item),
+      )
+    },
+  })
+}
+
+
+export function useUpdateChatThreadTitleMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ threadId, title }: { threadId: string; title: string }) =>
+      updateChatThreadTitle(threadId, title),
+    onSuccess: (thread) => {
+      queryClient.setQueryData(queryKeys.chatThreads, (current: typeof thread[] | undefined) =>
+        (current ?? []).map((item) => item.id === thread.id ? thread : item),
+      )
+    },
+  })
+}
+
+export function useCreateWorkspaceMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({ mutationFn: createWorkspace, onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces }) })
+}
+
+export function useUpdateWorkspaceMutation(workspaceId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({ mutationFn: (payload: { title?: string; description?: string }) => updateWorkspace(workspaceId, payload), onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces }) })
+}
+
+export function useDeleteWorkspaceMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({ mutationFn: deleteWorkspace, onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.workspaces }) })
 }
 
 export function useCurrentUserQuery() {

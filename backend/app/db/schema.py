@@ -14,6 +14,7 @@ from .migrations import (
     V8_MIGRATION,
     V9_MIGRATION,
     V10_MIGRATION,
+    V11_MIGRATION,
     apply_migrations,
 )
 from .migrations.v5 import RESEARCH_SCHEMA_SQL
@@ -21,10 +22,11 @@ from .migrations.v7 import RESEARCH_DATA_SCHEMA_SQL
 from .migrations.v8 import migrate_v7_to_v8
 from .migrations.v9 import migrate_v8_to_v9
 from .migrations.v10 import migrate_v9_to_v10
+from .migrations.v11 import migrate_v10_to_v11
 
 
 PAPER_CHUNKS_FTS_TABLE = "paper_chunks_fts"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 class IncompatibleSchemaError(RuntimeError):
@@ -698,7 +700,7 @@ def rebuild_paper_chunks_fts(conn: sqlite3.Connection, paper_id: int | None = No
 def init_schema(conn: sqlite3.Connection) -> None:
     tables = _schema_tables(conn)
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    if tables and version in {2, 3, 4, 5, 6, 7, 8, 9}:
+    if tables and version in {2, 3, 4, 5, 6, 7, 8, 9, 10}:
         apply_migrations(
             conn,
             [
@@ -710,6 +712,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
                 V8_MIGRATION,
                 V9_MIGRATION,
                 V10_MIGRATION,
+                V11_MIGRATION,
+    V11_MIGRATION,
             ],
             target_version=SCHEMA_VERSION,
         )
@@ -839,10 +843,23 @@ def init_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id TEXT PRIMARY KEY,
+            owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 160),
+            description TEXT NOT NULL DEFAULT '',
+            project_id TEXT REFERENCES research_projects(id) ON DELETE CASCADE,
+            folder_id INTEGER REFERENCES library_folders(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK((project_id IS NOT NULL) != (folder_id IS NOT NULL)),
+            UNIQUE(owner_user_id, title)
+        );
         CREATE TABLE IF NOT EXISTS chat_threads (
             id TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             paper_id INTEGER REFERENCES papers(id) ON DELETE CASCADE,
+            workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
             title TEXT NOT NULL DEFAULT '新对话',
             active_leaf_id TEXT,
             message_token_limit INTEGER NOT NULL DEFAULT 12000,
@@ -934,6 +951,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_summary_versions_paper ON summary_versions(paper_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_paper_chunks_paper ON paper_chunks(paper_id, source_hash, chunk_index);
         CREATE INDEX IF NOT EXISTS idx_chat_threads_paper ON chat_threads(user_id, paper_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_chat_threads_workspace ON chat_threads(user_id, workspace_id, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
         CREATE INDEX IF NOT EXISTS idx_library_folders_user ON library_folders(user_id, parent_id);
@@ -954,6 +972,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'paper_processing_jobs'"
     ).fetchone():
         migrate_v9_to_v10(conn)
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'").fetchone():
+        migrate_v10_to_v11(conn)
     init_paper_chunks_fts(conn)
     rebuild_paper_chunks_fts(conn)
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

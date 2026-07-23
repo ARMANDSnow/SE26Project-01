@@ -17,6 +17,8 @@ from ...services.conversations import (
     prepare_run,
     stream_run,
     update_thread_head,
+    update_thread_title,
+    update_thread_workspace,
 )
 from ...services.chat_routing import (
     ChatRouteClassifier,
@@ -30,7 +32,13 @@ from ...services.chat_routing import (
 )
 from ...repositories.research import ResearchNotFoundError
 from ...services.research import ResearchExecutor
-from ..schemas import ChatRouteRequest, ChatRunRequest, ThreadCreateRequest, ThreadHeadRequest
+from ..schemas import (
+    ChatRouteRequest,
+    ChatRunRequest,
+    ThreadCreateRequest,
+    ThreadHeadRequest,
+    ThreadUpdateRequest,
+)
 
 
 router = APIRouter(tags=["chat"])
@@ -117,6 +125,8 @@ def add_paper_chat_thread(
 ) -> dict[str, Any]:
     with connect() as conn:
         try:
+            if payload.workspace_id is not None:
+                raise ValueError("paper chat cannot bind a workspace")
             return create_thread(conn, paper_id, user.id, payload.title)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="论文不存在") from exc
@@ -134,7 +144,10 @@ def add_general_chat_thread(
     user: CurrentUser,
 ) -> dict[str, Any]:
     with connect() as conn:
-        return create_thread(conn, None, user.id, payload.title)
+        try:
+            return create_thread(conn, None, user.id, payload.title, payload.workspace_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/api/chat/threads/{thread_id}")
@@ -144,6 +157,26 @@ def chat_thread(thread_id: str, user: CurrentUser) -> dict[str, Any]:
     if result is None:
         raise HTTPException(status_code=404, detail="对话不存在")
     return result
+
+
+@router.patch("/api/chat/threads/{thread_id}")
+def rename_chat_thread(
+    thread_id: str,
+    payload: ThreadUpdateRequest,
+    user: CurrentUser,
+) -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            result = get_thread(conn, thread_id, user.id)
+            if result is None:
+                raise ValueError("thread not found")
+            if "title" in payload.model_fields_set:
+                result = update_thread_title(conn, thread_id, str(payload.title), user.id)
+            if "workspace_id" in payload.model_fields_set:
+                result = update_thread_workspace(conn, thread_id, payload.workspace_id, user.id)
+            return result
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/api/chat/threads/{thread_id}/messages")
@@ -171,7 +204,11 @@ def set_chat_thread_head(
 @router.post("/api/chat/runs")
 def start_chat_run(payload: ChatRunRequest, user: CurrentUser) -> StreamingResponse:
     if not get_settings().llm_available:
-        raise HTTPException(status_code=503, detail="LLM 未配置")
+        raise HTTPException(
+            status_code=503,
+            detail="LLM is not configured. Set LLM_API_KEY and restart the backend.",
+        )
+
     with connect() as conn:
         try:
             run = prepare_run(

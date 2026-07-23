@@ -7,13 +7,20 @@ import {
   LogOut,
   Plus,
   MessageSquare,
+  MessageSquarePlus,
+  BriefcaseBusiness,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react"
 import { useQueryClient } from "@tanstack/react-query"
-import type { ComponentType, CSSProperties, SVGProps } from "react"
+import { toast } from "sonner"
+import { useState, type ComponentType, type CSSProperties, type SVGProps } from "react"
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router"
 import { ThemeToggle } from "@/components/app/theme-toggle"
 import { TaskCenter } from "@/features/research/task-center"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Sidebar,
   SidebarContent,
@@ -32,7 +39,7 @@ import {
 } from "@/components/ui/sidebar"
 import { cn } from "@/lib/utils"
 import { logout } from "@/api"
-import { queryKeys, useCreateGeneralChatThreadMutation, useCurrentUserQuery, useGeneralChatThreadsQuery } from "@/lib/query-hooks"
+import { queryKeys, useCreateGeneralChatThreadMutation, useCurrentUserQuery, useGeneralChatThreadsQuery, useUpdateChatThreadTitleMutation } from "@/lib/query-hooks"
 
 type NavItem = {
   path: string
@@ -45,6 +52,7 @@ const navItems: NavItem[] = [
   { path: "/", label: "Chat", description: "通用对话", icon: MessageSquareText },
   { path: "/papers", label: "论文库", description: "检索与同步", icon: Library },
   { path: "/library", label: "我的资料库", description: "收藏与目录", icon: BookMarked },
+  { path: "/workspaces", label: "Workspace", description: "创建对话上下文", icon: BriefcaseBusiness },
 ]
 
 function BrandLink() {
@@ -101,24 +109,81 @@ function RecentChats() {
   const location = useLocation()
   const threads = useGeneralChatThreadsQuery()
   const createThread = useCreateGeneralChatThreadMutation()
+  const updateThreadTitle = useUpdateChatThreadTitleMutation()
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null)
+  const [titleDraft, setTitleDraft] = useState("")
   const currentId = new URLSearchParams(location.search).get("thread")
+  const beginRename = (threadId: string, title: string) => {
+    setEditingThreadId(threadId)
+    setTitleDraft(title)
+  }
+  const cancelRename = () => {
+    setEditingThreadId(null)
+    setTitleDraft("")
+  }
+  const saveRename = (threadId: string) => {
+    const title = titleDraft.trim()
+    if (!title) return
+    updateThreadTitle.mutate(
+      { threadId, title },
+      {
+        onSuccess: cancelRename,
+        onError: () => toast.error("\u4fee\u6539\u5bf9\u8bdd\u540d\u79f0\u5931\u8d25"),
+      },
+    )
+  }
+  const openThread = (threadId: string, mode?: "deep_research") => {
+    setOpenMobile(false)
+    navigate(`/?thread=${encodeURIComponent(threadId)}${mode ? `&mode=${mode}` : ""}`)
+  }
+  const createGeneralChat = () => createThread.mutate(undefined, { onSuccess: (thread) => openThread(thread.id) })
   const createResearchChat = () => createThread.mutate("新研究", {
-    onSuccess: (thread) => {
-      setOpenMobile(false)
-      navigate(`/?thread=${encodeURIComponent(thread.id)}&mode=deep_research`)
-    },
+    onSuccess: (thread) => openThread(thread.id, "deep_research"),
   })
   return (
     <SidebarGroup className="min-h-0 flex-1">
       <SidebarGroupContent className="flex min-h-0 flex-col gap-2">
         <Button className="min-h-11 w-full justify-start" onClick={createResearchChat} disabled={createThread.isPending}><Plus className="size-4" />新建研究</Button>
-        <div className="flex items-center justify-between px-2 pt-2"><p className="text-xs font-medium text-sidebar-foreground/60">最近对话</p><span className="text-[11px] text-sidebar-foreground/50">{threads.data?.length ?? 0}</span></div>
+        <div className="flex items-center justify-between px-2 pt-2"><p className="text-xs font-medium text-sidebar-foreground/60">最近对话</p><div className="flex items-center gap-1"><span className="text-[11px] text-sidebar-foreground/50">{threads.data?.length ?? 0}</span><Button aria-label={"\u65b0\u5efa\u5bf9\u8bdd"} size="icon-xs" variant="ghost" disabled={createThread.isPending} onClick={createGeneralChat}><MessageSquarePlus /></Button></div></div>
         <div className="grid min-h-0 gap-1 overflow-y-auto">
-          {(threads.data ?? []).slice(0, 12).map((thread) => (
-            <Link key={thread.id} to={`/?thread=${encodeURIComponent(thread.id)}`} onClick={() => setOpenMobile(false)} className={cn("flex min-h-11 items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-sidebar-accent", currentId === thread.id && location.pathname === "/" && "bg-sidebar-accent font-medium")}>
-              <MessageSquare className="size-3.5 shrink-0" /><span className="truncate">{thread.title}</span>
-            </Link>
-          ))}
+          {(threads.data ?? []).slice(0, 12).map((thread) => {
+            const isEditing = editingThreadId === thread.id
+            return (
+              <div key={thread.id} className={cn("flex min-h-11 items-center gap-1 rounded-lg px-1.5 py-1 text-sm hover:bg-sidebar-accent", currentId === thread.id && location.pathname === "/" && "bg-sidebar-accent font-medium")}>
+                {isEditing ? (
+                  <>
+                    <Input
+                      aria-label={"\u5bf9\u8bdd\u540d\u79f0"}
+                      className="h-8 min-w-0 flex-1 bg-background text-sm"
+                      autoFocus
+                      disabled={updateThreadTitle.isPending}
+                      value={titleDraft}
+                      onChange={(event) => setTitleDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault()
+                          saveRename(thread.id)
+                        }
+                        if (event.key === "Escape") {
+                          event.preventDefault()
+                          cancelRename()
+                        }
+                      }}
+                    />
+                    <Button aria-label={"\u4fdd\u5b58\u5bf9\u8bdd\u540d\u79f0"} size="icon-xs" variant="ghost" disabled={!titleDraft.trim() || updateThreadTitle.isPending} onClick={() => saveRename(thread.id)}><Check /></Button>
+                    <Button aria-label={"\u53d6\u6d88\u4fee\u6539"} size="icon-xs" variant="ghost" disabled={updateThreadTitle.isPending} onClick={cancelRename}><X /></Button>
+                  </>
+                ) : (
+                  <>
+                    <Link to={`/?thread=${encodeURIComponent(thread.id)}`} onClick={() => setOpenMobile(false)} className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1">
+                      <MessageSquare className="size-3.5 shrink-0" /><span className="truncate">{thread.title}</span>
+                    </Link>
+                    <Button aria-label={"\u91cd\u547d\u540d\u5bf9\u8bdd"} size="icon-xs" variant="ghost" className="shrink-0" onClick={() => beginRename(thread.id, thread.title)}><Pencil /></Button>
+                  </>
+                )}
+              </div>
+            )
+          })}
         </div>
       </SidebarGroupContent>
     </SidebarGroup>
@@ -135,7 +200,9 @@ export function AppShell() {
       ? { title: "论文库", description: "检索、导入与阅读论文" }
       : location.pathname.startsWith("/library")
         ? { title: "我的资料库", description: "收藏与研究资料" }
-        : { title: "PaperWiki Chat", description: "从对话开始你的研究" }
+        : location.pathname.startsWith("/workspaces")
+          ? { title: "Workspace", description: "\u521b\u5efa\u5bf9\u8bdd\u4e0a\u4e0b\u6587" }
+          : { title: "PaperWiki Chat", description: "\u4ece\u5bf9\u8bdd\u5f00\u59cb\u4f60\u7684\u7814\u7a76" }
 
   const signOut = async () => {
     await logout()

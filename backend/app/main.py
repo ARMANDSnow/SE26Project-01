@@ -6,7 +6,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api.routers import auth, chat, ingest, knowledge, library, papers, projects, research, system
+from .api.routers import auth, chat, ingest, knowledge, library, papers, projects, research, system, workspaces
 from .auth.session import MemorySessionStore
 from .config import get_settings
 from .db.schema import init_db
@@ -57,6 +57,7 @@ def create_app() -> FastAPI:
     application.include_router(library.router)
     application.include_router(research.router)
     application.include_router(projects.router)
+    application.include_router(workspaces.router)
     return application
 
 

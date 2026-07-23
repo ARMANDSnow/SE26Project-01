@@ -35,7 +35,7 @@ import { API_BASE, fetchChatMessages, routeChatMessage, updateChatThreadHead } f
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ResearchRunDataUI, ResearchRunUiContext } from "@/components/chat/research-run-message"
-import { queryKeys } from "@/lib/query-hooks"
+import { queryKeys, useUpdateChatThreadWorkspaceMutation, useWorkspacesQuery } from "@/lib/query-hooks"
 import type { ChatContentPart, ChatRouteMode, ChatThread, ResearchRun } from "@/types"
 
 type ChatThreadProps = {
@@ -49,6 +49,7 @@ type ChatThreadProps = {
   initialMode?: ChatRouteMode
   routingEnabled?: boolean
   onResearchRunCreated?: (runId: string) => void
+  workspaceSelectionEnabled?: boolean
 }
 
 type ChatScope = {
@@ -69,7 +70,12 @@ async function responseError(response: Response): Promise<string> {
   const raw = await response.text()
   try {
     const parsed = JSON.parse(raw) as { detail?: string | { message?: string; code?: string } }
-    if (typeof parsed.detail === "string") return parsed.detail
+    if (typeof parsed.detail === "string") {
+      if (parsed.detail === "LLM is not configured. Set LLM_API_KEY and restart the backend.") {
+        return "\u6a21\u578b\u5c1a\u672a\u914d\u7f6e\u3002\u8bf7\u5728\u542f\u52a8\u540e\u7aef\u7684\u73af\u5883\u4e2d\u8bbe\u7f6e LLM_API_KEY \u540e\u91cd\u542f\u670d\u52a1\u3002"
+      }
+      return parsed.detail
+    }
     if (parsed.detail?.message) return parsed.detail.message
     return raw || `HTTP ${response.status}`
   } catch {
@@ -336,8 +342,31 @@ function EditComposer() {
   )
 }
 
-function Composer({ placeholder, hero = false, mode, onModeChange, routingEnabled }: { placeholder: string; hero?: boolean; mode: ChatRouteMode; onModeChange: (mode: ChatRouteMode) => void; routingEnabled: boolean }) {
+function Composer({ placeholder, hero = false, mode, onModeChange, routingEnabled, workspaceSelectionEnabled, workspaceId, onWorkspaceChange }: { placeholder: string; hero?: boolean; mode: ChatRouteMode; onModeChange: (mode: ChatRouteMode) => void; routingEnabled: boolean; workspaceSelectionEnabled: boolean; workspaceId?: string | null; onWorkspaceChange: (workspaceId?: string) => void }) {
   const ModeIcon = mode === "deep_research" ? FlaskConical : mode === "normal" ? MessageSquare : Sparkles
+  const scope = useContext(ChatScopeContext)
+  const messageCount = useAuiState((state) => state.thread.messages.length)
+  const workspacesQuery = useWorkspacesQuery()
+  const updateWorkspace = useUpdateChatThreadWorkspaceMutation()
+  const workspaceLocked = messageCount > 0
+  const [pendingWorkspaceId, setPendingWorkspaceId] = useState(workspaceId ?? "")
+
+  const selectWorkspace = (value: string) => {
+    if (!scope || workspaceLocked) return
+    const nextWorkspaceId = value === "none" ? undefined : value
+    setPendingWorkspaceId(nextWorkspaceId ?? "")
+    updateWorkspace.mutate(
+      { threadId: scope.threadId, workspaceId: nextWorkspaceId },
+      {
+        onSuccess: (thread) => onWorkspaceChange(thread.workspace_id ?? undefined),
+        onError: () => {
+          setPendingWorkspaceId(workspaceId ?? "")
+          toast.error("\u7ed1\u5b9a Workspace \u5931\u8d25")
+        },
+      },
+    )
+  }
+
   return (
     <ComposerPrimitive.Root className={hero ? "mx-auto grid w-full max-w-3xl gap-2 rounded-2xl border bg-card p-3 shadow-lg" : "mx-auto grid w-full max-w-3xl gap-2 rounded-xl border bg-background p-2 shadow-sm"}>
       <ComposerPrimitive.Input
@@ -347,21 +376,34 @@ function Composer({ placeholder, hero = false, mode, onModeChange, routingEnable
         placeholder={placeholder}
       />
       <div className="flex items-center justify-between gap-2">
-        {routingEnabled ? (
-          <Select value={mode} onValueChange={(value) => onModeChange(value as ChatRouteMode)}>
-            <SelectTrigger id="chat-route-mode" aria-label="回答模式" className="min-h-11 rounded-xl bg-background px-2.5">
-              <span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground" aria-hidden="true"><ModeIcon className="size-3.5" /></span>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent position="popper" align="start">
-              <SelectItem value="auto" className="min-h-11"><Sparkles />自动判断</SelectItem>
-              <SelectItem value="normal" className="min-h-11"><MessageSquare />普通对话</SelectItem>
-              <SelectItem value="deep_research" className="min-h-11"><FlaskConical />深度研究</SelectItem>
-            </SelectContent>
-          </Select>
-        ) : <span />}
-        <ThreadPrimitive.If running={false}><ComposerPrimitive.Send asChild><Button type="submit" size="icon" className="size-11 shrink-0" aria-label="发送"><Send className="size-4" /></Button></ComposerPrimitive.Send></ThreadPrimitive.If>
-        <ThreadPrimitive.If running><ComposerPrimitive.Cancel asChild><Button type="button" size="icon" variant="destructive" className="size-11 shrink-0" aria-label="停止"><Square className="size-4" /></Button></ComposerPrimitive.Cancel></ThreadPrimitive.If>
+        <div className="flex min-w-0 items-center gap-2">
+          {routingEnabled ? (
+            <Select value={mode} onValueChange={(value) => onModeChange(value as ChatRouteMode)}>
+              <SelectTrigger id="chat-route-mode" aria-label={"\u56de\u7b54\u6a21\u5f0f"} className="min-h-11 rounded-xl bg-background px-2.5">
+                <span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground" aria-hidden="true"><ModeIcon className="size-3.5" /></span>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper" align="start">
+                <SelectItem value="auto" className="min-h-11"><Sparkles />{"\u81ea\u52a8\u5224\u65ad"}</SelectItem>
+                <SelectItem value="normal" className="min-h-11"><MessageSquare />{"\u666e\u901a\u5bf9\u8bdd"}</SelectItem>
+                <SelectItem value="deep_research" className="min-h-11"><FlaskConical />{"\u6df1\u5ea6\u7814\u7a76"}</SelectItem>
+              </SelectContent>
+            </Select>
+          ) : null}
+          {workspaceSelectionEnabled ? (
+            <Select value={pendingWorkspaceId || "none"} onValueChange={selectWorkspace} disabled={workspaceLocked || updateWorkspace.isPending}>
+              <SelectTrigger aria-label={"\u7ed1\u5b9a Workspace"} className="min-h-11 min-w-0 max-w-52 rounded-xl bg-background px-2.5">
+                <SelectValue placeholder="Workspace" />
+              </SelectTrigger>
+              <SelectContent position="popper" align="start">
+                <SelectItem value="none">{"\u4e0d\u7ed1\u5b9a Workspace"}</SelectItem>
+                {(workspacesQuery.data ?? []).map((workspace) => <SelectItem key={workspace.id} value={workspace.id}>{workspace.title}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          ) : null}
+        </div>
+        <ThreadPrimitive.If running={false}><ComposerPrimitive.Send asChild><Button type="submit" size="icon" className="size-11 shrink-0" aria-label={"\u53d1\u9001"} disabled={updateWorkspace.isPending}><Send className="size-4" /></Button></ComposerPrimitive.Send></ThreadPrimitive.If>
+        <ThreadPrimitive.If running><ComposerPrimitive.Cancel asChild><Button type="button" size="icon" variant="destructive" className="size-11 shrink-0" aria-label={"\u505c\u6b62"}><Square className="size-4" /></Button></ComposerPrimitive.Cancel></ThreadPrimitive.If>
       </div>
     </ComposerPrimitive.Root>
   )
@@ -373,7 +415,7 @@ const modeHint: Record<ChatRouteMode, string> = {
   deep_research: "深度研究将启动真实、可恢复的主题论文调研；每一步和预算都以数据库记录为准。",
 }
 
-function ChatSurface({ emptyTitle, emptyDescription, placeholder, hero, runBar, mode, onModeChange, routingEnabled = false }: Omit<ChatThreadProps, "thread" | "onOpenRun" | "initialMode"> & { mode: ChatRouteMode; onModeChange: (mode: ChatRouteMode) => void }) {
+function ChatSurface({ emptyTitle, emptyDescription, placeholder, hero, runBar, mode, onModeChange, routingEnabled = false, workspaceSelectionEnabled = false, workspaceId, onWorkspaceChange }: Omit<ChatThreadProps, "thread" | "onOpenRun" | "initialMode"> & { mode: ChatRouteMode; onModeChange: (mode: ChatRouteMode) => void; workspaceId?: string | null; onWorkspaceChange: (workspaceId?: string) => void }) {
   const messageCount = useAuiState((state) => state.thread.messages.length)
 
   if (hero && messageCount === 0) {
@@ -384,7 +426,7 @@ function ChatSurface({ emptyTitle, emptyDescription, placeholder, hero, runBar, 
             <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">{emptyTitle}</h1>
             <p className="text-sm leading-6 text-muted-foreground md:text-base">{emptyDescription}</p>
           </div>
-          <Composer placeholder={placeholder} hero mode={mode} onModeChange={onModeChange} routingEnabled={routingEnabled} />
+          <Composer placeholder={placeholder} hero mode={mode} onModeChange={onModeChange} routingEnabled={routingEnabled} workspaceSelectionEnabled={workspaceSelectionEnabled} workspaceId={workspaceId} onWorkspaceChange={onWorkspaceChange} />
           <p className="text-center text-xs text-muted-foreground" aria-live="polite">{routingEnabled ? modeHint[mode] : "当前对话使用原有上下文契约。"}</p>
         </div>
       </ThreadPrimitive.Root>
@@ -404,15 +446,16 @@ function ChatSurface({ emptyTitle, emptyDescription, placeholder, hero, runBar, 
       </ThreadPrimitive.Viewport>
       <div className="border-t bg-card/80 p-3 backdrop-blur">
         {runBar}
-        <Composer placeholder={placeholder} mode={mode} onModeChange={onModeChange} routingEnabled={routingEnabled} />
+        <Composer placeholder={placeholder} mode={mode} onModeChange={onModeChange} routingEnabled={routingEnabled} workspaceSelectionEnabled={workspaceSelectionEnabled} workspaceId={workspaceId} onWorkspaceChange={onWorkspaceChange} />
       </div>
     </ThreadPrimitive.Root>
   )
 }
 
-export function ChatThread({ thread, emptyTitle, emptyDescription, placeholder, hero = false, onOpenRun = noop, runBar, initialMode = "auto", routingEnabled = false, onResearchRunCreated = noop }: ChatThreadProps) {
+export function ChatThread({ thread, emptyTitle, emptyDescription, placeholder, hero = false, onOpenRun = noop, runBar, initialMode = "auto", routingEnabled = false, onResearchRunCreated = noop, workspaceSelectionEnabled = false }: ChatThreadProps) {
   const persistedIdsRef = useRef(new Set<string>())
   const [mode, setMode] = useState<ChatRouteMode>(initialMode)
+  const [workspaceId, setWorkspaceId] = useState(thread.workspace_id)
   const queryClient = useQueryClient()
   const history = useMemo<ThreadHistoryAdapter>(() => ({
     async load() {
@@ -470,6 +513,9 @@ export function ChatThread({ thread, emptyTitle, emptyDescription, placeholder, 
           mode={mode}
           onModeChange={setMode}
           routingEnabled={routingEnabled}
+          workspaceSelectionEnabled={workspaceSelectionEnabled}
+          workspaceId={workspaceId}
+          onWorkspaceChange={setWorkspaceId}
         />
       </AssistantRuntimeProvider>
       </ResearchRunUiContext.Provider>

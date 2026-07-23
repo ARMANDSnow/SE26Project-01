@@ -7,9 +7,13 @@ from uuid import uuid4
 
 from ..config import get_settings
 from ..repositories.uploads import paper_is_accessible
+from ..repositories.workspaces import workspace_context
 from .chat_parts import decode_parts, encode_parts, text_parts
 from .documents import estimate_tokens
-from .llm import LLMClient
+from .llm import LLMClient, LLMConfigurationError
+
+
+DEFAULT_THREAD_TITLE = "\u65b0\u5bf9\u8bdd"
 
 
 SYSTEM_PROMPT = """你是单篇科研论文阅读助手。下面会提供论文的完整解析正文。
@@ -17,10 +21,10 @@ SYSTEM_PROMPT = """你是单篇科研论文阅读助手。下面会提供论文�
 回答使用中文，涉及实验结果或关键结论时标注对应章节或页码（如果正文中可识别）。
 不要声称使用了外部搜索、知识库或未提供的论文。"""
 
-GENERAL_SYSTEM_PROMPT = """你是严谨、清晰的通用研究助手。
-你只能使用当前对话中提供的信息和模型自身已有知识回答。
-当前对话没有接入论文库、用户资料、文件、联网搜索或其他工具；不要声称读取或调用了这些内容。
-默认使用中文回答；信息不足或不确定时应明确说明。"""
+GENERAL_SYSTEM_PROMPT = """You are a rigorous, clear research assistant.
+Use only information supplied in the conversation and your own background knowledge.
+You do not have web search or external tools. Do not claim to call them.
+Answer in Chinese by default and state uncertainty when information is insufficient."""
 
 
 def _message_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -34,14 +38,19 @@ def create_thread(
     conn: sqlite3.Connection,
     paper_id: int | None,
     user_id: int = 1,
-    title: str = "新对话",
+    title: str = DEFAULT_THREAD_TITLE,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
+    if paper_id is not None and workspace_id is not None:
+        raise ValueError("paper chat cannot bind a workspace")
     if paper_id is not None and not paper_is_accessible(conn, paper_id, user_id):
         raise ValueError("paper not found")
+    if workspace_id is not None:
+        workspace_context(conn, workspace_id, user_id)
     thread_id = f"thread_{uuid4().hex}"
     conn.execute(
-        "INSERT INTO chat_threads (id, user_id, paper_id, title) VALUES (?, ?, ?, ?)",
-        (thread_id, user_id, paper_id, title.strip() or "新对话"),
+        "INSERT INTO chat_threads (id, user_id, paper_id, workspace_id, title) VALUES (?, ?, ?, ?, ?)",
+        (thread_id, user_id, paper_id, workspace_id, title.strip() or DEFAULT_THREAD_TITLE),
     )
     conn.commit()
     return get_thread(conn, thread_id, user_id) or {}
@@ -52,7 +61,7 @@ def list_threads(conn: sqlite3.Connection, paper_id: int | None, user_id: int = 
     params: tuple[Any, ...] = (user_id,) if paper_id is None else (user_id, paper_id)
     rows = conn.execute(
         f"""
-        SELECT id, paper_id, title, active_leaf_id, message_token_limit, archived,
+        SELECT id, paper_id, workspace_id, title, active_leaf_id, message_token_limit, archived,
                created_at, updated_at
         FROM chat_threads WHERE user_id = ? AND {scope_clause}
         ORDER BY archived, updated_at DESC
@@ -62,15 +71,23 @@ def list_threads(conn: sqlite3.Connection, paper_id: int | None, user_id: int = 
     return [
         dict(row)
         for row in rows
-        if row["paper_id"] is None
-        or paper_is_accessible(conn, int(row["paper_id"]), user_id)
+        if (row["paper_id"] is None or paper_is_accessible(conn, int(row["paper_id"]), user_id))
+        and (row["workspace_id"] is None or _workspace_is_accessible(conn, str(row["workspace_id"]), user_id))
     ]
+
+
+def _workspace_is_accessible(conn: sqlite3.Connection, workspace_id: str, user_id: int) -> bool:
+    try:
+        workspace_context(conn, workspace_id, user_id)
+    except ValueError:
+        return False
+    return True
 
 
 def get_thread(conn: sqlite3.Connection, thread_id: str, user_id: int = 1) -> dict[str, Any] | None:
     row = conn.execute(
         """
-        SELECT id, paper_id, title, active_leaf_id, message_token_limit, archived,
+        SELECT id, paper_id, workspace_id, title, active_leaf_id, message_token_limit, archived,
                created_at, updated_at
         FROM chat_threads WHERE id = ? AND user_id = ?
         """,
@@ -80,6 +97,10 @@ def get_thread(conn: sqlite3.Connection, thread_id: str, user_id: int = 1) -> di
         return None
     if row["paper_id"] is not None and not paper_is_accessible(
         conn, int(row["paper_id"]), user_id
+    ):
+        return None
+    if row["workspace_id"] is not None and not _workspace_is_accessible(
+        conn, str(row["workspace_id"]), user_id
     ):
         return None
     return dict(row)
@@ -104,6 +125,42 @@ def update_thread_head(conn: sqlite3.Connection, thread_id: str, head_id: str | 
     return get_thread(conn, thread_id, user_id) or {}
 
 
+def update_thread_workspace(
+    conn: sqlite3.Connection, thread_id: str, workspace_id: str | None, user_id: int = 1
+) -> dict[str, Any]:
+    thread = get_thread(conn, thread_id, user_id)
+    if thread is None:
+        raise ValueError("thread not found")
+    if thread["paper_id"] is not None:
+        raise ValueError("paper chat cannot bind a workspace")
+    if conn.execute("SELECT 1 FROM chat_messages WHERE thread_id = ? LIMIT 1", (thread_id,)).fetchone():
+        raise ValueError("workspace is locked after the first message")
+    if workspace_id is not None:
+        workspace_context(conn, workspace_id, user_id)
+    conn.execute(
+        "UPDATE chat_threads SET workspace_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (workspace_id, thread_id),
+    )
+    conn.commit()
+    return get_thread(conn, thread_id, user_id) or {}
+
+
+def update_thread_title(
+    conn: sqlite3.Connection, thread_id: str, title: str, user_id: int = 1
+) -> dict[str, Any]:
+    if get_thread(conn, thread_id, user_id) is None:
+        raise ValueError("thread not found")
+    cleaned = title.strip()
+    if not cleaned:
+        raise ValueError("thread title must not be blank")
+    conn.execute(
+        "UPDATE chat_threads SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (cleaned, thread_id),
+    )
+    conn.commit()
+    return get_thread(conn, thread_id, user_id) or {}
+
+
 def get_message_repository(conn: sqlite3.Connection, thread_id: str, user_id: int = 1) -> dict[str, Any]:
     thread = get_thread(conn, thread_id, user_id)
     if thread is None:
@@ -120,6 +177,12 @@ def get_message_repository(conn: sqlite3.Connection, thread_id: str, user_id: in
         "headId": thread["active_leaf_id"],
         "messages": [_message_row(row) for row in rows],
     }
+
+
+def _generated_thread_title(content: str) -> str:
+    first_line = next((line.strip() for line in content.splitlines() if line.strip()), "")
+    normalized = " ".join(first_line.split())
+    return normalized if len(normalized) <= 40 else f"{normalized[:39]}..."
 
 
 def _assert_parent(conn: sqlite3.Connection, thread_id: str, parent_id: str | None) -> None:
@@ -229,12 +292,18 @@ def prepare_run(
             """,
             (run_id, thread_id, input_message_id, assistant_message_id, settings.llm_chat_model),
         )
+        generated_title = (
+            _generated_thread_title(str(user_message.get("content", "")))
+            if user_message is not None and thread["title"] == DEFAULT_THREAD_TITLE
+            else ""
+        )
         conn.execute(
             """
             UPDATE chat_threads SET active_leaf_id = ?, message_token_limit = ?,
+                title = CASE WHEN ? <> '' THEN ? ELSE title END,
                 updated_at = CURRENT_TIMESTAMP WHERE id = ?
             """,
-            (assistant_message_id, message_token_limit, thread_id),
+            (assistant_message_id, message_token_limit, generated_title, generated_title, thread_id),
         )
     except sqlite3.IntegrityError as exc:
         conn.execute(f"ROLLBACK TO {savepoint}")
@@ -250,6 +319,8 @@ def prepare_run(
         "run_id": run_id,
         "thread_id": thread_id,
         "paper_id": thread["paper_id"],
+        "workspace_id": thread["workspace_id"],
+        "user_id": user_id,
         "input_message_id": input_message_id,
         "assistant_message_id": assistant_message_id,
         "message_token_limit": message_token_limit,
@@ -286,8 +357,30 @@ def build_model_messages(conn: sqlite3.Connection, run: dict[str, Any]) -> list[
     current = lineage[-1]
 
     if run["paper_id"] is None:
+        system_prompt = GENERAL_SYSTEM_PROMPT
+        if run.get("workspace_id"):
+            context = workspace_context(conn, str(run["workspace_id"]), int(run["user_id"]))
+            item_lines = []
+            for item in context.get("items", [])[:40]:
+                title = str(item.get("title") or "Untitled item").strip()
+                abstract = str(item.get("abstract") or "").strip()
+                item_lines.append(f"- {title}" + (f": {abstract[:600]}" if abstract else ""))
+            source_label = "research project" if context.get("project_id") else "library folder"
+            system_prompt += (
+                f"\n\nWorkspace context is available in this conversation.\n"
+                f"Workspace name: {context['title']}\n"
+                f"Bound source type: {source_label}\n"
+                + (
+                    f"Workspace description: {context['description']}\n"
+                    if context.get("description")
+                    else ""
+                )
+                + "The item list below was supplied by the application. You may use it, but do not claim filesystem, database, network, or tool access. Do not say that the Workspace lacks content merely because its optional description is empty. Answer from the listed items and conversation; distinguish supplied evidence from your own background knowledge.\n"
+                + ("\n".join(item_lines) if item_lines else "No Workspace items were supplied for this turn.")
+            )
+
         immutable_tokens = (
-            estimate_tokens(GENERAL_SYSTEM_PROMPT)
+            estimate_tokens(system_prompt)
             + estimate_tokens(current["content"])
             + settings.llm_max_output_tokens
             + 512
@@ -298,7 +391,7 @@ def build_model_messages(conn: sqlite3.Connection, run: dict[str, Any]) -> list[
             )
         history_budget = min(run["message_token_limit"], settings.llm_context_window - immutable_tokens)
         selected = _select_history(lineage[:-1], history_budget)
-        model_messages = [{"role": "system", "content": GENERAL_SYSTEM_PROMPT}]
+        model_messages = [{"role": "system", "content": system_prompt}]
         model_messages.extend(
             {"role": item["role"], "content": item["content"]}
             for item in selected
@@ -455,6 +548,22 @@ def stream_run(conn: sqlite3.Connection, run: dict[str, Any]) -> Iterator[tuple[
         conn.commit()
         completed = True
         yield "message.completed", {"message_id": run["assistant_message_id"], "content": accumulated}
+    except LLMConfigurationError:
+        _fail_running_output(conn, run)
+        conn.execute(
+            """
+            UPDATE chat_runs SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND thread_id = ? AND output_message_id = ?
+            """,
+            (
+                "llm_configuration_unavailable",
+                run["run_id"],
+                run["thread_id"],
+                run["assistant_message_id"],
+            ),
+        )
+        conn.commit()
+        yield "run.failed", {"message": "\u6a21\u578b\u5c1a\u672a\u914d\u7f6e\u3002\u8bf7\u5728\u542f\u52a8\u540e\u7aef\u7684\u73af\u5883\u4e2d\u8bbe\u7f6e LLM_API_KEY \u540e\u91cd\u542f\u670d\u52a1\u3002"}
     except Exception:
         _fail_running_output(conn, run)
         conn.execute(
@@ -470,7 +579,7 @@ def stream_run(conn: sqlite3.Connection, run: dict[str, Any]) -> Iterator[tuple[
             ),
         )
         conn.commit()
-        yield "run.failed", {"message": "回答生成失败，请检查模型配置或稍后重试。"}
+        yield "run.failed", {"message": "\u56de\u7b54\u751f\u6210\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002"}
     finally:
         if not completed:
             _fail_running_output(conn, run)

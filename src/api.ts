@@ -5,7 +5,7 @@ import type {
   ResearchCitation, ResearchProject, ResearchProjectAnalysis, ResearchProjectArtifact,
   ResearchProjectArtifactType, ResearchProjectBacklink, ResearchProjectCoverage,
   ResearchProjectItem, ResearchProjectItemInput, ResearchReportLibraryItem, ResearchRun,
-  ResearchRunPaper, Stats, Subscription, User, WikiSearchResult,
+  ResearchRunPaper, Stats, Subscription, User, WikiSearchResult, Workspace,
 } from "./types";
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -313,14 +313,50 @@ export async function createPaperChatThread(paperId: number, title = "新对话"
   });
 }
 
+export async function fetchWorkspaces(): Promise<Workspace[]> {
+  const data = await request<{ items: Workspace[] }>("/api/workspaces")
+  return data.items
+}
+
+export async function createWorkspace(payload: { title: string; description?: string; project_id?: string; folder_id?: number }): Promise<Workspace> {
+  return request<Workspace>("/api/workspaces", { method: "POST", body: JSON.stringify(payload) })
+}
+
+export async function fetchWorkspace(workspaceId: string): Promise<Workspace> {
+  return request<Workspace>(`/api/workspaces/${workspaceId}`)
+}
+
+export async function updateWorkspace(workspaceId: string, payload: { title?: string; description?: string }): Promise<Workspace> {
+  return request<Workspace>(`/api/workspaces/${workspaceId}`, { method: "PATCH", body: JSON.stringify(payload) })
+}
+
+export async function deleteWorkspace(workspaceId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/api/workspaces/${workspaceId}`, { method: "DELETE" })
+}
+
 export async function fetchGeneralChatThreads(): Promise<ChatThread[]> {
   const data = await request<{ items: ChatThread[] }>("/api/chat/threads")
   return data.items
 }
 
-export async function createGeneralChatThread(title = "新对话"): Promise<ChatThread> {
+export async function createGeneralChatThread(title = "新对话", workspaceId?: string): Promise<ChatThread> {
   return request<ChatThread>("/api/chat/threads", {
     method: "POST",
+    body: JSON.stringify({ title, workspace_id: workspaceId ?? null }),
+  })
+}
+
+export async function updateChatThreadWorkspace(threadId: string, workspaceId?: string): Promise<ChatThread> {
+  return request<ChatThread>(`/api/chat/threads/${threadId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ workspace_id: workspaceId ?? null }),
+  })
+}
+
+
+export async function updateChatThreadTitle(threadId: string, title: string): Promise<ChatThread> {
+  return request<ChatThread>(`/api/chat/threads/${threadId}`, {
+    method: "PATCH",
     body: JSON.stringify({ title }),
   })
 }
