@@ -122,7 +122,7 @@ function invalidateResearchProject(queryClient: ReturnType<typeof useQueryClient
 }
 
 export function useResearchProjectsQuery(status?: "active" | "archived") {
-  return useQuery({ queryKey: queryKeys.researchProjects(status), queryFn: () => fetchResearchProjects(status) })
+  return useQuery({ queryKey: queryKeys.researchProjects(status), queryFn: () => fetchResearchProjects(status), retry: false })
 }
 
 export function useResearchProjectQuery(projectId: string) {
@@ -543,11 +543,11 @@ export function useSubscriptionsQuery() {
 }
 
 export function useLibraryFoldersQuery() {
-  return useQuery({ queryKey: queryKeys.libraryFolders, queryFn: fetchLibraryFolders })
+  return useQuery({ queryKey: queryKeys.libraryFolders, queryFn: fetchLibraryFolders, retry: false })
 }
 
 export function useLibraryItemsQuery(folderId?: number) {
-  return useQuery({ queryKey: queryKeys.libraryItems(folderId), queryFn: () => fetchLibraryItems(folderId) })
+  return useQuery({ queryKey: queryKeys.libraryItems(folderId), queryFn: () => fetchLibraryItems(folderId), retry: false })
 }
 
 export function useIngestArxivMutation() {

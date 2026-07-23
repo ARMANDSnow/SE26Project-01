@@ -713,7 +713,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
                 V9_MIGRATION,
                 V10_MIGRATION,
                 V11_MIGRATION,
-    V11_MIGRATION,
             ],
             target_version=SCHEMA_VERSION,
         )
