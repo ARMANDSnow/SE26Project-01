@@ -66,11 +66,11 @@ export function ChatPage() {
     <section className="grid h-[calc(100dvh-4rem)] min-h-[540px] min-w-0 overflow-hidden bg-card min-[1200px]:grid-cols-[minmax(0,1fr)_minmax(380px,430px)]">
       <div className="flex min-h-0 min-w-0 flex-col">
         <div className="flex min-h-12 items-center justify-between border-b px-3 min-[1200px]:hidden">
-          <span className="truncate text-sm font-medium">{selected?.title ?? "PaperWiki Chat"}</span>
+          <div className="flex min-w-0 items-center gap-2"><span className="truncate text-sm font-medium">{selected?.title ?? "PaperWiki Chat"}</span></div>
           {latestThreadRun ? <Button size="sm" variant="outline" className="min-h-11" onClick={(event) => openRun(latestThreadRun.id, event.currentTarget)}><FlaskConical className="size-4" />Workflow</Button> : null}
         </div>
         {threadsQuery.isLoading || createThread.isPending ? <div className="m-auto inline-flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin motion-reduce:animate-none" />加载对话</div> : selected ? (
-          <ChatThread key={selected.id} thread={selected} emptyTitle="今天想研究什么？" emptyDescription="可以普通问答，也可以选择“深度研究”启动真实、可恢复的主题论文调研。" placeholder="输入问题，Enter 发送…" hero onOpenRun={openRun} onResearchRunCreated={selectRun} runBar={runBar} initialMode={initialMode} routingEnabled />
+          <ChatThread key={selected.id} thread={selected} emptyTitle="今天想研究什么？" emptyDescription="可以普通问答，也可以选择“深度研究”启动真实、可恢复的主题论文调研。" placeholder="输入问题，Enter 发送…" hero onOpenRun={openRun} onResearchRunCreated={selectRun} runBar={runBar} initialMode={initialMode} routingEnabled workspaceSelectionEnabled />
         ) : (
           <div className="m-auto grid gap-3 text-center"><strong>暂时无法创建对话</strong><Button variant="outline" onClick={() => threadsQuery.refetch()}><MessageSquarePlus className="size-4" />重试</Button></div>
         )}

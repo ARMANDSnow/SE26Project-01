@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 
 class RegisterRequest(BaseModel):
@@ -80,6 +80,28 @@ class MoveLibraryItemRequest(BaseModel):
 
 class ThreadCreateRequest(BaseModel):
     title: str = Field(default="新对话", max_length=100)
+    workspace_id: str | None = Field(default=None, max_length=100)
+
+
+class ThreadUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=100)
+    workspace_id: str | None = Field(default=None, max_length=100)
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("thread title must not be blank")
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_update(self) -> "ThreadUpdateRequest":
+        if not self.model_fields_set.intersection({"title", "workspace_id"}):
+            raise ValueError("title or workspace_id is required")
+        return self
 
 
 class ThreadHeadRequest(BaseModel):

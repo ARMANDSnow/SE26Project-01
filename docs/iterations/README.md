@@ -7,6 +7,7 @@ Agent 续写入口：
 
 | Iteration | Title | Status | Notes |
 | --- | --- | --- | --- |
+| [iter18](iteration_iter18_workspace-chat-context.md) | Workspace Chat Context | Complete | Owner-only Workspace context, composer-level pre-message binding, and persisted Chat context. |
 | [iter17](iteration_iter17_async-paper-processing.md) | 去 Agent 化与异步论文加工基建 | Complete | schema v10 持久化加工任务；手动导入/上传后自动异步下载、子进程 Docling、分块索引，含总超时、租约栅栏、有界重试和失败隔离；158 tests、mypy、build 通过。 |
 | [iter16](iteration_iter16_research-quality-evaluation.md) | 可复现研究质量评测与验收证据 | Complete | 5 篇公开论文/60 案例 gold set、离线 strict judge/scorer、认证 120 论文/100 并发 smoke、重启恢复与连续三视口演示；真实 judge 未授权，质量阈值明确未验证。 |
 | [iter15](iteration_iter15_research-landscape-projects.md) | 可追溯研究脉络、主题簇与项目化资料库 | Complete | schema v9、owner-only 研究项目、项目级版本 Artifact/DAG、七步 Project workflow、主题簇/时间线/图谱、资料库 UI 与 Workflow 降噪；120 tests、mypy、build、9 项 Playwright 通过。 |

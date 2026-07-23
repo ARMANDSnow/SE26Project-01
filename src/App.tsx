@@ -12,6 +12,7 @@ const PapersPage = lazy(() => import("@/features/papers/page").then((module) => 
 const ResearchRunPage = lazy(() => import("@/features/research/run-page").then((module) => ({ default: module.ResearchRunPage })))
 const ResearchProjectPage = lazy(() => import("@/features/projects/project-page").then((module) => ({ default: module.ResearchProjectPage })))
 const ResearchReportPage = lazy(() => import("@/features/reports/page").then((module) => ({ default: module.ResearchReportPage })))
+const WorkspacesPage = lazy(() => import("@/features/workspaces/page").then((module) => ({ default: module.WorkspacesPage })))
 
 export default function App() {
   const userQuery = useCurrentUserQuery()
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="/graph" element={<Navigate to="/" replace />} />
         <Route path="/learning" element={<Navigate to="/" replace />} />
         <Route path="/library" element={<LibraryPage />} />
+        <Route path="/workspaces" element={<WorkspacesPage />} />
         <Route path="/library/projects/:projectId" element={<ResearchProjectPage />} />
         <Route path="/runs/:runId" element={<ResearchRunPage />} />
         <Route path="/runs/:runId/reports/:version" element={<ResearchReportPage />} />

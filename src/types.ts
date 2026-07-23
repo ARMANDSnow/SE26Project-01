@@ -116,9 +116,23 @@ export type PaperSummary = {
   created_at: string;
 };
 
+export type Workspace = {
+  id: string;
+  owner_user_id: number;
+  title: string;
+  description: string;
+  project_id?: string | null;
+  folder_id?: number | null;
+  project_title?: string | null;
+  folder_name?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ChatThread = {
   id: string;
   paper_id: number | null;
+  workspace_id?: string | null;
   title: string;
   active_leaf_id?: string;
   message_token_limit: number;
