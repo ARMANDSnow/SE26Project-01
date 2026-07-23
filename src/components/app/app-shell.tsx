@@ -145,8 +145,8 @@ function RecentChats() {
       <SidebarGroupContent className="flex min-h-0 flex-col gap-2">
         <Button className="min-h-11 w-full justify-start" onClick={createResearchChat} disabled={createThread.isPending}><Plus className="size-4" />新建研究</Button>
         <div className="flex items-center justify-between px-2 pt-2"><p className="text-xs font-medium text-sidebar-foreground/60">最近对话</p><div className="flex items-center gap-1"><span className="text-[11px] text-sidebar-foreground/50">{threads.data?.length ?? 0}</span><Button aria-label={"\u65b0\u5efa\u5bf9\u8bdd"} size="icon-xs" variant="ghost" disabled={createThread.isPending} onClick={createGeneralChat}><MessageSquarePlus /></Button></div></div>
-        <div className="grid min-h-0 gap-1 overflow-y-auto">
-          {(threads.data ?? []).slice(0, 12).map((thread) => {
+        <div className="grid min-h-0 flex-1 content-start gap-1 overflow-y-auto overscroll-contain pr-1">
+          {(threads.data ?? []).map((thread) => {
             const isEditing = editingThreadId === thread.id
             return (
               <div key={thread.id} className={cn("flex min-h-11 items-center gap-1 rounded-lg px-1.5 py-1 text-sm hover:bg-sidebar-accent", currentId === thread.id && location.pathname === "/" && "bg-sidebar-accent font-medium")}>

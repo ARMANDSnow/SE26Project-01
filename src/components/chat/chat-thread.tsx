@@ -343,7 +343,6 @@ function EditComposer() {
 }
 
 function Composer({ placeholder, hero = false, mode, onModeChange, routingEnabled, workspaceSelectionEnabled, workspaceId, onWorkspaceChange }: { placeholder: string; hero?: boolean; mode: ChatRouteMode; onModeChange: (mode: ChatRouteMode) => void; routingEnabled: boolean; workspaceSelectionEnabled: boolean; workspaceId?: string | null; onWorkspaceChange: (workspaceId?: string) => void }) {
-  const ModeIcon = mode === "deep_research" ? FlaskConical : mode === "normal" ? MessageSquare : Sparkles
   const scope = useContext(ChatScopeContext)
   const messageCount = useAuiState((state) => state.thread.messages.length)
   const workspacesQuery = useWorkspacesQuery()
@@ -380,7 +379,6 @@ function Composer({ placeholder, hero = false, mode, onModeChange, routingEnable
           {routingEnabled ? (
             <Select value={mode} onValueChange={(value) => onModeChange(value as ChatRouteMode)}>
               <SelectTrigger id="chat-route-mode" aria-label={"\u56de\u7b54\u6a21\u5f0f"} className="min-h-11 rounded-xl bg-background px-2.5">
-                <span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground" aria-hidden="true"><ModeIcon className="size-3.5" /></span>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent position="popper" align="start">

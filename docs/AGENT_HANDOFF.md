@@ -123,6 +123,8 @@ git diff --check
 - iter17：`docs/iterations/iteration_iter17_async-paper-processing.md`。
 - 全功能网页巡检：`docs/iterations/bugfix_2026-07-17_full-web-ui-audit.md`。
 - Iter17 按完整迭代规范 commit、不 push；push 前仍需 fetch/rebase 并保留远端及本地用户改动。
+- 2026-07-23 Workspace follow-up: repaired the schema v11 migration bridge for local databases that contain the earlier pre-rebase Workspace table, so startup also creates missing v10 paper-processing tables instead of failing. Recent Chats now scrolls instead of truncating at 12 entries; the composer no longer duplicates route icons. My Library now fetches root papers in parallel with folders, queries only the selected project status, and surfaces failed private reads with a retry action rather than an empty list. Local SQLite folder/items/projects list operations were sub-millisecond; the visible delay came from frontend sequencing and expected post-restart 401s because sessions are in-memory. Validation: 92 targeted backend tests and frontend build passed.
+
 ## Iter18 Workspace Chat Context
 
 - 2026-07-23: Added owner-only Workspaces backed by one research project or library folder, Workspace CRUD, and persisted general-Chat context. Workspace binding now lives in the composer beside route mode and is allowed only before the first message; the backend enforces the same lock. Paper Chat cannot bind a Workspace. Validation completed before the upstream rebase: `backend/tests/test_core.py` (101 passed), frontend build, and `git diff --check`.
