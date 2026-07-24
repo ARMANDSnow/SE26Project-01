@@ -1,0 +1,35 @@
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+files = [
+    "backend/app/api",
+    "backend/app/auth",
+    "backend/app/db",
+    "backend/app/repositories",
+    "backend/app/models.py",
+    "backend/app/database.py",
+    "backend/app/main.py",
+    "backend/app/config.py",
+    "backend/app/services/paper_analysis.py",
+    "backend/app/services/auth.py",
+    "backend/app/services/asset_store.py",
+    "backend/app/services/documents.py",
+    "backend/app/services/ingestion.py",
+    "backend/app/services/library.py",
+    "backend/app/services/knowledge.py",
+    "backend/app/services/papers.py",
+    "backend/app/services/paper_processing.py",
+    "backend/app/services/system.py",
+    "backend/app/services/pdf_import.py",
+    "backend/app/services/remote_pdf.py",
+    "backend/app/services/research.py",
+    "backend/app/services/research_quality_evaluation.py",
+    "backend/app/services/sources/arxiv.py",
+    "backend/app/services/sources/sigops.py",
+    "backend/app/services/sources/usenix.py",
+]
+
+[[tool.mypy.overrides]]
+module = ["pypdf.*"]
+ignore_missing_imports = true

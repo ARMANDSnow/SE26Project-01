@@ -1,0 +1,279 @@
+import {
+  BookMarked,
+  Brain,
+  Library,
+  Menu,
+  MessageSquareText,
+  LogOut,
+  Plus,
+  MessageSquare,
+  MessageSquarePlus,
+  BriefcaseBusiness,
+  Pencil,
+  Check,
+  X,
+} from "lucide-react"
+import { useQueryClient } from "@tanstack/react-query"
+import { toast } from "sonner"
+import { useState, type ComponentType, type CSSProperties, type SVGProps } from "react"
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router"
+import { ThemeToggle } from "@/components/app/theme-toggle"
+import { TaskCenter } from "@/features/research/task-center"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarSeparator,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar"
+import { cn } from "@/lib/utils"
+import { logout } from "@/api"
+import { queryKeys, useCreateGeneralChatThreadMutation, useCurrentUserQuery, useGeneralChatThreadsQuery, useUpdateChatThreadTitleMutation } from "@/lib/query-hooks"
+
+type NavItem = {
+  path: string
+  label: string
+  description: string
+  icon: ComponentType<SVGProps<SVGSVGElement>>
+}
+
+const navItems: NavItem[] = [
+  { path: "/", label: "Chat", description: "通用对话", icon: MessageSquareText },
+  { path: "/papers", label: "论文库", description: "检索与同步", icon: Library },
+  { path: "/library", label: "我的资料库", description: "收藏与目录", icon: BookMarked },
+  { path: "/workspaces", label: "Workspace", description: "创建对话上下文", icon: BriefcaseBusiness },
+]
+
+function BrandLink() {
+  return (
+    <Link
+      to="/"
+      className="flex min-h-14 items-center gap-3 rounded-lg px-2 text-left transition-colors hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span className="grid size-10 place-items-center rounded-lg bg-primary text-primary-foreground">
+        <Brain className="size-5" />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-sm font-semibold text-sidebar-foreground">PaperWiki</span>
+        <span className="block truncate text-xs text-sidebar-foreground/60">开放研究工作台</span>
+      </span>
+    </Link>
+  )
+}
+
+function NavigationMenu() {
+  const { setOpenMobile } = useSidebar()
+  const location = useLocation()
+
+  return (
+    <SidebarMenu>
+      {navItems.map((item) => {
+        const Icon = item.icon
+        const active = item.path === "/" ? location.pathname === "/" : location.pathname.startsWith(item.path)
+
+        return (
+          <SidebarMenuItem key={item.path}>
+            <SidebarMenuButton
+              asChild
+              isActive={active}
+              size="lg"
+              tooltip={item.label}
+              className="min-h-12"
+            >
+              <NavLink to={item.path} onClick={() => setOpenMobile(false)}>
+                <Icon className="size-4" />
+                <span>{item.label}</span>
+              </NavLink>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        )
+      })}
+    </SidebarMenu>
+  )
+}
+
+function RecentChats() {
+  const { setOpenMobile } = useSidebar()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const threads = useGeneralChatThreadsQuery()
+  const createThread = useCreateGeneralChatThreadMutation()
+  const updateThreadTitle = useUpdateChatThreadTitleMutation()
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null)
+  const [titleDraft, setTitleDraft] = useState("")
+  const currentId = new URLSearchParams(location.search).get("thread")
+  const beginRename = (threadId: string, title: string) => {
+    setEditingThreadId(threadId)
+    setTitleDraft(title)
+  }
+  const cancelRename = () => {
+    setEditingThreadId(null)
+    setTitleDraft("")
+  }
+  const saveRename = (threadId: string) => {
+    const title = titleDraft.trim()
+    if (!title) return
+    updateThreadTitle.mutate(
+      { threadId, title },
+      {
+        onSuccess: cancelRename,
+        onError: () => toast.error("\u4fee\u6539\u5bf9\u8bdd\u540d\u79f0\u5931\u8d25"),
+      },
+    )
+  }
+  const openThread = (threadId: string, mode?: "deep_research") => {
+    setOpenMobile(false)
+    navigate(`/?thread=${encodeURIComponent(threadId)}${mode ? `&mode=${mode}` : ""}`)
+  }
+  const createGeneralChat = () => createThread.mutate(undefined, { onSuccess: (thread) => openThread(thread.id) })
+  const createResearchChat = () => createThread.mutate("新研究", {
+    onSuccess: (thread) => openThread(thread.id, "deep_research"),
+  })
+  return (
+    <SidebarGroup className="min-h-0 flex-1">
+      <SidebarGroupContent className="flex min-h-0 flex-col gap-2">
+        <Button className="min-h-11 w-full justify-start" onClick={createResearchChat} disabled={createThread.isPending}><Plus className="size-4" />新建研究</Button>
+        <div className="flex items-center justify-between px-2 pt-2"><p className="text-xs font-medium text-sidebar-foreground/60">最近对话</p><div className="flex items-center gap-1"><span className="text-[11px] text-sidebar-foreground/50">{threads.data?.length ?? 0}</span><Button aria-label={"\u65b0\u5efa\u5bf9\u8bdd"} size="icon-xs" variant="ghost" disabled={createThread.isPending} onClick={createGeneralChat}><MessageSquarePlus /></Button></div></div>
+        <div className="grid min-h-0 flex-1 content-start gap-1 overflow-y-auto overscroll-contain pr-1">
+          {(threads.data ?? []).map((thread) => {
+            const isEditing = editingThreadId === thread.id
+            return (
+              <div key={thread.id} className={cn("flex min-h-11 items-center gap-1 rounded-lg px-1.5 py-1 text-sm hover:bg-sidebar-accent", currentId === thread.id && location.pathname === "/" && "bg-sidebar-accent font-medium")}>
+                {isEditing ? (
+                  <>
+                    <Input
+                      aria-label={"\u5bf9\u8bdd\u540d\u79f0"}
+                      className="h-8 min-w-0 flex-1 bg-background text-sm"
+                      autoFocus
+                      disabled={updateThreadTitle.isPending}
+                      value={titleDraft}
+                      onChange={(event) => setTitleDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault()
+                          saveRename(thread.id)
+                        }
+                        if (event.key === "Escape") {
+                          event.preventDefault()
+                          cancelRename()
+                        }
+                      }}
+                    />
+                    <Button aria-label={"\u4fdd\u5b58\u5bf9\u8bdd\u540d\u79f0"} size="icon-xs" variant="ghost" disabled={!titleDraft.trim() || updateThreadTitle.isPending} onClick={() => saveRename(thread.id)}><Check /></Button>
+                    <Button aria-label={"\u53d6\u6d88\u4fee\u6539"} size="icon-xs" variant="ghost" disabled={updateThreadTitle.isPending} onClick={cancelRename}><X /></Button>
+                  </>
+                ) : (
+                  <>
+                    <Link to={`/?thread=${encodeURIComponent(thread.id)}`} onClick={() => setOpenMobile(false)} className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1">
+                      <MessageSquare className="size-3.5 shrink-0" /><span className="truncate">{thread.title}</span>
+                    </Link>
+                    <Button aria-label={"\u91cd\u547d\u540d\u5bf9\u8bdd"} size="icon-xs" variant="ghost" className="shrink-0" onClick={() => beginRename(thread.id, thread.title)}><Pencil /></Button>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </SidebarGroupContent>
+    </SidebarGroup>
+  )
+}
+
+export function AppShell() {
+  const queryClient = useQueryClient()
+  const userQuery = useCurrentUserQuery()
+  const location = useLocation()
+  const header = location.pathname.startsWith("/runs/")
+    ? { title: "Research Run", description: "可恢复任务与执行步骤" }
+    : location.pathname.startsWith("/papers")
+      ? { title: "论文库", description: "检索、导入与阅读论文" }
+      : location.pathname.startsWith("/library")
+        ? { title: "我的资料库", description: "收藏与研究资料" }
+        : location.pathname.startsWith("/workspaces")
+          ? { title: "Workspace", description: "\u521b\u5efa\u5bf9\u8bdd\u4e0a\u4e0b\u6587" }
+          : { title: "PaperWiki Chat", description: "\u4ece\u5bf9\u8bdd\u5f00\u59cb\u4f60\u7684\u7814\u7a76" }
+
+  const signOut = async () => {
+    await logout()
+    queryClient.removeQueries({
+      predicate: (query) => query.queryKey[0] !== queryKeys.currentUser[0],
+    })
+    queryClient.setQueryData(queryKeys.currentUser, null)
+  }
+
+  return (
+    <SidebarProvider style={{ "--sidebar-width": "17rem" } as CSSProperties}>
+      <a
+        href="#main-content"
+        className="sr-only z-50 rounded-md bg-background px-3 py-2 text-sm font-medium text-foreground focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:ring-2 focus:ring-ring"
+      >
+        跳到主内容
+      </a>
+
+      <Sidebar collapsible="offcanvas" className="border-r">
+        <SidebarHeader className="p-3">
+          <BrandLink />
+        </SidebarHeader>
+        <SidebarSeparator />
+        <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupContent>
+              <NavigationMenu />
+            </SidebarGroupContent>
+          </SidebarGroup>
+          <RecentChats />
+        </SidebarContent>
+        <SidebarFooter className="p-3">
+          <div className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2">
+            <span className="truncate text-sm font-medium">{userQuery.data?.username}</span>
+            <Button variant="ghost" size="icon" aria-label="退出登录" onClick={signOut}>
+              <LogOut className="size-4" />
+            </Button>
+          </div>
+          <div className="rounded-lg border bg-sidebar-accent/40 p-3 text-xs leading-5 text-sidebar-foreground/70">
+            <span className="font-semibold text-sidebar-foreground">当前阶段</span>
+            <p className="mt-1">主题论文调研已接入真实可恢复链路，并支持严格 Citation 校验与版本化研究报告。</p>
+          </div>
+        </SidebarFooter>
+      </Sidebar>
+
+      <SidebarInset className="min-w-0">
+        <header className="sticky top-0 z-20 flex min-h-16 items-center justify-between border-b bg-background/90 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:px-6">
+          <div className="flex items-center gap-2">
+            <SidebarTrigger className={cn("size-11 md:hidden")} aria-label="打开导航">
+              <Menu className="size-4" />
+            </SidebarTrigger>
+            <div>
+              <p className="text-sm font-semibold text-foreground">{header.title}</p>
+              <p className="text-xs text-muted-foreground">{header.description}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <TaskCenter />
+            <Button asChild variant="outline" className="hidden h-11 sm:inline-flex">
+              <Link to="/papers">检索论文</Link>
+            </Button>
+            <ThemeToggle />
+          </div>
+        </header>
+
+        <main id="main-content" className={cn("min-w-0 flex-1", location.pathname === "/" ? "p-0" : "px-3 py-3 lg:px-5 lg:py-4")}>
+          <div className={cn("mx-auto grid w-full gap-5", location.pathname === "/" ? "max-w-none" : "max-w-[1480px]")}>
+            <Outlet />
+          </div>
+        </main>
+      </SidebarInset>
+    </SidebarProvider>
+  )
+}
